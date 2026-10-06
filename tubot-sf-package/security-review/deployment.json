@@ -1,0 +1,25 @@
+{
+  "id": "0Afg500000FPvQfCAL",
+  "status": "Succeeded",
+  "components": 154,
+  "tests": 0,
+  "verifiedControllerGrants": 2,
+  "verifiedClasses": [
+    {
+      "name": "MessagingBackupFieldCaptureService",
+      "isValid": true
+    },
+    {
+      "name": "MessagingBackupRestoreService",
+      "isValid": true
+    },
+    {
+      "name": "PanelOAuthTokenExchangeService",
+      "isValid": true
+    },
+    {
+      "name": "PanelSelfOrgResponseParser",
+      "isValid": true
+    }
+  ]
+}

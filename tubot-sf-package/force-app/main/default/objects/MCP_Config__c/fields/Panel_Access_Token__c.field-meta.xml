@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <!-- code-analyzer-suppress(pmd:ProtectSensitiveData) -->
+    <!-- Deprecated migration field: packaged code never reads or writes it. Active Panel tokens are stored only in External Credentials. Retained because second-generation managed packages cannot delete components shipped in a released version without Salesforce Partner approval. -->
+    <fullName>Panel_Access_Token__c</fullName>
+    <description>Deprecated legacy field. Packaged code never reads or writes this value; active Panel tokens are stored in External Credentials.</description>
+    <externalId>false</externalId>
+    <label>Panel Access Token</label>
+    <length>255</length>
+    <required>false</required>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

@@ -1,0 +1,70 @@
+{
+  "transport": "Local verifier with remote service binding to deployed sf-auth",
+  "generatedAt": "2026-09-30T19:48:47.626Z",
+  "results": [
+    {
+      "method": "GET",
+      "path": "/v1/salesforce/user/data/audit-victim",
+      "expected": 401,
+      "status": 401,
+      "pass": true,
+      "errorCode": "tenant_scope_required",
+      "requestId": "d9b1e7a4-7e7c-4a60-b74a-b18a0e4d6865"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/salesforce/data360/user/audit-victim",
+      "expected": 401,
+      "status": 401,
+      "pass": true,
+      "errorCode": "tenant_scope_required",
+      "requestId": "2e6c7627-92af-4f92-bc2e-4ba8f2346a88"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/salesforce/user/data",
+      "expected": 401,
+      "status": 401,
+      "pass": true,
+      "errorCode": "tenant_scope_required",
+      "requestId": "879f886f-68ca-4ff5-8816-ee627089618e"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/salesforce/cache/purge",
+      "expected": 401,
+      "status": 401,
+      "pass": true,
+      "errorCode": "tenant_scope_required",
+      "requestId": "2ecbe46a-bdee-43a3-a37a-515ab09b46d5"
+    },
+    {
+      "method": "POST",
+      "path": "/internal/channels/token",
+      "expected": 401,
+      "status": 401,
+      "pass": true,
+      "errorCode": "tenant_scope_required",
+      "requestId": "5476494a-da2a-4f72-a9ac-0b7286b70cd4"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/salesforce/user/data",
+      "expected": 413,
+      "status": 413,
+      "pass": true,
+      "errorCode": "body_too_large",
+      "requestId": "f4a12d8d-202f-4c8f-81a4-8d0b7b32e6a6"
+    },
+    {
+      "method": "POST",
+      "path": "/internal/self-oauth/start",
+      "expected": 401,
+      "status": 401,
+      "pass": true,
+      "errorCode": "invalid_internal_signature",
+      "requestId": "2a8ad80b-8639-40ac-967e-75250df23f99"
+    }
+  ],
+  "versionId": "121b00a4-3a5c-43fb-8acb-ae6231d950a9"
+}

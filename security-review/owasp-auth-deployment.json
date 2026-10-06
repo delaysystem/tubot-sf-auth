@@ -1,0 +1,16 @@
+{
+  "worker": "tubot-sf-auth-staging",
+  "versionId": "121b00a4-3a5c-43fb-8acb-ae6231d950a9",
+  "deploymentId": "94e3a360-7a58-4668-8758-fbe4a1e7d6c7",
+  "createdOn": "2026-09-30T19:46:38.433656Z",
+  "versions": [
+    {
+      "version_id": "121b00a4-3a5c-43fb-8acb-ae6231d950a9",
+      "percentage": 100
+    }
+  ],
+  "verifiedBy": "bunx wrangler deployments list --json",
+  "snapshotMatchesStaticSourceHashes": true,
+  "workersDev": false,
+  "previewUrls": false
+}

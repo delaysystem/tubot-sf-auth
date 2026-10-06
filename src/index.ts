@@ -1,0 +1,5489 @@
+import { extractTrailingResponseDocuments, parseSalesforceResponseJson } from './salesforce-response-json';
+import { invokeOwnedRecordAction } from './record-action-context';
+import { invokeAppointmentInvitation } from "./appointment-invitation-context";
+import { invokeAppointmentCancellation } from "./appointment-cancel-context";
+import { invokeCartMutation } from "./cart-action-context";
+import { invokeCartItemMutation, CART_ITEM_MUTATION_ACTIONS, CART_INVENTORY_RESERVATION_ACTIONS } from "./cart-item-action-context";
+import { invokeInventoryReservation, INVENTORY_RESERVATION_ACTIONS } from "./inventory-reservation-action-context";
+import { invokeGuestBuyerRegistration, GUEST_BUYER_ACTIONS } from "./guest-buyer-owned-context";
+import { invokeSearchBoostBuryRuleWithContext, SEARCH_RULE_ACTIONS } from "./search-rule-owned-context";
+import { invokePaymentAuthorizationWithContext, PAYMENT_AUTH_ACTIONS } from "./payment-auth-owned-context";
+import { invokeFulfillmentCapacityWithContext, FULFILLMENT_CAPACITY_ACTIONS } from "./fulfillment-capacity-context";
+import { invokeServiceReportWithContext, SERVICE_REPORT_ACTIONS } from "./service-report-context";
+import { invokeWorkOrdersWithContext, WORK_ORDERS_ACTIONS } from "./work-orders-context";
+import { invokeSingleFixtureAction, SINGLE_FIXTURE_ACTION_SPECS } from "./single-fixture-action-context";
+import { invokeFixtureBackedRead, FIXTURE_READ_ACTION_SPECS } from "./fixture-read-context";
+import { invokeContactRequestContext } from "./contact-request-context";
+import { invokeWaitlistContext } from "./waitlist-action-context";
+import { missingGraphDefinition, readOwnedGraphMetadata } from "./data-graph-metadata-retry";
+import { describePackagedFlowContract, invokeFlowRecordContract } from "./flow-record-contract";
+import { flowRecordCatalogCandidates, flowRecordCatalogSoql, flowRecordFixtureBlocker, resolveFlowRecordTarget } from "./flow-record-context";
+import { invokeFlowUpdateContract } from "./flow-update-contract";
+import { invokeLeadAssignmentContext } from "./lead-assignment-context";
+import { invokeOwnedFlowCreation } from "./owned-flow-creation-context";
+import { invokeCustomFieldActionContext, xmlText } from './custom-field-action-context';
+import { invokeRoutingContext } from "./routing-action-context";
+import { APPROVAL_ADVANCED_ACTIONS, APPROVAL_SUBMIT_ACTION, approvalActionName, invokeApprovalActionWithContext } from "./approval-owned-context";
+import { invokeProcSimpleApprovalWithContext, procSimpleApprovalActionName } from "./approval-flow-lifecycle";
+import { invokePricebookContext } from "./pricebook-action-context";
+import { invokeWorkPlanContext, WORK_PLAN_CONTEXT_ACTIONS } from "./work-plan-context";
+import { invokeSessionPermissionContext } from "./session-permission-context";
+import { invokeKnowledgeContext } from "./knowledge-action-context";
+import { invokeReferenceQuickAction } from "./reference-quick-action";
+import { invokeOwnedQuickAction, quickActionRouteTerminal, seedLiveReferenceCache } from './quick-action-owned-context';
+import { seedRequiredReferenceValues } from './fixture-reference-seeding';
+import { isTriggerNullInsertFault, planTriggerNullEnrichment } from "./trigger-null-enrichment";
+import { selectAlternativeMarkerField, type TargetField } from "./skipped-standards-context";
+import { flowCreationRecipes } from "./flow-creation-context";
+import { invokeFlowScalarCreationContract } from "./flow-scalar-creation-contract";
+import { flowLookupBindings, flowFixtureValue } from "./action-flow-context";
+import { PRODUCER_REQUIRED_OUTPUTS, personIdentityCompletion, verificationProducerInput } from "./flow-producer-context";
+import { sweepFlowCommunicationResidue, type ResidueSweep } from "./flow-residue-sweep";
+import { flowOutputFailureSnippet, invokeFlowContactChain } from "./flow-fallback-contact-chain";
+import { invokeOwnedSubstrate, isReadOnlyEvident, type OwnedSubstratePlan } from "./flow-owned-substrate-chain";
+import { runFlowFaultRepairConsumer } from "./flow-fault-repair-consumer";
+import { type ManagedFlowFault } from "./managed-flow-faults";
+import { FLOW_LIVE_SOBJECT_SPECS, invokeFlowLiveSObject } from "./flow-live-sobject-context";
+import { guerrillaInbox, invokeFlowVerificationCodeChain, mailslurpInbox } from "./flow-verification-code-chain";
+
+/** Disposable verification inbox: MailSlurp when its key is configured, else Guerrilla. */
+function verificationInbox(env: AuthEnv) {
+  return typeof env.MAILSLURP_API_KEY === "string" && env.MAILSLURP_API_KEY.length >= 8
+    ? mailslurpInbox(env.MAILSLURP_API_KEY)
+    : guerrillaInbox();
+}
+import { runCdpPublishLifecycle, type CdpPubDiscovery, type CdpPubTransport } from "./cdp-pub-executor";
+import { invokeRemainderBookingFlow } from "./remainder-booking-flow-context";
+import { invokeNotificationWithContext, notificationActionName } from "./notification-owned-context";
+import { invokeNotificationFlowWithContext, notificationFlowActionName } from "./notification-flow-consumer-context";
+import { invokeEmailAlertWithContext, emailAlertRouteParts } from "./email-alert-owned-context";
+import { apexRelayActionName, invokeApexRelayWithContext } from "./apex-relay-context";
+import { apexExecActionName, invokeApexExecWithContext } from "./apex-exec-context";
+import { decisionTableActionName, invokeDecisionTableWithContext } from "./decision-table-context";
+import { apexCsvActionName, invokeApexCsvWithContext } from "./apex-csv-context";
+import { apexOverlapActionName, invokeApexOverlapWithContext } from "./apex-overlap-context";
+import { ORDER_SUMMARY_ACTIONS, invokeOrderSummaryPreviewWithContext } from "./order-summary-context";
+import { researchActionName, invokeResearchWithOwnedContext } from "./research-lifecycle-context";
+import { invokeSkippedStandardWithOwnedContext, skippedStandardFamilySlug, skippedStandardRouteInfo } from "./skipped-standard-lifecycle";
+import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
+import { commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
+import { readBodyBounded, readJsonBounded, requestScope, requireScope, scopedTags, SecurityError } from "./request-security";
+import { getAgentScripts, getCallableToolUrlsForChannel, findCredentialByChannelId, type Credential } from "./agent-script";
+import { fetchBridgeCredential, fetchBridgeTenants } from "./tenant-bridge";
+import { repairPromptContext, inferredContextSchema } from "./prompt-context";
+import {
+  UserDataCacheStore,
+  purgeEdgeCache,
+  createCachedResponse,
+  normalizeCanonicalUrl,
+  sanitizeVaryHeader,
+  getDeclarativeCacheHeaders,
+  computeETag,
+  isNotModified,
+  DEFAULT_CACHE_CONTROL,
+  FORBIDDEN_VARY_HEADERS,
+  type UserDataCacheRow,
+  type PutUserDataInput,
+  type CacheHeaderOptions,
+} from "./cache-helper";
+export * from "./agent-script";
+export * from "./cache-helper";
+
+/** Private service-binding API for channel-scoped Salesforce operations. */
+export interface AuthEnv {
+  DB: D1Database;
+  /** Base64-encoded 32-byte AES-GCM key, configured as a Worker secret. */
+  SF_CREDENTIAL_ENCRYPTION_KEY: string;
+  /** Shared only with Panel to authenticate service-binding self-OAuth calls. */
+  SELF_OAUTH_INTERNAL_HMAC_KEY?: string;
+  /** MailSlurp API key for disposable verification inboxes, configured as a Worker secret. Absent in tests. */
+  MAILSLURP_API_KEY?: string;
+  /** Service binding to the new panel worker for the tenant bridge. Absent in tests. */
+  NEW_PANEL?: Fetcher;
+  /** Shared secret presented to the new panel bridge, configured as a Worker secret. Absent in tests. */
+  BRIDGE_SHARED_SECRET?: string;
+  RETRIEVE64?: {
+    getCallableToolUrls?(params: any): Promise<string[]>;
+    registerDefinition?(params: any): Promise<any>;
+    fetch?(input: any, init?: any): Promise<Response>;
+  };
+  // TEMP-LOCAL-DEV — NEVER COMMIT OR DEPLOY (revert after the local sweep).
+  LOCAL_STATIC_SF_TOKEN?: string;
+}
+
+type Key = { teamId: string; orgId: string; channelId: string };
+export type Token = { accessToken: string; instanceUrl: string; expiresAt: number };
+type ExecutionUserReference = Key & { integrationUserId: string; isPrimary: boolean };
+type ExecutionUserDbRow = Omit<ExecutionUserReference, "isPrimary"> & { isPrimary: number };
+type ExecutionUserCredential = Credential & { created_at: number; updated_at: number };
+type SelfOAuthPending = {
+  state_hash: string;
+  team_id: string;
+  org_id: string;
+  instance_url: string;
+  client_id: string;
+  redirect_uri: string;
+  return_url: string;
+  salesforce_user_id: string;
+  oauth_token_id: string;
+  code_verifier_cipher: string;
+  code_verifier_iv: string;
+  created_at: number;
+  expires_at: number;
+  consumed_at: number | null;
+};
+type SelfOAuthCredential = {
+  team_id: string;
+  org_id: string;
+  instance_url: string;
+  client_id: string;
+  salesforce_user_id: string;
+  refresh_token_cipher: string;
+  refresh_token_iv: string;
+  created_at: number;
+  updated_at: number;
+};
+type SelfAccessToken = { accessToken: string; expiresAt: number };
+type ToolTarget = {
+  type: string;
+  name: string;
+  method?: string;
+  path?: string;
+  queryParams?: unknown;
+};
+type ApiVersion = { version: string; url: string };
+type ToolResolution =
+  | { available: true; route: string; inputs: unknown[]; outputs: unknown[]; method: string; api: boolean; target: ToolTarget }
+  | { available: false; diagnostic: { code: string; message: string; retryable?: boolean } };
+type SafeFailure = {
+  status: number;
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
+class AuthFailure extends Error {
+  constructor(readonly failure: SafeFailure) { super(failure.code); }
+}
+
+const tokenCache = new Map<string, Token>();
+const selfTokenCache = new Map<string, SelfAccessToken>();
+const encoder = new TextEncoder();
+const API_VERSION = "v65.0";
+const MAX_SALESFORCE_INSPECTION_BYTES = 1_800_000;
+const SELF_OAUTH_CALLBACK_PATH = "/api/v1/salesforce/self-oauth/callback";
+const SELF_OAUTH_PENDING_SECONDS = 600;
+
+function json(body: unknown, requestId: string, status = 200): Response {
+  return Response.json(body, {
+    status,
+    headers: { "Cache-Control": "no-cache, no-store, must-revalidate", "X-Request-Id": requestId },
+  });
+}
+function error(requestId: string, status: number, code: string, message: string, retryable = false): Response {
+  return json({ error: code, message, retryable, requestId }, requestId, status);
+}
+function failure(requestId: string, value: SafeFailure): Response {
+  return error(requestId, value.status, value.code, value.message, value.retryable);
+}
+function authFailure(status: number, code: string, message: string, retryable = false): AuthFailure {
+  return new AuthFailure({ status, code, message, retryable });
+}
+function upstreamFailure(status: number, code: string, message: string): SafeFailure {
+  if (status === 429 || status >= 500) {
+    return { status: 503, code, message, retryable: true };
+  }
+  return { status: 502, code, message, retryable: false };
+}
+function object(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function str(v: unknown, max = 512): v is string {
+  return typeof v === "string" && v.length > 0 && v.length <= max;
+}
+function key(v: Record<string, unknown>): v is Record<string, unknown> & Key {
+  return str(v.teamId, 128) && str(v.orgId, 128) && str(v.channelId, 128);
+}
+function validInstanceUrl(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return u.protocol === "https:" && !u.username && !u.password && !u.port &&
+      u.pathname === "/" && !u.search && !u.hash &&
+      [".my.salesforce.com", ".salesforce.com", ".force.com"]
+        .some(suffix => u.hostname.endsWith(suffix));
+  } catch { return false; }
+}
+function b64(v: Uint8Array): string { return btoa(String.fromCharCode(...v)); }
+function b64url(v: Uint8Array): string { return b64(v).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function unb64(v: string): Uint8Array { return Uint8Array.from(atob(v), c => c.charCodeAt(0)); }
+function validSalesforceOrgId(v: unknown): v is string {
+  return typeof v === "string" && /^00D[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(v);
+}
+function validSalesforceUserId(v: unknown): v is string {
+  return typeof v === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
+}
+function validSelfOAuthCallbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.port &&
+      url.pathname === SELF_OAUTH_CALLBACK_PATH && !url.search && !url.hash;
+  } catch { return false; }
+}
+function salesforceReturnUrl(instanceUrl: string): string {
+  const apiUrl = new URL(instanceUrl);
+  const hostname = apiUrl.hostname
+    .replace(/\.my\.salesforce\.com$/i, ".lightning.force.com")
+    .replace(/\.my\.salesforce\.mil$/i, ".lightning.force.mil");
+  if (hostname === apiUrl.hostname) {
+    throw authFailure(400, "invalid_salesforce_domain", "The Salesforce My Domain URL could not be resolved for the authorization return.");
+  }
+  try {
+    return new URL("/lightning/n/Panel_Settings", `https://${hostname}`).toString();
+  } catch {
+    throw authFailure(400, "invalid_salesforce_domain", "The Salesforce My Domain URL could not be resolved for the authorization return.");
+  }
+}
+async function aesKey(env: AuthEnv): Promise<CryptoKey> {
+  if (!env.SF_CREDENTIAL_ENCRYPTION_KEY) {
+    throw authFailure(500, "credential_encryption_key_missing", "Salesforce credential encryption is not configured. Set the Worker encryption secret and retry.");
+  }
+  let bytes: Uint8Array;
+  try { bytes = unb64(env.SF_CREDENTIAL_ENCRYPTION_KEY); }
+  catch {
+    throw authFailure(500, "credential_encryption_key_invalid", "The Worker encryption secret is invalid. Set a base64-encoded 32-byte key and retry.");
+  }
+  if (bytes.length !== 32) {
+    throw authFailure(500, "credential_encryption_key_invalid", "The Worker encryption secret is invalid. Set a base64-encoded 32-byte key and retry.");
+  }
+  try { return await crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]); }
+  catch {
+    throw authFailure(500, "credential_encryption_key_invalid", "The Worker encryption secret is invalid. Set a base64-encoded 32-byte key and retry.");
+  }
+}
+async function encrypt(env: AuthEnv, secret: string): Promise<{ cipher: string; iv: string }> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(env), encoder.encode(secret));
+  return { cipher: b64(new Uint8Array(cipher)), iv: b64(iv) };
+}
+async function decryptValue(env: AuthEnv, cipher: string, iv: string): Promise<string> {
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: unb64(iv) },
+    await aesKey(env), unb64(cipher));
+  return new TextDecoder().decode(plain);
+}
+async function decrypt(env: AuthEnv, row: Credential): Promise<string> {
+  return decryptValue(env, row.client_secret_cipher, row.client_secret_iv);
+}
+async function hash(v: string): Promise<string> {
+  return b64(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(v))))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function equalHash(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let i = 0; i < a.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return difference === 0;
+}
+function cacheKey(row: Credential): string {
+  // The random IV changes for every registration, including rotations of the
+  // same client secret. Cached tokens can never cross credential versions.
+  return [row.team_id, row.org_id, row.channel_id, row.instance_url,
+    row.client_id, row.client_secret_iv, row.channel_secret_hash].join("\u0000");
+}
+function clearChannelTokens(k: Key): void {
+  const prefix = [k.teamId, k.orgId, k.channelId].join("\u0000") + "\u0000";
+  for (const cacheEntry of tokenCache.keys()) {
+    if (cacheEntry.startsWith(prefix)) tokenCache.delete(cacheEntry);
+  }
+}
+function sameSalesforceId(actual: unknown, expected: string): boolean {
+  return typeof actual === "string" &&
+    /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(actual) &&
+    /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(expected) &&
+    actual.slice(0, 15) === expected.slice(0, 15);
+}
+
+function selfOAuthCacheKey(row: SelfOAuthCredential): string {
+  return [row.team_id, row.org_id, row.client_id, row.refresh_token_iv].join("\u0000");
+}
+
+function selfReturnUrl(instanceUrl: string): string {
+  return salesforceReturnUrl(instanceUrl);
+}
+
+async function activePanelGrant(
+  env: AuthEnv,
+  body: Record<string, unknown>,
+): Promise<{ teamId: string; orgId: string; tokenId: string } | null> {
+  if (!str(body.teamId, 128) || !validSalesforceOrgId(body.orgId) ||
+      !str(body.panelAccessToken, 4096) || !str(body.panelTokenId, 128) || !str(body.panelClientId, 128)) return null;
+  const presentedHash = await hash(body.panelAccessToken);
+  const token = await env.DB.prepare(`SELECT id, teamId, clientId FROM oauth_token
+    WHERE id = ? AND teamId = ? AND (accessToken = ? OR accessToken = ?) AND expiresAt > unixepoch()
+    LIMIT 1`).bind(body.panelTokenId, body.teamId, presentedHash, body.panelAccessToken)
+    .first<{ id: string; teamId: string; clientId: string }>();
+  if (!token || token.clientId !== body.panelClientId) return null;
+  return { teamId: token.teamId, orgId: body.orgId, tokenId: token.id };
+}
+
+async function selfOAuthStart(env: AuthEnv, body: Record<string, unknown>): Promise<{ authorizationUrl: string }> {
+  const grant = await activePanelGrant(env, body);
+  if (!grant || !validSalesforceUserId(body.salesforceUserId) || !str(body.clientId, 255) ||
+      !str(body.instanceUrl, 512) || !validInstanceUrl(body.instanceUrl) ||
+      !str(body.redirectUri, 2048) || !validSelfOAuthCallbackUrl(body.redirectUri)) {
+    throw authFailure(403, "self_oauth_not_authorized", "A valid Panel grant and Salesforce org connection request are required.");
+  }
+
+  const instanceUrl = new URL(body.instanceUrl).origin;
+  const state = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier))));
+  const encryptedVerifier = await encrypt(env, verifier);
+  const now = Math.floor(Date.now() / 1000);
+  const returnUrl = selfReturnUrl(instanceUrl);
+  await env.DB.prepare(`DELETE FROM salesforce_self_oauth_pending WHERE expires_at <= ?`).bind(now).run();
+  await env.DB.prepare(`INSERT INTO salesforce_self_oauth_pending
+    (state_hash, team_id, org_id, instance_url, client_id, redirect_uri, return_url,
+     salesforce_user_id, oauth_token_id, code_verifier_cipher, code_verifier_iv,
+     created_at, expires_at, consumed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
+    .bind(await hash(state), grant.teamId, grant.orgId, instanceUrl, body.clientId, body.redirectUri,
+      returnUrl, body.salesforceUserId, grant.tokenId, encryptedVerifier.cipher,
+      encryptedVerifier.iv, now, now + SELF_OAUTH_PENDING_SECONDS).run();
+
+  const authorizeUrl = new URL("/services/oauth2/authorize", instanceUrl);
+  authorizeUrl.search = new URLSearchParams({
+    response_type: "code",
+    client_id: body.clientId,
+    redirect_uri: body.redirectUri,
+    state,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    scope: "api refresh_token openid",
+  }).toString();
+  return { authorizationUrl: authorizeUrl.toString() };
+}
+
+async function verifySelfSalesforceIdentity(accessToken: string, instanceUrl: string, row: SelfOAuthPending): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(instanceUrl + "/services/oauth2/userinfo", {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+  } catch {
+    throw authFailure(503, "salesforce_identity_unavailable", "Salesforce identity verification is temporarily unavailable. Retry the connection.", true);
+  }
+  if (!response.ok) {
+    throw authFailure(response.status === 429 || response.status >= 500 ? 503 : 422,
+      "salesforce_identity_failed", "Salesforce could not verify the authorized org and user. Check ECA API and identity scopes.",
+      response.status === 429 || response.status >= 500);
+  }
+  let identity: unknown;
+  try { identity = await response.json(); }
+  catch { throw authFailure(502, "salesforce_identity_invalid_response", "Salesforce returned an invalid identity response. Retry the connection.", true); }
+  if (!object(identity) || !sameSalesforceId(identity.organization_id, row.org_id) ||
+      !sameSalesforceId(identity.user_id, row.salesforce_user_id)) {
+    throw authFailure(422, "salesforce_identity_mismatch", "The Salesforce authorization belongs to a different org or user. Start again from the intended org.");
+  }
+  const tokenInstance = typeof identity.urls === "object" && identity.urls !== null &&
+    typeof (identity.urls as Record<string, unknown>).custom_domain === "string"
+    ? (identity.urls as Record<string, string>).custom_domain : instanceUrl;
+  if (!validInstanceUrl(tokenInstance)) return instanceUrl;
+  return new URL(tokenInstance).origin;
+}
+
+function selfOAuthReturn(row: SelfOAuthPending, result: "connected" | "error", code?: string): string {
+  const target = new URL(row.return_url);
+  target.searchParams.set("selfOrgOAuth", result);
+  if (code) target.searchParams.set("selfOrgOAuthError", code);
+  return target.toString();
+}
+
+async function completeSelfOAuth(env: AuthEnv, body: Record<string, unknown>): Promise<{ redirectUrl: string }> {
+  if (!str(body.state, 256)) throw authFailure(400, "invalid_oauth_state", "The Salesforce authorization state is invalid or expired.");
+  const stateHash = await hash(body.state);
+  const now = Math.floor(Date.now() / 1000);
+  const pending = await env.DB.prepare(`UPDATE salesforce_self_oauth_pending SET consumed_at = ?
+    WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ?
+    RETURNING *`).bind(now, stateHash, now).first<SelfOAuthPending>();
+  if (!pending) throw authFailure(400, "invalid_oauth_state", "The Salesforce authorization state is invalid or expired.");
+
+  if (str(body.error, 128)) return { redirectUrl: selfOAuthReturn(pending, "error", "authorization_denied") };
+  if (!str(body.code, 4096)) return { redirectUrl: selfOAuthReturn(pending, "error", "authorization_incomplete") };
+  try {
+    const verifier = await decryptValue(env, pending.code_verifier_cipher, pending.code_verifier_iv);
+    const form = new URLSearchParams({
+      grant_type: "authorization_code",
+      code: body.code,
+      client_id: pending.client_id,
+      redirect_uri: pending.redirect_uri,
+      code_verifier: verifier,
+    });
+    let response: Response;
+    try {
+      response = await fetch(pending.instance_url + "/services/oauth2/token", {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form,
+      });
+    } catch {
+      return { redirectUrl: selfOAuthReturn(pending, "error", "salesforce_unavailable") };
+    }
+    let data: unknown;
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok || !object(data) || !str(data.access_token, 4096) || !str(data.refresh_token, 4096)) {
+      return { redirectUrl: selfOAuthReturn(pending, "error", "token_exchange_failed") };
+    }
+    const identityInstance = typeof data.instance_url === "string" && validInstanceUrl(data.instance_url)
+      ? new URL(data.instance_url).origin : pending.instance_url;
+    const instanceUrl = await verifySelfSalesforceIdentity(data.access_token, identityInstance, pending);
+    const refreshToken = await encrypt(env, data.refresh_token);
+    const timestamp = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`INSERT INTO salesforce_self_oauth_credential
+      (team_id, org_id, instance_url, client_id, salesforce_user_id, refresh_token_cipher,
+       refresh_token_iv, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(team_id, org_id) DO UPDATE SET instance_url=excluded.instance_url,
+        client_id=excluded.client_id, salesforce_user_id=excluded.salesforce_user_id,
+        refresh_token_cipher=excluded.refresh_token_cipher, refresh_token_iv=excluded.refresh_token_iv,
+        updated_at=excluded.updated_at`)
+      .bind(pending.team_id, pending.org_id, instanceUrl, pending.client_id, pending.salesforce_user_id,
+        refreshToken.cipher, refreshToken.iv, timestamp, timestamp).run();
+    return { redirectUrl: selfOAuthReturn(pending, "connected") };
+  } catch (err) {
+    const code = err instanceof AuthFailure ? err.failure.code : "authorization_failed";
+    console.error(JSON.stringify({ error: "self_salesforce_oauth_completion_failed", code }));
+    return { redirectUrl: selfOAuthReturn(pending, "error", code) };
+  }
+}
+
+async function selfOAuthStatus(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<{ connected: boolean }> {
+  const row = await env.DB.prepare(`SELECT team_id FROM salesforce_self_oauth_credential
+    WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
+    .first<{ team_id: string }>();
+  return { connected: !!row };
+}
+
+async function selfOAuthToken(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<{ accessToken: string; instanceUrl: string; expiresIn: number }> {
+  const row = await env.DB.prepare(`SELECT * FROM salesforce_self_oauth_credential
+    WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
+    .first<SelfOAuthCredential>();
+  if (!row) throw authFailure(404, "self_oauth_not_connected", "Connect this Salesforce org before running Salesforce API actions.");
+  const cacheKey = selfOAuthCacheKey(row);
+  const cached = selfTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 30_000) {
+    return { accessToken: cached.accessToken, instanceUrl: row.instance_url, expiresIn: Math.floor((cached.expiresAt - Date.now()) / 1000) };
+  }
+  const refreshToken = await decryptValue(env, row.refresh_token_cipher, row.refresh_token_iv);
+  const form = new URLSearchParams({ grant_type: "refresh_token", client_id: row.client_id, refresh_token: refreshToken });
+  let response: Response;
+  try {
+    response = await fetch(row.instance_url + "/services/oauth2/token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form,
+    });
+  } catch {
+    throw authFailure(503, "salesforce_oauth_unavailable", "Salesforce OAuth is temporarily unavailable. Retry the API request.", true);
+  }
+  let data: unknown;
+  try { data = await response.json(); } catch { data = null; }
+  if (!response.ok || !object(data) || !str(data.access_token, 4096)) {
+    throw authFailure(response.status === 429 || response.status >= 500 ? 503 : 422,
+      "salesforce_refresh_failed", "The Salesforce API connection needs to be reauthorized.", response.status === 429 || response.status >= 500);
+  }
+  const instanceUrl = typeof data.instance_url === "string" && validInstanceUrl(data.instance_url)
+    ? new URL(data.instance_url).origin : row.instance_url;
+  if (str(data.refresh_token, 4096) && data.refresh_token !== refreshToken) {
+    const encryptedRefresh = await encrypt(env, data.refresh_token);
+    await env.DB.prepare(`UPDATE salesforce_self_oauth_credential SET refresh_token_cipher = ?,
+      refresh_token_iv = ?, updated_at = ? WHERE team_id = ? AND org_id = ?`)
+      .bind(encryptedRefresh.cipher, encryptedRefresh.iv, Math.floor(Date.now() / 1000), grant.teamId, grant.orgId).run();
+    selfTokenCache.delete(cacheKey);
+    row.refresh_token_cipher = encryptedRefresh.cipher;
+    row.refresh_token_iv = encryptedRefresh.iv;
+  }
+  if (instanceUrl !== row.instance_url) {
+    await env.DB.prepare(`UPDATE salesforce_self_oauth_credential SET instance_url = ?, updated_at = ?
+      WHERE team_id = ? AND org_id = ?`).bind(instanceUrl, Math.floor(Date.now() / 1000), grant.teamId, grant.orgId).run();
+    row.instance_url = instanceUrl;
+  }
+  const seconds = typeof data.expires_in === "number" && data.expires_in > 0 ? Math.min(data.expires_in, 300) : 120;
+  const token = { accessToken: data.access_token, expiresAt: Date.now() + seconds * 1000 };
+  selfTokenCache.set(selfOAuthCacheKey(row), token);
+  return { accessToken: token.accessToken, instanceUrl, expiresIn: seconds };
+}
+
+function validSelfOAuthApiPath(value: unknown): value is string {
+  if (!str(value, 8192) || !value.startsWith("/services/") || value.startsWith("//") || value.includes("\\")) return false;
+  try {
+    const url = new URL(value, "https://salesforce.invalid");
+    return url.origin === "https://salesforce.invalid" && !url.username && !url.password && !url.hash &&
+      (url.pathname.startsWith("/services/data/") || /^\/services\/Soap\/(?:m|u)\/\d+\.\d+$/.test(url.pathname));
+  } catch { return false; }
+}
+
+async function selfOAuthApiRequest(
+  env: AuthEnv,
+  grant: { teamId: string; orgId: string },
+  body: Record<string, unknown>,
+  requestId: string,
+): Promise<Response> {
+  const method = typeof body.method === "string" ? body.method.toUpperCase() : "";
+  const requestBody = body.requestBody;
+  const requestedHeaders = object(body.headers) ? body.headers : {};
+  if (!validSelfOAuthApiPath(body.path) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) ||
+      (requestBody !== null && requestBody !== undefined && typeof requestBody !== "string") ||
+      (typeof requestBody === "string" && requestBody.length > 5_500_000)) {
+    throw authFailure(400, "invalid_salesforce_request", "The Salesforce API request is invalid or exceeds the supported size.");
+  }
+  const headers = new Headers({ Accept: "application/json" });
+  const contentType = requestedHeaders.contentType;
+  if (typeof contentType === "string" && /^(?:application\/json|application\/xml|text\/xml)(?:\s*;\s*charset=[A-Za-z0-9._-]+)?$/i.test(contentType)) {
+    headers.set("Content-Type", contentType);
+  }
+  const accept = requestedHeaders.accept;
+  if (typeof accept === "string" && /^(?:application\/json|application\/xml|text\/xml)(?:\s*;\s*charset=[A-Za-z0-9._-]+)?$/i.test(accept)) {
+    headers.set("Accept", accept);
+  }
+  const soapAction = requestedHeaders.soapAction;
+  if (typeof soapAction === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(soapAction)) headers.set("SOAPAction", soapAction);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const auth = await selfOAuthToken(env, grant);
+    let response: Response;
+    try {
+      const outgoingHeaders = new Headers(headers);
+      outgoingHeaders.set("Authorization", `Bearer ${auth.accessToken}`);
+      response = await fetch(auth.instanceUrl + body.path, {
+        method,
+        headers: outgoingHeaders,
+        ...(typeof requestBody === "string" ? { body: requestBody } : {}),
+      });
+    } catch {
+      throw authFailure(503, "salesforce_request_unavailable", "Salesforce could not complete the API request. Retry it shortly.", true);
+    }
+    if (response.status === 401 && attempt === 0) {
+      const current = await env.DB.prepare(`SELECT * FROM salesforce_self_oauth_credential
+        WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
+        .first<SelfOAuthCredential>();
+      if (current) selfTokenCache.delete(selfOAuthCacheKey(current));
+      continue;
+    }
+    const responseHeaders = new Headers({
+      "Content-Type": response.headers.get("Content-Type") || "application/json",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Request-Id": requestId,
+      "X-Self-OAuth-Upstream": "salesforce",
+    });
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
+  }
+  throw authFailure(503, "salesforce_request_unavailable", "Salesforce could not complete the API request. Retry it shortly.", true);
+}
+
+async function selfOAuthDisconnect(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<void> {
+  const row = await env.DB.prepare(`SELECT * FROM salesforce_self_oauth_credential
+    WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
+    .first<SelfOAuthCredential>();
+  if (!row) return;
+  const refreshToken = await decryptValue(env, row.refresh_token_cipher, row.refresh_token_iv);
+  try {
+    await fetch(row.instance_url + "/services/oauth2/revoke", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: refreshToken }),
+    });
+  } catch { /* Local revocation still clears access from the broker. */ }
+  selfTokenCache.delete(selfOAuthCacheKey(row));
+  await env.DB.prepare(`DELETE FROM salesforce_self_oauth_credential WHERE team_id = ? AND org_id = ?`)
+    .bind(grant.teamId, grant.orgId).run();
+}
+
+async function selfOAuthGrantOrNull(env: AuthEnv, body: Record<string, unknown>) {
+  return activePanelGrant(env, body);
+}
+
+async function verifySignedSelfOAuthRequest(request: Request, env: AuthEnv, path: string): Promise<boolean> {
+  const secret = env.SELF_OAUTH_INTERNAL_HMAC_KEY;
+  if (!secret || secret.length < 32) {
+    throw authFailure(503, "self_oauth_signing_not_configured", "Internal Salesforce authorization is not configured.");
+  }
+  const timestampHeader = request.headers.get("x-tubot-sf-auth-timestamp") || "";
+  const nonce = request.headers.get("x-tubot-sf-auth-nonce") || "";
+  const suppliedSignature = request.headers.get("x-tubot-sf-auth-signature") || "";
+  const timestamp = Number(timestampHeader);
+  if (!/^\d{10}$/.test(timestampHeader) || !Number.isSafeInteger(timestamp) ||
+      Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 60 ||
+      !/^[A-Za-z0-9_-]{24}$/.test(nonce) || !/^[A-Za-z0-9_-]{43}$/.test(suppliedSignature)) return false;
+  const maxBytes = path === "/internal/self-oauth/request" ? 10_000_000 : 64_000;
+  const contentLength = Number(request.headers.get("Content-Length") || "0");
+  if (contentLength > maxBytes) return false;
+  const rawBody = await readBodyBounded(request.clone(), maxBytes);
+  const bodyDigest = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)));
+  const canonical = `${timestampHeader}\n${nonce}\n${path}\n${bodyDigest}`;
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedSignature = b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(canonical))));
+  if (!equalHash(expectedSignature, suppliedSignature)) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const nonceHash = await hash(nonce);
+  await env.DB.prepare("DELETE FROM salesforce_self_oauth_internal_nonce WHERE expires_at <= ?").bind(now).run();
+  const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO salesforce_self_oauth_internal_nonce
+    (nonce_hash, expires_at) VALUES (?, ?)`)
+    .bind(nonceHash, now + 120).run();
+  return inserted.meta.changes === 1;
+}
+
+async function credential(env: AuthEnv, k: Key): Promise<Credential | null> {
+  return env.DB.prepare(
+    "SELECT * FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
+  ).bind(k.teamId, k.orgId, k.channelId).first<Credential>();
+}
+async function authorized(env: AuthEnv, body: Key & { channelSecret: string }): Promise<Credential | null> {
+  const row = await credential(env, body);
+  if (!row) {
+    // No staging enrollment for this exact triple: the new-panel bridge is the
+    // only other authority. Bridge tenants enroll no channel secret; the
+    // service binding plus strict triple routing is the trust root. This
+    // worker exposes no public routes (workers_dev is off), so callers here
+    // are bound services. Fail closed on any bridge miss or error.
+    return resolveBridgeCredential(env, body);
+  }
+  if (!equalHash(row.channel_secret_hash, await hash(body.channelSecret))) return null;
+  // The Panel grant is the authority for every read, including reads made with
+  // a previously issued channel secret. Revocation deletes the linked row.
+  const grant = await env.DB.prepare(`SELECT c.channelSecretHash AS secret_hash
+    FROM salesforce_channel_connection c
+    JOIN oauth_token t ON t.id = c.oauthTokenId
+    WHERE c.teamId = ? AND c.orgId = ? AND c.channelId = ?
+      AND t.teamId = c.teamId AND t.expiresAt > unixepoch()`)
+    .bind(body.teamId, body.orgId, body.channelId)
+    .first<{ secret_hash: string }>();
+  if (!grant || !equalHash(grant.secret_hash, row.channel_secret_hash)) return null;
+  return row;
+}
+
+/**
+ * Resolve one bridge tenant credential into an ephemeral Credential row.
+ * Staging callers use this only when no staging row exists for the exact
+ * triple. The fetched secret is encrypted immediately with the staging key
+ * so the existing ECA client-credentials flow (token()) is reused unchanged;
+ * nothing is persisted and nothing secret is logged. Returns null on any
+ * miss, transport failure, or validation failure (fail closed).
+ */
+async function resolveBridgeCredential(env: AuthEnv, scope: Key): Promise<Credential | null> {
+  let remote: Awaited<ReturnType<typeof fetchBridgeCredential>>;
+  try {
+    remote = await fetchBridgeCredential(env, scope);
+  } catch {
+    console.error(JSON.stringify({ error: "bridge_credential_failed" }));
+    return null;
+  }
+  if (!remote) return null;
+  try {
+    const encrypted = await encrypt(env, remote.clientSecret);
+    return {
+      team_id: remote.teamId,
+      org_id: remote.orgId,
+      channel_id: remote.channelId,
+      instance_url: remote.instanceUrl,
+      client_id: remote.clientId,
+      client_secret_cipher: encrypted.cipher,
+      client_secret_iv: encrypted.iv,
+      integration_user_id: remote.integrationUserId,
+      channel_secret_hash: await hash(
+        ["bridge-ephemeral", remote.teamId, remote.orgId, remote.channelId].join("\u0000")),
+    };
+  } catch {
+    console.error(JSON.stringify({ error: "bridge_credential_failed" }));
+    return null;
+  }
+}
+
+/**
+ * Staging credential plus active-grant check, with new-panel bridge fallback.
+ * Staging enrollments keep their exact legacy behavior (same grant SQL, same
+ * 403/404 codes and messages). Triples with no staging enrollment resolve via
+ * the bridge with no staging grant check: bridge tenants carry no channel
+ * secret by design, and the service binding plus strict triple routing is the
+ * trust root (this worker exposes no public routes).
+ */
+export async function credentialForEntrypoint(env: AuthEnv, ref: Key): Promise<Credential> {
+  const row = await credential(env, ref);
+  if (row) {
+    const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
+      JOIN oauth_token t ON t.id = c.oauthTokenId AND t.teamId = c.teamId
+      WHERE c.teamId = ? AND c.orgId = ? AND c.channelId = ?
+        AND c.channelSecretHash = ? AND t.expiresAt > unixepoch()`)
+      .bind(ref.teamId, ref.orgId, ref.channelId, row.channel_secret_hash)
+      .first<{ valid: number }>();
+    if (!grant) throw authFailure(403, "channel_not_authorized", "The Salesforce channel grant is unavailable.");
+    return row;
+  }
+  const bridgeRow = await resolveBridgeCredential(env, ref);
+  if (!bridgeRow) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+  return bridgeRow;
+}
+
+async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Promise<ExecutionUserReference[]> {
+  if (!validSalesforceChannelId(channelId)) {
+    throw authFailure(400, "invalid_channel_id", "A valid Salesforce Messaging Channel ID is required.");
+  }
+  const prefix = channelId.slice(0, 15);
+  const rows = await env.DB.prepare(`
+    SELECT a.team_id AS teamId, a.org_id AS orgId, a.channel_id AS channelId,
+      a.integration_user_id AS integrationUserId, 1 AS isPrimary
+    FROM salesforce_auth_credential a
+    JOIN salesforce_channel_connection c ON c.teamId=a.team_id AND c.orgId=a.org_id
+      AND c.channelId=a.channel_id AND c.channelSecretHash=a.channel_secret_hash
+    JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
+    WHERE substr(a.channel_id, 1, 15)=? AND t.expiresAt>unixepoch()
+    UNION ALL
+    SELECT e.team_id AS teamId, e.org_id AS orgId, e.channel_id AS channelId,
+      e.integration_user_id AS integrationUserId, 0 AS isPrimary
+    FROM salesforce_auth_execution_user e
+    JOIN salesforce_auth_credential a ON a.team_id=e.team_id AND a.org_id=e.org_id
+      AND a.channel_id=e.channel_id
+    JOIN salesforce_channel_connection c ON c.teamId=a.team_id AND c.orgId=a.org_id
+      AND c.channelId=a.channel_id AND c.channelSecretHash=a.channel_secret_hash
+    JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
+    WHERE substr(e.channel_id, 1, 15)=? AND t.expiresAt>unixepoch()
+    ORDER BY isPrimary DESC, integrationUserId ASC
+  `).bind(prefix, prefix).all<ExecutionUserDbRow>();
+  const result: ExecutionUserReference[] = [];
+  const seenUsers = new Set<string>();
+  for (const row of rows.results ?? []) {
+    const userKey = `${row.teamId}\u0000${row.orgId}\u0000${row.channelId}\u0000${row.integrationUserId.slice(0, 15)}`;
+    if (seenUsers.has(userKey)) continue;
+    seenUsers.add(userKey);
+    result.push({ ...row, isPrimary: row.isPrimary === 1 });
+  }
+  if (result.length === 0) {
+    throw authFailure(404, "channel_not_found", "No active Salesforce credentials are configured for this channel.");
+  }
+  const scopes = new Set(result.map(row => `${row.teamId}\u0000${row.orgId}\u0000${row.channelId}`));
+  if (scopes.size !== 1) {
+    throw authFailure(409, "channel_org_ambiguous", "More than one connected Salesforce org matches this channel.");
+  }
+  return result;
+}
+
+async function activeExecutionCredential(env: AuthEnv, scope: Key, integrationUserId: string): Promise<Credential | null> {
+  const primary = await credential(env, scope);
+  if (!primary) {
+    // Bridge tenants have no staging enrollment or execution-user rows:
+    // serve the primary integration user only.
+    const bridgeRow = await resolveBridgeCredential(env, scope);
+    if (!bridgeRow || !sameSalesforceId(bridgeRow.integration_user_id, integrationUserId)) return null;
+    return bridgeRow;
+  }
+  const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
+    JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
+    WHERE c.teamId=? AND c.orgId=? AND c.channelId=? AND c.channelSecretHash=? AND t.expiresAt>unixepoch()`)
+    .bind(scope.teamId, scope.orgId, scope.channelId, primary.channel_secret_hash)
+    .first<{ valid: number }>();
+  if (!grant) return null;
+  if (sameSalesforceId(primary.integration_user_id, integrationUserId)) return primary;
+  const row = await env.DB.prepare(`SELECT e.*, a.channel_secret_hash FROM salesforce_auth_execution_user e
+    JOIN salesforce_auth_credential a ON a.team_id=e.team_id AND a.org_id=e.org_id AND a.channel_id=e.channel_id
+    WHERE e.team_id=? AND e.org_id=? AND e.channel_id=? AND substr(e.integration_user_id, 1, 15)=? LIMIT 1`)
+    .bind(scope.teamId, scope.orgId, scope.channelId, integrationUserId.slice(0, 15))
+    .first<ExecutionUserCredential>();
+  if (!row || !sameSalesforceId(row.integration_user_id, integrationUserId)) return null;
+  return row;
+}
+
+function validSalesforceChannelId(value: string): boolean {
+  return /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(value);
+}
+
+export async function token(env: AuthEnv, row: Credential): Promise<Token> {
+  // TEMP-LOCAL-DEV — NEVER COMMIT OR DEPLOY (revert after the local sweep):
+  // CLI-minted session token replaces the ECA client-credentials grant.
+  if (env.LOCAL_STATIC_SF_TOKEN) return { accessToken: env.LOCAL_STATIC_SF_TOKEN,
+    instanceUrl: row.instance_url, expiresAt: Date.now() + 3_600_000 };
+  const id = cacheKey(row);
+  const cached = tokenCache.get(id);
+  if (cached && cached.expiresAt > Date.now() + 30_000) return cached;
+  const form = new URLSearchParams({
+    grant_type: "client_credentials", client_id: row.client_id,
+    client_secret: await decrypt(env, row),
+  });
+  let response: Response;
+  try {
+    response = await fetch(row.instance_url + "/services/oauth2/token", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form,
+    });
+  } catch {
+    throw authFailure(503, "salesforce_oauth_unavailable", "Salesforce OAuth is temporarily unavailable. Retry the connection.", true);
+  }
+  if (!response.ok) {
+    // Read only Salesforce's stable OAuth error identifier. Never forward or
+    // log error_description because it may contain sensitive configuration.
+    let oauthCode = "";
+    try {
+      const details: unknown = await response.clone().json();
+      if (object(details) && typeof details.error === "string") oauthCode = details.error;
+    } catch { /* use the status-based safe fallback */ }
+    if (response.status === 429 || response.status >= 500) {
+      throw authFailure(503, "salesforce_oauth_unavailable", "Salesforce OAuth is temporarily unavailable. Retry the connection.", true);
+    }
+    if (oauthCode === "invalid_client") {
+      throw authFailure(422, "salesforce_invalid_client_credentials", "Salesforce rejected the ECA consumer key or secret. Check both values and retry.");
+    }
+    if (["invalid_grant", "unauthorized_client", "unsupported_grant_type"].includes(oauthCode)) {
+      throw authFailure(422, "salesforce_oauth_not_configured", "Salesforce rejected the client credentials setup. Check that the ECA is active, client credentials flow is enabled, and the Run As user is configured.");
+    }
+    throw authFailure(422, "salesforce_oauth_rejected", "Salesforce rejected the ECA credentials or OAuth configuration. Check the ECA setup and retry.");
+  }
+  let data: unknown;
+  try { data = await response.json(); }
+  catch {
+    throw authFailure(502, "salesforce_oauth_invalid_response", "Salesforce returned an invalid OAuth response. Retry, and contact support if it continues.", true);
+  }
+  if (!object(data) || !str(data.access_token, 4096)) {
+    throw authFailure(502, "salesforce_oauth_invalid_response", "Salesforce returned an invalid OAuth response. Retry, and contact support if it continues.", true);
+  }
+  const instanceUrl = typeof data.instance_url === "string" && validInstanceUrl(data.instance_url)
+    ? new URL(data.instance_url).origin : row.instance_url;
+  let identityResponse: Response;
+  try {
+    identityResponse = await fetch(instanceUrl + "/services/oauth2/userinfo", {
+      headers: { Authorization: "Bearer " + data.access_token, Accept: "application/json" },
+    });
+  } catch {
+    throw authFailure(503, "salesforce_identity_unavailable", "Salesforce could not verify the integration user right now. Retry the connection.", true);
+  }
+  if (!identityResponse.ok) {
+    const details = upstreamFailure(identityResponse.status, "salesforce_identity_failed", "Salesforce could not verify the integration user. Check the ECA scopes and retry.");
+    throw new AuthFailure(details);
+  }
+  let identity: unknown;
+  try { identity = await identityResponse.json(); }
+  catch {
+    throw authFailure(502, "salesforce_identity_invalid_response", "Salesforce returned an invalid identity response. Retry, and contact support if it continues.", true);
+  }
+  if (!object(identity) || !sameSalesforceId(identity.organization_id, row.org_id) ||
+      !sameSalesforceId(identity.user_id, row.integration_user_id)) {
+    throw authFailure(422, "salesforce_identity_mismatch", "The ECA credentials belong to a different Salesforce org or Run As user. Check the selected org and integration user.");
+  }
+  const seconds = typeof data.expires_in === "number" && data.expires_in > 0
+    ? Math.min(data.expires_in, 300) : 120;
+  const result = { accessToken: data.access_token, instanceUrl, expiresAt: Date.now() + seconds * 1000 };
+  tokenCache.set(id, result);
+  return result;
+}
+async function sfGet(env: AuthEnv, row: Credential, path: string, requestId: string): Promise<Response> {
+  return sfRequest(env, row, path, "GET", undefined, requestId);
+}
+async function sfRequest(
+  env: AuthEnv,
+  row: Credential,
+  path: string,
+  method: string,
+  body: string | undefined,
+  requestId: string,
+  preserveResponseHeaders = false,
+  signal?: AbortSignal,
+): Promise<Response> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const auth = await token(env, row);
+    let response: Response;
+    try {
+      response = await fetch(auth.instanceUrl + path, {
+        method,
+        headers: {
+          Authorization: "Bearer " + auth.accessToken,
+          Accept: "application/json",
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body }),
+        ...(signal ? { signal } : {}),
+      });
+    } catch (fetchError) {
+      if (signal?.aborted) return Response.json([{ errorCode: "SALESFORCE_TIMEOUT",
+        message: "Salesforce did not complete this action check within 60 seconds. Its execution outcome is unknown; it was not automatically replayed." }], { status: 504 });
+      console.error(JSON.stringify({ requestId, error: "salesforce_fetch_thrown", method,
+        route: path.split("?")[0].slice(0, 160),
+        cause: (fetchError instanceof Error ? fetchError.message : String(fetchError)).slice(0, 160) }));
+      throw authFailure(503, "salesforce_request_unavailable", "Salesforce could not complete the request. Retry it shortly.", true);
+    }
+    if (response.status === 401 && attempt === 0) {
+      tokenCache.delete(cacheKey(row));
+      continue;
+    }
+    if (!response.ok) {
+      console.error(JSON.stringify({ requestId, error: "salesforce_request_failed", method,
+        route: path.split("?")[0].slice(0, 160), status: response.status }));
+    }
+    if (preserveResponseHeaders) return response;
+    const headers = new Headers({
+      "Content-Type": response.headers.get("Content-Type") || "application/json",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Request-Id": requestId,
+    });
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  }
+  throw authFailure(502, "salesforce_auth_failed", "Salesforce authentication failed. Retry the request or reconnect this channel.");
+}
+
+const ACTION_ROUTES: Record<string, { scope: "custom" | "standard"; actionType?: string }> = {
+  apex: { scope: "custom", actionType: "apex" },
+  flow: { scope: "custom", actionType: "flow" },
+  prompt: { scope: "custom", actionType: "generatePromptResponse" },
+  generatePromptResponse: { scope: "custom", actionType: "generatePromptResponse" },
+  standardAction: { scope: "standard" },
+  standardInvocableAction: { scope: "standard" },
+  externalService: { scope: "custom", actionType: "externalService" },
+  predictiveModel: { scope: "custom", actionType: "cdpMlPrediction" },
+};
+const API_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
+const SALESFORCE_API_PREFIX = "/services/data/";
+
+function unavailable(code: string, message: string, retryable?: boolean): ToolResolution {
+  return { available: false, diagnostic: { code, message, ...(retryable === undefined ? {} : { retryable }) } };
+}
+function isToolTarget(v: unknown): v is ToolTarget {
+  return object(v) && str(v.type, 64) && str(v.name, 256) &&
+    (v.method === undefined || str(v.method, 16)) &&
+    (v.path === undefined || str(v.path, 4096));
+}
+function safeActionName(name: string): boolean {
+  return name.length <= 256 && !/[\\/?#\u0000-\u001f\u007f]/.test(name);
+}
+function numericVersion(version: string): number[] | null {
+  if (!/^\d+(?:\.\d+)?$/.test(version)) return null;
+  return version.split(".").map(Number);
+}
+function compareVersions(a: string, b: string): number {
+  const av = numericVersion(a) ?? [];
+  const bv = numericVersion(b) ?? [];
+  for (let i = 0; i < Math.max(av.length, bv.length); i++) {
+    const delta = (av[i] ?? 0) - (bv[i] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
+}
+async function responseJson(response: Response): Promise<unknown> {
+  try {
+    const bytes = await readBodyBounded(response, 8 * 1024 * 1024);
+    return parseSalesforceResponseJson(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes));
+  } catch {
+    return { errorCode: 'SALESFORCE_RESPONSE_UNREADABLE', message: 'The Salesforce response could not be safely read; execution success could not be verified.' };
+  }
+}
+function salesforceError(value: unknown, depth = 0): { code?: string; message?: string } {
+  if (depth > 8) return {};
+  const values = Array.isArray(value) ? value : [value];
+  const first = values.find(item => object(item) &&
+    (typeof item.errorCode === "string" || typeof item.message === "string"));
+  if (!object(first)) {
+    for (const item of values.filter(object)) {
+      for (const field of ["errors", "error", "outputValues", "body", "responseBody"]) {
+        const nested = salesforceError(item[field], depth + 1);
+        if (nested.code || nested.message) return nested;
+      }
+    }
+    return {};
+  }
+  return {
+    ...(typeof (first.errorCode ?? first.statusCode) === "string" ? { code: String(first.errorCode ?? first.statusCode).slice(0, 128) } : {}),
+    ...(typeof first.message === "string" ? { message: first.message.slice(0, 1024) } : {}),
+  };
+}
+async function synthesizeRecordValues(env: AuthEnv, row: Credential, apiRoot: string, objectName: string,
+  namePrefix: string, overrides: Record<string, unknown> = {}, referenceCache = new Map<string, string | null>(),
+  schemaOverride?: unknown):
+  Promise<{ values: Record<string, unknown> } | { failure: { status: number; body: unknown } }> {
+  // Callers holding a freshly batched describe pass it through so fixture
+  // synthesis costs zero subrequests; long lifecycles would otherwise
+  // starve their own cleanup past the invocation subrequest cap.
+  let schema: unknown = schemaOverride;
+  let schemaStatus = 502;
+  if (schema === undefined) {
+    const describe = await sfRequest(env, row, `${apiRoot}/sobjects/${objectName}/describe`,
+      "GET", undefined, crypto.randomUUID(), true);
+    schemaStatus = describe.status;
+    schema = await responseJson(describe);
+  }
+  if (!object(schema) || !Array.isArray(schema.fields)) {
+    return { failure: { status: schemaStatus, body: {
+      errorCode: "SYNTHETIC_RECORD_SCHEMA_UNAVAILABLE",
+      message: `Salesforce could not describe ${objectName} (HTTP ${schemaStatus}).`,
+    } } };
+  }
+  const values: Record<string, unknown> = {};
+  for (const field of schema.fields.filter(object)) {
+    if (typeof field.name !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(field.name)) continue;
+    if (Object.hasOwn(overrides, field.name)) {
+      values[field.name] = overrides[field.name];
+      continue;
+    }
+    if (field.nillable !== false || field.defaultedOnCreate === true || field.calculated === true ||
+        field.autoNumber === true) continue;
+    if (field.createable !== true && (field.permissionable === false || schema.fields.filter(object).some(
+      component => component.compoundFieldName === field.name))) continue;
+    // Rollup summaries and other platform-computed fields are required but
+    // settable by nobody (neither createable nor updateable); the platform
+    // fills them, so omitting is the only consistent choice. A field that is
+    // updateable but not createable stays a failure: someone else could set it.
+    if (field.createable !== true && field.updateable !== true) continue;
+    if (field.createable !== true) return { failure: { status: 422, body: {
+      errorCode: "SYNTHETIC_RECORD_REQUIRED_FIELD_UNAVAILABLE",
+      message: `The temporary ${objectName} has a required field the integration user cannot set.`,
+    } } };
+    const type = typeof field.type === "string" ? field.type.toLowerCase() : "";
+    // Live length caps bind every synthesized free-text value: an over-long
+    // probe 400s STRING_TOO_LONG (live evidence: AccountNumber caps at 40).
+    const liveLength = typeof field.length === "number" && Number.isFinite(field.length) && field.length > 0
+      ? Math.floor(field.length) : null;
+    const fit = (value: string): string => liveLength === null ? value : value.slice(0, liveLength);
+    if (field.name === "Name" && type === "string") {
+      values[field.name] = fit(`${namePrefix} ${crypto.randomUUID()}`);
+    } else if (type === "boolean") {
+      values[field.name] = false;
+    } else if (type === "combobox") {
+      // Combobox accepts free text with picklist suggestions: prefer a live
+      // active choice, otherwise synthesize like a string. The real create
+      // API validates either shape.
+      const choices = Array.isArray(field.picklistValues) ? field.picklistValues.filter(object) : [];
+      const choice = choices.find(value => value.active === true && typeof value.value === "string");
+      values[field.name] = choice ? choice.value : fit("Action Searcher temporary validation");
+    } else if (type === "picklist" || type === "multipicklist") {
+      const choices = Array.isArray(field.picklistValues) ? field.picklistValues.filter(object) : [];
+      const choice = choices.find(value => value.active === true && typeof value.value === "string");
+      if (!choice) return { failure: { status: 422, body: {
+        errorCode: "SYNTHETIC_RECORD_REQUIRED_VALUE_UNAVAILABLE",
+        message: `Salesforce has no active value for a required temporary ${objectName} field.`,
+      } } };
+      values[field.name] = choice.value;
+    } else if (type === "reference") {
+      const references = Array.isArray(field.referenceTo) ? field.referenceTo : [];
+      const scoped = references.filter((name): name is string => typeof name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name))
+        .map(name => referenceCache.get(name)).filter((id): id is string => typeof id === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(id));
+      // Every cached id was deliberately seeded by the calling lifecycle
+      // (live lookup or planned owned dependency), never guessed, so the
+      // first hit in describe order wins deterministically per org. This
+      // admits polymorphic required references (Swarm.RelatedRecordId names
+      // 8 live objects); an empty cache still refuses, and synthesis itself
+      // performs no lookups, so the record-action no-borrow posture holds.
+      if (scoped.length === 0) return { failure: { status: 422, body: {
+        errorCode: "OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED",
+        message: `The temporary ${objectName}.${field.name} needs one explicit scoped reference or a planned owned dependency; an arbitrary existing record cannot supply fixture context.`,
+      } } };
+      values[field.name] = scoped[0];
+    } else if (type === "email") {
+      values[field.name] = "action-searcher@example.invalid";
+    } else if (type === "phone") {
+      values[field.name] = "+15550100123";
+    } else if (type === "url") {
+      values[field.name] = "https://example.invalid/action-searcher";
+    } else if (["int", "integer", "double", "currency", "percent"].includes(type)) {
+      values[field.name] = 1;
+    } else if (type === "date") {
+      values[field.name] = new Date().toISOString().slice(0, 10);
+    } else if (type === "datetime") {
+      values[field.name] = new Date().toISOString();
+    } else if (type === "time") {
+      values[field.name] = `${new Date().toISOString().slice(11, 23)}Z`;
+    } else if (type === "base64") {
+      values[field.name] = "QWN0aW9uUHJvYmU=";
+    } else if (["string", "textarea", "encryptedstring"].includes(type)) {
+      // Encrypted-string wire format is plain text; the platform encrypts
+      // server-side. The real create API validates the value.
+      values[field.name] = fit("Action Searcher temporary validation");
+    } else {
+      return { failure: { status: 422, body: {
+        errorCode: "SYNTHETIC_RECORD_REQUIRED_FIELD_UNSUPPORTED",
+        message: `Salesforce exposes a required ${objectName} field type the worker cannot synthesize.`,
+      } } };
+    }
+  }
+  // Caller-planned overrides are authoritative even when the live describe omits
+  // the field (describe visibility quirks); the real create API validates them.
+  for (const [name, value] of Object.entries(overrides)) {
+    if (/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name)) values[name] = value;
+  }
+  return { values };
+}
+async function existingOrSyntheticAccount(env: AuthEnv, row: Credential, apiRoot: string,
+  referenceCache = new Map<string, string | null>()):
+  Promise<{ id: string; temporaryId?: string } | { failure: { status: number; body: unknown } }> {
+  const query = "SELECT Id FROM Account LIMIT 1";
+  const response = await sfRequest(env, row, `${apiRoot}/query?q=${encodeURIComponent(query)}`,
+    "GET", undefined, crypto.randomUUID(), true);
+  const body = await responseJson(response);
+  const records = object(body) && Array.isArray(body.records) ? body.records : [];
+  const first = records.find(object);
+  if (typeof first?.Id === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(first.Id)) {
+    referenceCache.set("Account", first.Id);
+    return { id: first.Id };
+  }
+
+  const built = await synthesizeRecordValues(env, row, apiRoot, "Account",
+    "Action Searcher temporary account probe", {}, referenceCache);
+  if ("failure" in built) return built;
+  const create = await sfRequest(env, row, `${apiRoot}/sobjects/Account`, "POST", JSON.stringify(built.values),
+    crypto.randomUUID(), true);
+  const createBody = await responseJson(create);
+  if (!create.ok || !object(createBody) || typeof createBody.id !== "string" ||
+      !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(createBody.id)) {
+    const errorDetails = salesforceError(createBody);
+    return { failure: { status: create.status, body: {
+      errorCode: errorDetails.code ?? "SYNTHETIC_ACCOUNT_CREATE_FAILED",
+      message: `Temporary Account creation failed (HTTP ${create.status}): ${errorDetails.message ?? "Salesforce returned no error details."}`,
+    } } };
+  }
+  referenceCache.set("Account", createBody.id);
+  return { id: createBody.id, temporaryId: createBody.id };
+}
+async function liveApiVersions(env: AuthEnv, row: Credential, requestId: string): Promise<ApiVersion[] | null> {
+  const response = await sfGet(env, row, "/services/data/", requestId);
+  if (!response.ok) return null;
+  const body = await responseJson(response);
+  if (!Array.isArray(body)) return null;
+  const versions = body.flatMap((item): ApiVersion[] => {
+    if (!object(item) || typeof item.version !== "string" || !numericVersion(item.version) ||
+        typeof item.url !== "string" || item.url !== `/services/data/v${item.version}`) return [];
+    return [{ version: item.version, url: item.url }];
+  });
+  return versions.length ? versions : null;
+}
+function latestVersion(versions: ApiVersion[]): ApiVersion {
+  return [...versions].sort((a, b) => compareVersions(b.version, a.version))[0];
+}
+function schemaFields(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  const allowed = ["name", "label", "type", "description", "required", "maxOccurs", "sObjectType", "apexClass"] as const;
+  return value.filter(object).map(field => {
+    const projected: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (field[key] !== undefined && ["string", "number", "boolean"].includes(typeof field[key])) {
+        projected[key] = field[key];
+      }
+    }
+    return projected;
+  });
+}
+function routePathFromCatalog(value: unknown, row: Credential, version: string, expected: string): string | null {
+  if (typeof value !== "string" || !value.startsWith(SALESFORCE_API_PREFIX) ||
+      value.startsWith("//") || /[\\?#\u0000-\u001f\u007f]/.test(value)) return null;
+  const url = new URL(value, row.instance_url);
+  if (url.origin !== row.instance_url || url.pathname !== value || url.search || url.hash ||
+      !url.pathname.startsWith(`/services/data/v${version}/actions/${expected}/`)) return null;
+  return url.pathname;
+}
+function actionTypeAvailable(catalog: unknown, spec: { scope: "custom" | "standard"; actionType?: string }, version: string): boolean {
+  if (spec.scope === "standard") return object(catalog) && Array.isArray(catalog.actions);
+  if (!object(catalog) || !spec.actionType) return false;
+  const route = catalog[spec.actionType];
+  return typeof route === "string" && route === `/services/data/v${version}/actions/custom/${spec.actionType}`;
+}
+function actionEntries(catalog: unknown): Array<Record<string, unknown>> {
+  if (!object(catalog) || !Array.isArray(catalog.actions)) return [];
+  return catalog.actions.filter(object);
+}
+function actionEntryForTarget(
+  entries: Array<Record<string, unknown>>,
+  targetName: string,
+  allowNamespacedAlias: boolean,
+): Record<string, unknown> | undefined {
+  const exact = entries.find(item => item.name === targetName);
+  if (exact || !allowNamespacedAlias || targetName.includes("__")) return exact;
+  const matches = entries.filter(item => {
+    if (typeof item.name !== "string") return false;
+    const boundary = item.name.indexOf("__");
+    return boundary > 0 && boundary === item.name.lastIndexOf("__") && item.name.slice(boundary + 2) === targetName;
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+function safeApiDeclaredPath(rawPath: string, versions: ApiVersion[]): { path: string; version: string; resource: string } | null {
+  if (!rawPath.startsWith(SALESFORCE_API_PREFIX) || rawPath.startsWith("//") ||
+      /[\\#\u0000-\u001f\u007f]/.test(rawPath) || rawPath.length > 4096) return null;
+  const queryIndex = rawPath.indexOf("?");
+  const pathname = queryIndex < 0 ? rawPath : rawPath.slice(0, queryIndex);
+  const query = queryIndex < 0 ? "" : rawPath.slice(queryIndex + 1);
+  if (pathname.includes("//")) return null;
+  const segments = pathname.slice(SALESFORCE_API_PREFIX.length).split("/");
+  if (!segments.length || !segments[0]) return null;
+  let version = latestVersion(versions).version;
+  let resource = segments[0];
+  let routePath = pathname;
+  const declaredVersion = /^v(\d+(?:\.\d+)?)$/.exec(segments[0]);
+  if (declaredVersion) {
+    version = declaredVersion[1];
+    if (!versions.some(item => item.version === version)) return null;
+    resource = segments[1] ?? "";
+  } else {
+    routePath = `${SALESFORCE_API_PREFIX}v${version}/${pathname.slice(SALESFORCE_API_PREFIX.length)}`;
+  }
+  if (!resource || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(resource)) return null;
+  for (const segment of routePath.split("?")[0].split("/")) {
+    let decoded: string;
+    try { decoded = decodeURIComponent(segment); }
+    catch { return null; }
+    if (decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\")) return null;
+  }
+  const url = new URL(routePath + (query ? `?${query}` : ""), "https://salesforce.invalid");
+  if (url.origin !== "https://salesforce.invalid" || !url.pathname.startsWith(SALESFORCE_API_PREFIX)) return null;
+  return { path: routePath + (query ? `?${query}` : ""), version, resource };
+}
+function interpolationValue(value: unknown): string | null {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+function interpolateTemplate(value: string, args: Record<string, unknown>): string | null {
+  const fullReference = /^\$input\.([A-Za-z][A-Za-z0-9_]*)$/.exec(value);
+  if (fullReference) return interpolationValue(args[fullReference[1]]);
+  if (Object.hasOwn(args, value)) return interpolationValue(args[value]);
+  let missing = false;
+  const result = value.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+    const input = interpolationValue(args[name]);
+    if (input === null) { missing = true; return ""; }
+    return input;
+  });
+  return missing ? null : result;
+}
+function appendQueryValue(params: URLSearchParams, name: string, value: unknown): boolean {
+  if (!/^[A-Za-z0-9_.~-]{1,128}$/.test(name)) return false;
+  const values = Array.isArray(value) ? value : [value];
+  for (const item of values) {
+    if (item === null || item === undefined) continue;
+    const rendered = interpolationValue(item);
+    if (rendered === null) return false;
+    params.append(name, rendered);
+  }
+  return true;
+}
+function validQueryParamsSpec(spec: unknown): boolean {
+  if (spec === undefined) return true;
+  if (Array.isArray(spec)) {
+    return spec.every(entry => typeof entry === "string"
+      ? /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(entry)
+      : object(entry) && typeof entry.name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(entry.name) &&
+        (entry.input === undefined || typeof entry.input === "string") &&
+        (entry.value === undefined || typeof entry.value === "string" || typeof entry.value === "number" || typeof entry.value === "boolean"));
+  }
+  if (!object(spec)) return false;
+  return Object.entries(spec).every(([name, value]) => /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name) && (
+    typeof value === "string" || typeof value === "number" || typeof value === "boolean" ||
+    (Array.isArray(value) && value.every(item => typeof item === "string" || typeof item === "number" || typeof item === "boolean")) ||
+    (object(value) && ((typeof value.input === "string" && value.value === undefined) ||
+      (value.input === undefined && (typeof value.value === "string" || typeof value.value === "number" || typeof value.value === "boolean"))))
+  ));
+}
+function applyApiArguments(route: string, target: ToolTarget, args: Record<string, unknown>): string | null {
+  const queryIndex = route.indexOf("?");
+  const rawPath = queryIndex < 0 ? route : route.slice(0, queryIndex);
+  const rawQuery = queryIndex < 0 ? "" : route.slice(queryIndex + 1);
+  let pathMissing = false;
+  const path = rawPath.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+    const value = interpolationValue(args[name]);
+    if (value === null) { pathMissing = true; return ""; }
+    return encodeURIComponent(value);
+  });
+  if (pathMissing) return null;
+  const params = new URLSearchParams(rawQuery);
+  for (const [key, value] of params.entries()) {
+    const resolved = interpolateTemplate(value, args);
+    if (resolved === null) return null;
+    params.set(key, resolved);
+  }
+  const spec = target.queryParams;
+  if (spec === undefined) {
+    if (target.method?.toUpperCase() === "GET") {
+      for (const [key, value] of Object.entries(args)) if (!appendQueryValue(params, key, value)) return null;
+    }
+  } else if (Array.isArray(spec)) {
+    for (const entry of spec) {
+      if (typeof entry === "string") {
+        if (!Object.hasOwn(args, entry) || !appendQueryValue(params, entry, args[entry])) return null;
+      } else if (object(entry) && typeof entry.name === "string") {
+        if (typeof entry.value === "string" || typeof entry.value === "number" || typeof entry.value === "boolean") {
+          const value = typeof entry.value === "string" ? interpolateTemplate(entry.value, args) : entry.value;
+          if (value === null || !appendQueryValue(params, entry.name, value)) return null;
+        } else {
+          const sourceName = typeof entry.input === "string" ? entry.input : entry.name;
+          if (!Object.hasOwn(args, sourceName) || !appendQueryValue(params, entry.name, args[sourceName])) return null;
+        }
+      } else return null;
+    }
+  } else if (object(spec)) {
+    for (const [key, value] of Object.entries(spec)) {
+      let resolved: unknown = value;
+      if (object(value) && typeof value.input === "string") {
+        if (!Object.hasOwn(args, value.input)) return null;
+        resolved = args[value.input];
+      } else if (object(value) && value.value !== undefined) {
+        resolved = typeof value.value === "string" ? interpolateTemplate(value.value, args) : value.value;
+      } else if (typeof value === "string") {
+        const templated = interpolateTemplate(value, args);
+        if (templated === null) return null;
+        resolved = templated;
+      }
+      if (!appendQueryValue(params, key, resolved)) return null;
+    }
+  } else return null;
+  const query = params.toString();
+  return path + (query ? `?${query}` : "");
+}
+function apiInputNames(target: ToolTarget, path: string): unknown[] {
+  const names = new Set<string>();
+  for (const match of path.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)) names.add(match[1]);
+  if (Array.isArray(target.queryParams)) {
+    for (const entry of target.queryParams) {
+      if (typeof entry === "string") names.add(entry);
+      else if (object(entry) && typeof entry.input === "string") names.add(entry.input);
+    }
+  } else if (object(target.queryParams)) {
+    for (const value of Object.values(target.queryParams)) {
+      if (object(value) && typeof value.input === "string") names.add(value.input);
+      else if (object(value) && typeof value.value === "string") {
+        for (const match of value.value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)) names.add(match[1]);
+        const reference = /^\$input\.([A-Za-z][A-Za-z0-9_]*)$/.exec(value.value);
+        if (reference) names.add(reference[1]);
+      } else if (typeof value === "string") {
+        const matches = value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g);
+        for (const match of matches) names.add(match[1]);
+        const reference = /^\$input\.([A-Za-z][A-Za-z0-9_]*)$/.exec(value);
+        if (reference) names.add(reference[1]);
+      }
+    }
+  }
+  return [...names].map(name => ({ name }));
+}
+async function resolveTool(env: AuthEnv, row: Credential, target: ToolTarget, requestId: string): Promise<ToolResolution> {
+  if (target.type === "api") {
+    if (!str(target.method, 16) || !str(target.path, 4096)) {
+      return unavailable("invalid_api_target", "API targets require a Salesforce method and path.");
+    }
+    const method = target.method.toUpperCase();
+    if (!API_METHODS.has(method)) return unavailable("unsupported_api_method", "The declared API method is not supported.");
+    if (!validQueryParamsSpec(target.queryParams)) return unavailable("invalid_api_query_params", "The API query parameter declaration is invalid.");
+    if (!target.path.startsWith(SALESFORCE_API_PREFIX) || target.path.startsWith("//") ||
+        target.path.split("?")[0].includes("//") ||
+        /[\\#\u0000-\u001f\u007f]/.test(target.path)) {
+      return unavailable("invalid_api_path", "The API path must name a supported Salesforce REST resource.");
+    }
+    const versions = await liveApiVersions(env, row, requestId);
+    if (!versions) return unavailable("api_version_list_unavailable", "Salesforce API versions could not be discovered.", true);
+    const normalized = safeApiDeclaredPath(target.path, versions);
+    if (!normalized) return unavailable("invalid_api_path", "The API path must name a supported Salesforce REST resource.");
+    const catalogResponse = await sfGet(env, row, `/services/data/v${normalized.version}/`, requestId);
+    const catalog = catalogResponse.ok ? await responseJson(catalogResponse) : null;
+    if (!object(catalog) || typeof catalog[normalized.resource] !== "string") {
+      return unavailable("api_resource_unavailable", "The declared Salesforce REST resource is not available.");
+    }
+    return {
+      available: true,
+      route: normalized.path,
+      inputs: apiInputNames(target, normalized.path),
+      outputs: [],
+      method,
+      api: true,
+      target,
+    };
+  }
+
+  const spec = Object.hasOwn(ACTION_ROUTES, target.type) ? ACTION_ROUTES[target.type] : undefined;
+  if (!spec) return unavailable("unsupported_target_type", "The Salesforce action target type is not supported.");
+  if (!safeActionName(target.name)) return unavailable("invalid_action_name", "The Salesforce action name is invalid.");
+  const versions = await liveApiVersions(env, row, requestId);
+  if (!versions) return unavailable("api_version_list_unavailable", "Salesforce API versions could not be discovered.", true);
+  const version = latestVersion(versions).version;
+  const catalogUrl = `/services/data/v${version}/actions/${spec.scope}`;
+  const rootResponse = await sfGet(env, row, catalogUrl, requestId);
+  const rootCatalog = rootResponse.ok ? await responseJson(rootResponse) : null;
+  if (!actionTypeAvailable(rootCatalog, spec, version)) {
+    return unavailable("action_catalog_unavailable", "The Salesforce action catalog is unavailable.", true);
+  }
+  const actionCatalogUrl = spec.scope === "standard"
+    ? catalogUrl
+    : `${catalogUrl}/${spec.actionType}`;
+  const actionCatalogResponse = spec.scope === "standard" ? rootResponse : await sfGet(env, row, actionCatalogUrl, requestId);
+  const actionCatalog = spec.scope === "standard" ? rootCatalog :
+    actionCatalogResponse.ok ? await responseJson(actionCatalogResponse) : null;
+  const entry = actionEntryForTarget(
+    actionEntries(actionCatalog),
+    target.name,
+    spec.scope === "custom",
+  );
+  if (!entry) return unavailable("action_not_found", "The Salesforce action is not available to this connection.");
+  const expected = spec.scope === "standard" ? "standard" : `custom/${spec.actionType}`;
+  const route = routePathFromCatalog(entry.url, row, version, expected);
+  if (!route) return unavailable("invalid_action_route", "Salesforce returned an invalid action route.");
+  const descriptorResponse = await sfGet(env, row, route, requestId);
+  if (!descriptorResponse.ok) {
+    return unavailable("action_describe_unavailable", "The Salesforce action descriptor could not be loaded.", descriptorResponse.status >= 500);
+  }
+  const descriptor = await responseJson(descriptorResponse);
+  if (!object(descriptor) || descriptor.name !== entry.name) {
+    return unavailable("action_describe_invalid", "Salesforce returned an invalid action descriptor.");
+  }
+  return {
+    available: true,
+    route,
+    inputs: schemaFields(descriptor.inputs),
+    outputs: schemaFields(descriptor.outputs),
+    method: "POST",
+    api: false,
+    target,
+  };
+}
+function safeDiagnosticFromFailure(cause: unknown): ToolResolution {
+  if (cause instanceof AuthFailure) {
+    return unavailable(cause.failure.code, cause.failure.message, cause.failure.retryable);
+  }
+  return unavailable("salesforce_describe_failed", "Salesforce action discovery failed.", true);
+}
+function apiRequestTarget(path: string, instanceUrl: string): boolean {
+  if (!path.startsWith(SALESFORCE_API_PREFIX) || path.startsWith("//") ||
+      /[\\#\u0000-\u001f\u007f]/.test(path)) return false;
+  try {
+    const url = new URL(path, instanceUrl);
+    return url.origin === instanceUrl && url.pathname.startsWith(SALESFORCE_API_PREFIX) && !url.username && !url.password;
+  } catch { return false; }
+}
+async function parse(request: Request, maxBytes = 64_000): Promise<Record<string, unknown> | null> {
+  try { return await readJsonBounded(request, maxBytes); }
+  catch (e) { if (e instanceof SecurityError && e.status === 413) throw e; return null; }
+}
+
+async function resolveCredentialForChannel(
+  env: AuthEnv,
+  channelId?: string | null
+): Promise<Credential | null> {
+  if (!channelId) return null;
+  const row = await findCredentialByChannelId(env.DB, channelId);
+  if (!row) return null;
+  const grant = await env.DB.prepare(`SELECT c.channelSecretHash AS secret_hash FROM salesforce_channel_connection c
+    JOIN oauth_token t ON t.id=c.oauthTokenId WHERE c.teamId=? AND c.orgId=? AND c.channelId=?
+      AND t.teamId=c.teamId AND t.expiresAt>unixepoch()`).bind(row.team_id,row.org_id,row.channel_id).first<{secret_hash:string}>();
+  return grant && equalHash(grant.secret_hash,row.channel_secret_hash) ? row : null;
+}
+
+async function querySalesforceUserData(
+  env: AuthEnv,
+  row: Credential,
+  userId: string,
+  requestId: string
+): Promise<Record<string, unknown> | null> {
+  const esc = userId.replace(/'/g, "\\'");
+
+  // 1. Try User
+  try {
+    const userSoql = `SELECT Id, Username, Name, FirstName, LastName, Email, IsActive, UserType, Title, Department, CompanyName FROM User WHERE Id = '${esc}' OR Username = '${esc}' LIMIT 1`;
+    const res = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(userSoql)}`, requestId);
+    if (res.ok) {
+      const body = (await res.json()) as any;
+      if (body?.records && body.records.length > 0) {
+        return body.records[0];
+      }
+    }
+  } catch {}
+
+  // 2. Try Contact
+  try {
+    const contactSoql = `SELECT Id, Name, FirstName, LastName, Email, Phone, AccountId, Title, Department FROM Contact WHERE Id = '${esc}' OR Email = '${esc}' LIMIT 1`;
+    const res = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(contactSoql)}`, requestId);
+    if (res.ok) {
+      const body = (await res.json()) as any;
+      if (body?.records && body.records.length > 0) {
+        return body.records[0];
+      }
+    }
+  } catch {}
+
+  // 3. Try MessagingEndUser
+  try {
+    const endUserSoql = `SELECT Id, Name, MessagingChannelId, MessageType, ContactId, LeadId FROM MessagingEndUser WHERE Id = '${esc}' LIMIT 1`;
+    const res = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(endUserSoql)}`, requestId);
+    if (res.ok) {
+      const body = (await res.json()) as any;
+      if (body?.records && body.records.length > 0) {
+        return body.records[0];
+      }
+    }
+  } catch {}
+
+  // 4. Try REST sobject User
+  if (/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(userId)) {
+    try {
+      const res = await sfGet(env, row, `/services/data/${API_VERSION}/sobjects/User/${encodeURIComponent(userId)}`, requestId);
+      if (res.ok) {
+        const body = (await res.json()) as any;
+        if (body && typeof body === "object") return body;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+async function querySalesforceMessagingSession(
+  env: AuthEnv,
+  row: Credential,
+  sessionId: string,
+  requestId: string
+): Promise<Record<string, unknown> | null> {
+  const esc = sessionId.replace(/'/g, "\\'");
+  const soql = `SELECT Id, ChannelName, ChannelType, Status, StartTime, EndTime, MessagingEndUserId, ContactId, LeadId FROM MessagingSession WHERE Id = '${esc}' LIMIT 1`;
+  const res = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`, requestId);
+  if (!res.ok) {
+    return null;
+  }
+  const body = (await res.json()) as any;
+  if (!body?.records || body.records.length === 0) {
+    return null;
+  }
+  return body.records[0];
+}
+
+export interface ConversationMessageEntry {
+  id?: string;
+  senderType: "user" | "agent" | "bot" | "system";
+  message: string;
+  timestamp: string;
+  actorId?: string;
+  actorName?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface UserSessionConversation {
+  sessionId: string;
+  channelId?: string;
+  startTime: string;
+  endTime?: string;
+  status?: string;
+  messages: ConversationMessageEntry[];
+  metadata?: Record<string, any>;
+}
+
+export interface UserConversationHistory {
+  userId: string;
+  sessions: UserSessionConversation[];
+  totalSessions: number;
+  totalMessages: number;
+  lastActiveAt?: string;
+  extractedAt: string;
+}
+
+async function querySalesforceUserConversations(
+  env: AuthEnv,
+  row: Credential,
+  userId: string,
+  options?: { currentSessionId?: string; limit?: number },
+  requestId = crypto.randomUUID()
+): Promise<UserConversationHistory> {
+  const esc = userId.replace(/'/g, "\\'");
+  const sessionLimit = options?.limit || 50;
+
+  // 1. Query MessagingSession records for this user (or current session)
+  const sessionConditions = [
+    `MessagingEndUserId = '${esc}'`,
+    `ContactId = '${esc}'`,
+    `LeadId = '${esc}'`,
+    `Id = '${esc}'`,
+  ];
+  if (options?.currentSessionId) {
+    const escSess = options.currentSessionId.replace(/'/g, "\\'");
+    sessionConditions.push(`Id = '${escSess}'`);
+  }
+
+  const sessionSoql = `SELECT Id, ConversationId, ChannelName, ChannelType, Status, StartTime, EndTime, EndTimeReason, MessagingEndUserId, ContactId, LeadId, CreatedDate FROM MessagingSession WHERE ${sessionConditions.join(" OR ")} ORDER BY StartTime DESC LIMIT ${sessionLimit}`;
+
+  let sessionsList: any[] = [];
+  try {
+    const res = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(sessionSoql)}`, requestId);
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      sessionsList = data?.records || [];
+    }
+  } catch (err) {
+    console.warn("Error querying MessagingSessions for conversations:", err);
+  }
+
+  // If no sessions found by user ID directly, check if user is Contact/Lead linked to MessagingEndUser
+  if (sessionsList.length === 0) {
+    try {
+      const meuSoql = `SELECT Id FROM MessagingEndUser WHERE ContactId = '${esc}' OR LeadId = '${esc}' LIMIT 10`;
+      const meuRes = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(meuSoql)}`, requestId);
+      if (meuRes.ok) {
+        const meuData = (await meuRes.json()) as any;
+        const meuIds = (meuData?.records || []).map((r: any) => r.Id).filter(Boolean);
+        if (meuIds.length > 0) {
+          const meuIn = meuIds.map((id: string) => `'${id.replace(/'/g, "\\'")}'`).join(",");
+          const fallbackSoql = `SELECT Id, ConversationId, ChannelName, ChannelType, Status, StartTime, EndTime, EndTimeReason, MessagingEndUserId, ContactId, LeadId, CreatedDate FROM MessagingSession WHERE MessagingEndUserId IN (${meuIn}) ORDER BY StartTime DESC LIMIT ${sessionLimit}`;
+          const fallbackRes = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(fallbackSoql)}`, requestId);
+          if (fallbackRes.ok) {
+            const fbData = (await fallbackRes.json()) as any;
+            sessionsList = fbData?.records || [];
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (sessionsList.length === 0) {
+    return {
+      userId,
+      sessions: [],
+      totalSessions: 0,
+      totalMessages: 0,
+      extractedAt: new Date().toISOString(),
+    };
+  }
+
+  // 2. Query ConversationEntry records for all sessions
+  const sessionIds = sessionsList.map((s) => s.Id).filter(Boolean);
+  const sessionIn = sessionIds.map((id: string) => `'${id.replace(/'/g, "\\'")}'`).join(",");
+  const entrySoql = `SELECT Id, ConversationId, EntryType, MessageText, ActorType, ActorName, ClientTimestamp, CreatedDate FROM ConversationEntry WHERE ConversationId IN (${sessionIn}) ORDER BY CreatedDate ASC`;
+
+  let entriesList: any[] = [];
+  try {
+    const entryRes = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(entrySoql)}`, requestId);
+    if (entryRes.ok) {
+      const entryData = (await entryRes.json()) as any;
+      entriesList = entryData?.records || [];
+    }
+  } catch (err) {
+    console.warn("Error querying ConversationEntry records:", err);
+  }
+
+  // 3. Group entries by session
+  const entriesBySession = new Map<string, ConversationMessageEntry[]>();
+  for (const entry of entriesList) {
+    const sId = entry.ConversationId;
+    if (!entriesBySession.has(sId)) {
+      entriesBySession.set(sId, []);
+    }
+
+    let senderType: "user" | "agent" | "bot" | "system" = "user";
+    const rawActor = (entry.ActorType || "").toLowerCase();
+    if (rawActor.includes("enduser") || rawActor.includes("user") || rawActor.includes("customer")) {
+      senderType = "user";
+    } else if (rawActor.includes("agent") || rawActor.includes("rep")) {
+      senderType = "agent";
+    } else if (rawActor.includes("bot") || rawActor.includes("copilot") || rawActor.includes("ai")) {
+      senderType = "bot";
+    } else if (rawActor.includes("system") || rawActor.includes("router")) {
+      senderType = "system";
+    }
+
+    entriesBySession.get(sId)!.push({
+      id: entry.Id,
+      senderType,
+      message: entry.MessageText || "",
+      timestamp: entry.ClientTimestamp || entry.CreatedDate || new Date().toISOString(),
+      actorName: entry.ActorName,
+      metadata: {
+        entryType: entry.EntryType,
+        actorType: entry.ActorType,
+      },
+    });
+  }
+
+  let totalMessages = 0;
+  const sessions: UserSessionConversation[] = sessionsList.map((s) => {
+    const msgs = entriesBySession.get(s.Id) || [];
+    totalMessages += msgs.length;
+    return {
+      sessionId: s.Id,
+      channelId: s.ChannelName || s.ChannelType,
+      startTime: s.StartTime || s.CreatedDate || new Date().toISOString(),
+      endTime: s.EndTime,
+      status: s.Status || "Unknown",
+      messages: msgs,
+      metadata: {
+        conversationId: s.ConversationId,
+        channelType: s.ChannelType,
+        channelName: s.ChannelName,
+        endTimeReason: s.EndTimeReason,
+        contactId: s.ContactId,
+        leadId: s.LeadId,
+        messagingEndUserId: s.MessagingEndUserId,
+        isCurrentSession: options?.currentSessionId ? s.Id === options.currentSessionId : undefined,
+      },
+    };
+  });
+
+  return {
+    userId,
+    sessions,
+    totalSessions: sessions.length,
+    totalMessages,
+    lastActiveAt: sessions[0]?.startTime,
+    extractedAt: new Date().toISOString(),
+  };
+}
+
+async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: any): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  // Channel credential lifecycle (register/DELETE) requires the same HMAC
+  // service signature as the self-oauth paths: only bound services holding
+  // the internal key may create or destroy credentials. Data paths below
+  // use channel-secret auth instead.
+  const channelLifecyclePath =
+    (path === "/internal/channels/register" && request.method === "POST") ||
+    (path === "/internal/channels" && request.method === "DELETE");
+  if (path.startsWith("/internal/self-oauth/") || channelLifecyclePath) {
+    if (path.startsWith("/internal/self-oauth/") && request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal self-authorization operation.");
+    try {
+      if (!await verifySignedSelfOAuthRequest(request, env, path)) {
+        return error(requestId, 401, "invalid_internal_signature", "A valid Panel service signature is required.");
+      }
+    } catch (err: unknown) {
+      if (err instanceof AuthFailure) return failure(requestId, err.failure);
+      throw err;
+    }
+  }
+  const body = await parse(request, path === "/internal/self-oauth/request" ? 10_000_000 : 64_000);
+
+  if (path.startsWith("/internal/self-oauth/") && request.method === "POST") {
+    if (!body) return error(requestId, 400, "invalid_request", "A valid JSON request is required.");
+    try {
+      if (path === "/internal/self-oauth/complete") {
+        const result = await completeSelfOAuth(env, body);
+        return json({ ok: true, ...result }, requestId);
+      }
+      const grant = await selfOAuthGrantOrNull(env, body);
+      if (!grant) return error(requestId, 401, "unauthorized", "A valid active Panel Salesforce grant is required.");
+      if (path === "/internal/self-oauth/start") {
+        const result = await selfOAuthStart(env, body);
+        return json({ ok: true, ...result }, requestId);
+      }
+      if (path === "/internal/self-oauth/status") {
+        return json({ ok: true, ...await selfOAuthStatus(env, grant) }, requestId);
+      }
+      if (path === "/internal/self-oauth/request") {
+        return selfOAuthApiRequest(env, grant, body, requestId);
+      }
+      if (path === "/internal/self-oauth/disconnect") {
+        await selfOAuthDisconnect(env, grant);
+        return json({ ok: true, connected: false }, requestId);
+      }
+      return error(requestId, 404, "not_found", "The requested self-authorization operation was not found.");
+    } catch (err: unknown) {
+      if (err instanceof AuthFailure) return failure(requestId, err.failure);
+      console.error(JSON.stringify({ requestId, error: "self_salesforce_oauth_failed" }));
+      return error(requestId, 500, "internal_error", "The Salesforce connection service could not complete the request.");
+    }
+  }
+
+  // Authenticate tenant scope before reads, writes, ETags, or cache operations.
+  let httpCredential: Credential | null = null;
+  const dataRoute = path.startsWith("/v1/salesforce/") || path === "/internal/channels/user/data" ||
+    ["/internal/channels/token", "/internal/channels/user/conversations", "/internal/channels/callable-tools", "/internal/channels/authorize"].includes(path);
+  if (dataRoute) {
+    const scope = requestScope(request, body || {});
+    httpCredential = await authorized(env, scope);
+    if (!httpCredential) throw new SecurityError(403, "channel_not_authorized");
+    if (path === "/internal/channels/authorize" && request.method === "POST") {
+      return json({ok:true,teamId:scope.teamId,orgId:scope.orgId,channelId:scope.channelId}, requestId);
+    }
+  }
+
+  if (
+    (path === "/v1/salesforce/user/data" || path === "/internal/channels/user/data") &&
+    request.method === "POST"
+  ) {
+    if (!body) {
+      return error(requestId, 400, "invalid_request", "A valid JSON request is required.");
+    }
+    const userId = (body.userId ?? body.user_id) as string | undefined;
+    if (!userId || typeof userId !== "string" || userId.trim().length === 0) {
+      return error(requestId, 400, "invalid_request", "A valid userId is required.");
+    }
+    let userData = body.data;
+    if (userData === undefined) {
+      if (body.sessionContext !== undefined) {
+        userData = body.sessionContext;
+      } else {
+        const { userId: _u, user_id: _u2, channelId: _c, channel_id: _c2, orgId: _o, org_id: _o2, teamId: _t, team_id: _t2, ttlSeconds: _ttl, ttl: _ttl2, channelSecret: _secret, accessToken: _access, instanceUrl: _instance, ...rest } = body;
+        userData = Object.keys(rest).length > 0 ? rest : body;
+      }
+    }
+
+    const channelId = httpCredential!.channel_id;
+    const orgId = httpCredential!.org_id;
+    const teamId = httpCredential!.team_id;
+    const ttlSeconds = typeof body.ttlSeconds === "number" ? body.ttlSeconds : typeof body.ttl === "number" ? body.ttl : undefined;
+
+    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
+    await cacheStore.put({
+      userId: userId.trim(),
+      channelId,
+      orgId,
+      teamId,
+      data: userData,
+      ttlSeconds,
+    });
+
+    await purgeEdgeCache(ctx, scopedTags({teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id},[`sf-user-${userId.trim()}`]));
+
+    return json({ ok: true, userId: userId.trim(), channelId, requestId }, requestId, 201);
+  }
+
+  if (request.method === "GET" && path.startsWith("/v1/salesforce/user/data/")) {
+    const rawUserId = path.slice("/v1/salesforce/user/data/".length);
+    let userId: string;
+    try {
+      userId = decodeURIComponent(rawUserId).trim();
+    } catch {
+      userId = rawUserId.trim();
+    }
+    if (!userId) {
+      return error(requestId, 400, "invalid_request", "A valid userId is required.");
+    }
+
+    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
+    if (request.headers.get("if-none-match")) {
+      const storedEtag = await cacheStore.getUserETag(userId);
+      if (storedEtag && isNotModified(request, storedEtag)) {
+        return new Response(null, {
+          status: 304,
+          headers: getDeclarativeCacheHeaders({
+            tags: [`sf-user`, `sf-user-${userId}`],
+            etag: storedEtag,
+          }),
+        });
+      }
+    }
+
+    const cached = await cacheStore.get(userId);
+    if (!cached) {
+      return error(requestId, 404, "user_not_found", `User data for '${userId}' not found.`);
+    }
+
+    let parsedData: unknown = cached.data;
+    try {
+      parsedData = JSON.parse(cached.data);
+    } catch {}
+
+    const payload = {
+      ok: true,
+      userId: cached.user_id,
+      channelId: cached.channel_id,
+      orgId: cached.org_id,
+      teamId: cached.team_id,
+      data: parsedData,
+      updatedAt: cached.updated_at,
+    };
+
+    return createCachedResponse(payload, {
+      tags: [`sf-user`, `sf-user-${userId}`],
+      requestId,
+      request,
+      etag: cached.etag || undefined,
+    });
+  }
+
+  if (request.method === "GET" && path.startsWith("/v1/salesforce/data360/user/")) {
+    const rawUserId = path.slice("/v1/salesforce/data360/user/".length);
+    let userId: string;
+    try {
+      userId = decodeURIComponent(rawUserId).trim();
+    } catch {
+      userId = rawUserId.trim();
+    }
+    if (!userId) {
+      return error(requestId, 400, "invalid_request", "A valid userId is required.");
+    }
+
+    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
+    if (request.headers.get("if-none-match")) {
+      const storedEtag = await cacheStore.getUserETag(userId);
+      if (storedEtag && isNotModified(request, storedEtag)) {
+        return new Response(null, {
+          status: 304,
+          headers: getDeclarativeCacheHeaders({
+            tags: [`sf-user`, `sf-user-${userId}`],
+            etag: storedEtag,
+          }),
+        });
+      }
+    }
+
+    const cached = await cacheStore.get(userId);
+    if (cached) {
+      let parsedData: unknown = cached.data;
+      try {
+        parsedData = JSON.parse(cached.data);
+      } catch {}
+
+      return createCachedResponse(
+        {
+          ok: true,
+          cached: true,
+          userId: cached.user_id,
+          channelId: cached.channel_id,
+          orgId: cached.org_id,
+          teamId: cached.team_id,
+          data: parsedData,
+          updatedAt: cached.updated_at,
+        },
+        {
+          tags: [`sf-user`, `sf-user-${userId}`],
+          requestId,
+          request,
+          etag: cached.etag || undefined,
+        }
+      );
+    }
+
+    const url = new URL(request.url);
+    const channelId = url.searchParams.get("channelId") || request.headers.get("x-channel-id") || undefined;
+    const cred = httpCredential;
+    if (!cred) {
+      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
+    }
+
+    const userData = await querySalesforceUserData(env, cred, userId, requestId);
+    if (!userData) {
+      return error(requestId, 404, "user_not_found", `User '${userId}' not found in Salesforce.`);
+    }
+
+    const rawData = JSON.stringify(userData);
+    const etag = await computeETag(rawData);
+
+    await cacheStore.put({
+      userId,
+      channelId: cred.channel_id,
+      orgId: cred.org_id,
+      teamId: cred.team_id,
+      data: userData,
+      etag,
+      ttlSeconds: 300,
+    });
+
+    return createCachedResponse(
+      {
+        ok: true,
+        cached: false,
+        userId,
+        channelId: cred.channel_id,
+        orgId: cred.org_id,
+        teamId: cred.team_id,
+        data: userData,
+        updatedAt: Math.floor(Date.now() / 1000),
+      },
+      {
+        tags: [`sf-user`, `sf-user-${userId}`],
+        requestId,
+        request,
+        etag,
+      }
+    );
+  }
+
+  if (request.method === "GET" && path.startsWith("/v1/salesforce/data360/messagingsession/")) {
+    const rawSessionId = path.slice("/v1/salesforce/data360/messagingsession/".length);
+    let sessionId: string;
+    try {
+      sessionId = decodeURIComponent(rawSessionId).trim();
+    } catch {
+      sessionId = rawSessionId.trim();
+    }
+    if (!sessionId) {
+      return error(requestId, 400, "invalid_request", "A valid sessionId is required.");
+    }
+
+    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
+    if (request.headers.get("if-none-match")) {
+      const storedEtag = await cacheStore.getUserETag(sessionId);
+      if (storedEtag && isNotModified(request, storedEtag)) {
+        return new Response(null, {
+          status: 304,
+          headers: getDeclarativeCacheHeaders({
+            tags: [`sf-session`, `sf-session-${sessionId}`],
+            etag: storedEtag,
+          }),
+        });
+      }
+    }
+
+    const cached = await cacheStore.get(sessionId);
+    if (cached) {
+      let parsedData: unknown = cached.data;
+      try {
+        parsedData = JSON.parse(cached.data);
+      } catch {}
+
+      return createCachedResponse(
+        {
+          ok: true,
+          cached: true,
+          sessionId: cached.user_id,
+          channelId: cached.channel_id,
+          orgId: cached.org_id,
+          teamId: cached.team_id,
+          data: parsedData,
+          updatedAt: cached.updated_at,
+        },
+        {
+          tags: [`sf-session`, `sf-session-${sessionId}`],
+          requestId,
+          request,
+          etag: cached.etag || undefined,
+        }
+      );
+    }
+
+    const url = new URL(request.url);
+    const channelId = url.searchParams.get("channelId") || request.headers.get("x-channel-id") || undefined;
+    const cred = httpCredential;
+    if (!cred) {
+      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
+    }
+
+    const sessionData = await querySalesforceMessagingSession(env, cred, sessionId, requestId);
+    if (!sessionData) {
+      return error(requestId, 404, "session_not_found", `MessagingSession '${sessionId}' not found.`);
+    }
+
+    const rawData = JSON.stringify(sessionData);
+    const etag = await computeETag(rawData);
+
+    await cacheStore.put({
+      userId: sessionId,
+      channelId: cred.channel_id,
+      orgId: cred.org_id,
+      teamId: cred.team_id,
+      data: sessionData,
+      etag,
+      ttlSeconds: 300,
+    });
+
+    return createCachedResponse(
+      {
+        ok: true,
+        cached: false,
+        sessionId,
+        channelId: cred.channel_id,
+        orgId: cred.org_id,
+        teamId: cred.team_id,
+        data: sessionData,
+        updatedAt: Math.floor(Date.now() / 1000),
+      },
+      {
+        tags: [`sf-session`, `sf-session-${sessionId}`],
+        requestId,
+        request,
+        etag,
+      }
+    );
+  }
+
+  const convMatch = path.match(/^\/v1\/salesforce\/user\/conversations(?:\/([^/]+))?$/);
+  if (convMatch && request.method === "GET") {
+    const url = new URL(request.url);
+    const userId = convMatch[1] || url.searchParams.get("userId") || url.searchParams.get("id");
+    if (!userId) {
+      return error(requestId, 400, "invalid_request", "userId parameter is required.");
+    }
+    const channelId = url.searchParams.get("channelId") || request.headers.get("x-channel-id") || undefined;
+    const cred = httpCredential;
+    if (!cred) {
+      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
+    }
+    const currentSessionId = url.searchParams.get("sessionId") || url.searchParams.get("currentSessionId") || undefined;
+    const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : undefined;
+    try {
+      const history = await querySalesforceUserConversations(env, cred, userId, { currentSessionId, limit }, requestId);
+      return json(history, requestId);
+    } catch (err: unknown) {
+      return error(requestId, 502, "conversation_query_failed", err instanceof Error ? err.message : String(err), true);
+    }
+  }
+
+  if (path === "/v1/salesforce/cache/purge" && request.method === "POST") {
+    let tags: string[] = [];
+    if (body) {
+      if (Array.isArray(body.tags)) {
+        tags = body.tags.filter((t): t is string => typeof t === "string" && t.length > 0);
+      } else if (typeof body.tags === "string") {
+        tags = body.tags.split(",").map((s) => s.trim()).filter(Boolean);
+      } else if (typeof body.tag === "string") {
+        tags = [body.tag.trim()];
+      }
+      if (typeof body.userId === "string" && body.userId.trim()) {
+        tags.push(`sf-user-${body.userId.trim()}`);
+      }
+      if (typeof body.sessionId === "string" && body.sessionId.trim()) {
+        tags.push(`sf-session-${body.sessionId.trim()}`);
+      }
+    }
+
+    if (tags.length === 0) {
+      return error(requestId, 400, "invalid_request", "A tag or tags array is required to purge cache.");
+    }
+
+    const verifiedTags = scopedTags({teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id}, tags);
+    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
+    for (const tag of tags) {
+      if (tag.startsWith("sf-user-")) {
+        await cacheStore.delete(tag.slice("sf-user-".length));
+      } else if (tag.startsWith("sf-session-")) {
+        await cacheStore.delete(tag.slice("sf-session-".length));
+      }
+    }
+
+    const purged = await purgeEdgeCache(ctx, verifiedTags);
+    return json({ ok: true, purged, tags, requestId }, requestId);
+  }
+
+  if (path === "/internal/channels/callable-tools" && request.method === "POST") {
+    if (!body || !str(body.channelId, 128)) {
+      return error(requestId, 400, "invalid_request", "A valid JSON request with channelId is required.");
+    }
+    try {
+      const urls = await getCallableToolUrlsForChannel(body.channelId as string, {
+        env,
+        teamId: httpCredential!.team_id,
+        channelSecret: requestScope(request,body).channelSecret,
+        orgId: httpCredential!.org_id,
+        apiVersion: typeof body.apiVersion === "string" ? body.apiVersion : undefined,
+      });
+      return json({ ok: true, channelId: body.channelId, urls }, requestId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return error(requestId, 502, "callable_tools_failed", msg, true);
+    }
+  }
+
+  if (path === "/internal/channels/resolve" && request.method === "POST") {
+    if (!body || !str(body.teamId, 128) || !str(body.channelId, 128) || !str(body.channelSecret, 4096) ||
+        body.channelSecret.length < 32 || (body.orgId !== undefined &&
+          (typeof body.orgId !== "string" || !/^00D[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(body.orgId)))) {
+      return error(requestId, 400, "invalid_request", "A valid team, channel, and channel credential are required.");
+    }
+    const statement = env.DB.prepare("SELECT * FROM salesforce_auth_credential WHERE team_id=? AND channel_id=?")
+      .bind(body.teamId, body.channelId);
+    const result = await statement.all<Credential>();
+    const matches: Credential[] = [];
+    const candidates = (result.results || []).filter(candidate =>
+      typeof body.orgId !== "string" || sameSalesforceId(candidate.org_id, body.orgId));
+    for (const candidate of candidates) {
+      const row = await authorized(env, {
+        teamId: body.teamId,
+        orgId: candidate.org_id,
+        channelId: body.channelId,
+        channelSecret: body.channelSecret,
+      });
+      if (row) matches.push(row);
+    }
+    if (matches.length !== 1) {
+      if (matches.length > 1) return error(requestId, 409, "channel_org_ambiguous", "More than one connected Salesforce org matches this channel credential.");
+      return error(requestId, 403, "channel_not_authorized", "This channel is not connected or its Panel grant has expired.");
+    }
+    return json({ teamId: matches[0].team_id, orgId: matches[0].org_id, channelId: matches[0].channel_id }, requestId);
+  }
+
+  if (path === "/internal/channels/token" && request.method === "POST") {
+    if (!body || !str(body.channelId, 128)) {
+      return error(requestId, 400, "invalid_request", "A valid JSON request with channelId is required.");
+    }
+    try {
+      const row = httpCredential;
+      if (!row) {
+        return error(requestId, 404, "channel_not_found", "No Salesforce credentials found for this channel.");
+      }
+      const auth = await token(env, row);
+      return json({
+        ok: true,
+        accessToken: auth.accessToken,
+        instanceUrl: auth.instanceUrl,
+        expiresAt: auth.expiresAt,
+        channelId: body.channelId,
+        orgId: row.org_id,
+        teamId: row.team_id,
+      }, requestId);
+    } catch (err: unknown) {
+      if (err instanceof AuthFailure) {
+        return failure(requestId, err.failure);
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return error(requestId, 502, "token_failed", msg, true);
+    }
+  }
+
+  if (path === "/internal/channels/user/conversations" && request.method === "POST") {
+    if (!body) {
+      return error(requestId, 400, "invalid_request", "A valid JSON request is required.");
+    }
+    const userId = (body.userId || body.user_id) as string | undefined;
+    if (!userId || typeof userId !== "string" || userId.trim().length === 0) {
+      return error(requestId, 400, "invalid_request", "A valid userId parameter is required.");
+    }
+    const channelId = (body.channelId || request.headers.get("x-channel-id")) as string | undefined;
+    let cred: Credential | null = null;
+    if (typeof body.channelSecret === "string" && key(body)) {
+      cred = await authorized(env, body as Key & { channelSecret: string });
+    } else {
+      cred = httpCredential;
+    }
+    if (!cred) {
+      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
+    }
+    const currentSessionId = (body.currentSessionId || body.sessionId) as string | undefined;
+    const limit = typeof body.limit === "number" ? body.limit : undefined;
+    try {
+      const history = await querySalesforceUserConversations(env, cred, userId, { currentSessionId, limit }, requestId);
+      return json(history, requestId);
+    } catch (err: unknown) {
+      return error(requestId, 502, "conversation_query_failed", err instanceof Error ? err.message : String(err), true);
+    }
+  }
+
+  if (!body || !key(body)) return error(requestId, 400, "invalid_request", "A valid JSON request with team, org, and channel IDs is required.");
+
+  if (path === "/internal/channels/register" && request.method === "POST") {
+    if (!str(body.instanceUrl) || !validInstanceUrl(body.instanceUrl) ||
+        !str(body.clientId) || !str(body.clientSecret, 4096) ||
+        !str(body.integrationUserId, 128) || !str(body.channelSecret) ||
+        body.channelSecret.length < 32) return error(requestId, 400, "invalid_connection", "The Salesforce connection details are incomplete or invalid.");
+    const encrypted = await encrypt(env, body.clientSecret);
+    const secretHash = await hash(body.channelSecret);
+    const now = Math.floor(Date.now() / 1000);
+    const candidate: Credential = {
+      team_id: body.teamId, org_id: body.orgId, channel_id: body.channelId,
+      instance_url: new URL(body.instanceUrl).origin, client_id: body.clientId,
+      client_secret_cipher: encrypted.cipher, client_secret_iv: encrypted.iv,
+      integration_user_id: body.integrationUserId, channel_secret_hash: secretHash,
+    };
+    clearChannelTokens(body);
+    // Prove both that the credentials work and that Salesforce issued them for
+    // this org and the configured Run As user before making the mapping durable.
+    await token(env, candidate);
+    await env.DB.prepare(`INSERT INTO salesforce_auth_credential
+      (team_id,org_id,channel_id,instance_url,client_id,client_secret_cipher,client_secret_iv,integration_user_id,channel_secret_hash,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET
+      instance_url=excluded.instance_url,client_id=excluded.client_id,
+      client_secret_cipher=excluded.client_secret_cipher,client_secret_iv=excluded.client_secret_iv,
+      integration_user_id=excluded.integration_user_id,channel_secret_hash=excluded.channel_secret_hash,
+      updated_at=excluded.updated_at`).bind(
+      body.teamId, body.orgId, body.channelId, candidate.instance_url,
+      body.clientId, encrypted.cipher, encrypted.iv, body.integrationUserId, secretHash, now, now,
+    ).run();
+    return json({ ok: true, requestId }, requestId, 201);
+  }
+  if (path === "/internal/channels" && request.method === "DELETE") {
+    await env.DB.prepare(
+      "DELETE FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
+    ).bind(body.teamId, body.orgId, body.channelId).run();
+    clearChannelTokens(body);
+    return json({ ok: true, requestId }, requestId);
+  }
+  if (!str(body.channelSecret)) return error(requestId, 400, "invalid_request", "A channel credential is required.");
+  const row = await authorized(env, body as Key & { channelSecret: string });
+  if (!row) return error(requestId, 403, "channel_not_authorized", "This channel is not connected or its Panel grant has expired.");
+
+  if (path === "/internal/channels/execution-users" && request.method === "POST") {
+    const operation = body.operation;
+    if (operation === "list") {
+      const users = await activeChannelExecutionUsers(env, row.channel_id);
+      return json({
+        ok: true,
+        executionUsers: users.map(user => ({
+          integrationUserId: user.integrationUserId,
+          isPrimary: user.isPrimary,
+        })),
+      }, requestId);
+    }
+
+    if (operation === "add") {
+      if (!str(body.clientId, 255) || !str(body.clientSecret, 4096) ||
+          !validSalesforceUserId(body.integrationUserId)) {
+        return error(requestId, 400, "invalid_connection", "A valid ECA client ID, client secret, and execution user ID are required.");
+      }
+      if (sameSalesforceId(row.integration_user_id, body.integrationUserId)) {
+        return error(requestId, 409, "primary_execution_user", "The primary execution user is managed by the main channel connection.");
+      }
+      const encrypted = await encrypt(env, body.clientSecret);
+      const candidate: Credential = {
+        ...row,
+        client_id: body.clientId,
+        client_secret_cipher: encrypted.cipher,
+        client_secret_iv: encrypted.iv,
+        integration_user_id: body.integrationUserId,
+      };
+      // Validate that this ECA is configured for the same org and the selected
+      // Run As identity before saving its encrypted secret.
+      await token(env, candidate);
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.prepare(`INSERT INTO salesforce_auth_execution_user
+        (team_id,org_id,channel_id,instance_url,client_id,client_secret_cipher,client_secret_iv,integration_user_id,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(team_id,org_id,channel_id,integration_user_id) DO UPDATE SET
+        instance_url=excluded.instance_url,client_id=excluded.client_id,
+        client_secret_cipher=excluded.client_secret_cipher,client_secret_iv=excluded.client_secret_iv,
+        updated_at=excluded.updated_at`).bind(
+        row.team_id, row.org_id, row.channel_id, row.instance_url, body.clientId,
+        encrypted.cipher, encrypted.iv, body.integrationUserId, now, now,
+      ).run();
+      clearChannelTokens(body as Key);
+      return json({ ok: true, integrationUserId: body.integrationUserId, isPrimary: false }, requestId, 201);
+    }
+
+    if (operation === "remove") {
+      if (!validSalesforceUserId(body.integrationUserId)) {
+        return error(requestId, 400, "invalid_request", "A valid execution user ID is required.");
+      }
+      if (sameSalesforceId(row.integration_user_id, body.integrationUserId)) {
+        return error(requestId, 409, "primary_execution_user", "The primary execution user is managed by the main channel connection.");
+      }
+      const removed = await env.DB.prepare(`DELETE FROM salesforce_auth_execution_user
+        WHERE team_id=? AND org_id=? AND channel_id=? AND substr(integration_user_id,1,15)=?`)
+        .bind(row.team_id, row.org_id, row.channel_id, body.integrationUserId.slice(0, 15)).run();
+      if (!removed.meta.changes) return error(requestId, 404, "execution_user_not_found", "This execution user is not connected to the channel.");
+      clearChannelTokens(body as Key);
+      return json({ ok: true, integrationUserId: body.integrationUserId, removed: true }, requestId);
+    }
+
+    return error(requestId, 400, "invalid_operation", "Use list, add, or remove for channel execution users.");
+  }
+
+  if (path === "/internal/channels/tools/describe" && request.method === "POST") {
+    if (!isToolTarget(body.target)) return error(requestId, 400, "invalid_tool_target", "A valid Salesforce tool target is required.");
+    let result: ToolResolution;
+    try { result = await resolveTool(env, row, body.target, requestId); }
+    catch (cause) { result = safeDiagnosticFromFailure(cause); }
+    if (!result.available) return json({ available: false, diagnostic: result.diagnostic }, requestId);
+    return json({ available: true, route: result.route, inputs: result.inputs, outputs: result.outputs }, requestId);
+  }
+  if (path === "/internal/channels/tools/invoke" && request.method === "POST") {
+    if (!isToolTarget(body.target) || !object(body.arguments)) {
+      return error(requestId, 400, "invalid_tool_invocation", "A valid Salesforce tool target and arguments object are required.");
+    }
+    let resolved: ToolResolution;
+    try { resolved = await resolveTool(env, row, body.target, requestId); }
+    catch (cause) { resolved = safeDiagnosticFromFailure(cause); }
+    if (!resolved.available) return json({ available: false, diagnostic: resolved.diagnostic }, requestId, 404);
+
+    let invokePath = resolved.route;
+    let method = resolved.method;
+    let invokeBody: string | undefined;
+    if (resolved.api) {
+      const applied = applyApiArguments(resolved.route, resolved.target, body.arguments);
+      if (!applied || !apiRequestTarget(applied, row.instance_url)) {
+        return error(requestId, 400, "invalid_api_arguments", "The API arguments do not safely match the declared Salesforce route.");
+      }
+      invokePath = applied;
+      if (method !== "GET") invokeBody = JSON.stringify(body.arguments);
+    } else {
+      invokeBody = JSON.stringify({ inputs: [body.arguments] });
+    }
+    return sfRequest(env, row, invokePath, method, invokeBody, requestId, true);
+  }
+
+  if (path === "/internal/channels/query" && request.method === "POST") {
+    if (!str(body.soql, 20_000) || !/^\s*SELECT\b/i.test(body.soql) ||
+        /;|--|\/\*/.test(body.soql)) return error(requestId, 400, "read_query_required", "Only a single read-only SELECT query is allowed.");
+    return sfGet(env, row, "/services/data/" + API_VERSION + "/query?q=" + encodeURIComponent(body.soql), requestId);
+  }
+  if (path === "/internal/channels/read" && request.method === "POST") {
+    if (!str(body.objectApiName, 128) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(body.objectApiName) ||
+        !str(body.recordId, 18) || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(body.recordId)) {
+      return error(requestId, 400, "invalid_record", "A valid Salesforce object API name and record ID are required.");
+    }
+    return sfGet(env, row, "/services/data/" + API_VERSION + "/sobjects/" +
+      encodeURIComponent(body.objectApiName) + "/" + encodeURIComponent(body.recordId), requestId);
+  }
+  if (path === "/internal/channels/agent-script" && request.method === "POST") {
+    const channelNames = Array.isArray(body.channelNames)
+      ? (body.channelNames as string[])
+      : typeof body.channelName === "string"
+        ? [body.channelName]
+        : undefined;
+    const agentNames = Array.isArray(body.agentNames)
+      ? (body.agentNames as string[])
+      : typeof body.agentName === "string"
+        ? [body.agentName]
+        : undefined;
+    const singleName = typeof body.name === "string" ? body.name : undefined;
+
+    if (!channelNames?.length && !agentNames?.length && !singleName) {
+      return error(requestId, 400, "invalid_request", "A channelName, channelNames, agentName, or agentNames parameter is required.");
+    }
+
+    const auth = await token(env, row);
+    const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken };
+
+    try {
+      const result = await getAgentScripts(conn, {
+        channelNames,
+        agentNames,
+        name: singleName,
+        apiVersion: typeof body.apiVersion === "string" ? body.apiVersion : undefined,
+      });
+      return json({ ...result, requestId }, requestId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return error(requestId, 502, "agent_retrieve_failed", msg, true);
+    }
+  }
+
+  return error(requestId, 404, "not_found", "The requested auth service endpoint was not found.");
+}
+
+let BaseWorkerEntrypoint: any = class {
+  constructor(public ctx: any, public env: any) {}
+};
+try {
+  // @ts-ignore
+  const cf = await import("cloudflare:workers");
+  if (cf?.WorkerEntrypoint) {
+    BaseWorkerEntrypoint = cf.WorkerEntrypoint;
+  }
+} catch {
+  // Fallback for non-workerd runtimes
+}
+
+export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
+  /** Service-binding-only inventory for autonomous, tenant-scoped discovery. */
+  async listConnectedOrgs(): Promise<Key[]> {
+    const env = this.env as AuthEnv;
+    const rows = await env.DB.prepare(`SELECT c.teamId AS teamId, c.orgId AS orgId,
+      MIN(c.channelId) AS channelId FROM salesforce_channel_connection c
+      JOIN oauth_token t ON t.id = c.oauthTokenId AND t.teamId = c.teamId
+      JOIN salesforce_auth_credential a ON a.team_id = c.teamId AND a.org_id = c.orgId
+        AND a.channel_id = c.channelId AND a.channel_secret_hash = c.channelSecretHash
+      WHERE t.expiresAt > unixepoch()
+      GROUP BY c.teamId, c.orgId`).all<Key>();
+    const staging = rows.results ?? [];
+    // Union staging tenants with new-panel bridge tenants. A missing bridge
+    // secret or any bridge failure degrades to staging-only with a structured
+    // log and never throws out of this inventory call.
+    let bridge: Key[];
+    try {
+      bridge = await fetchBridgeTenants(env);
+    } catch {
+      console.error(JSON.stringify({ error: "bridge_tenants_unavailable" }));
+      return staging;
+    }
+    const seen = new Set(staging.map(entry =>
+      [entry.teamId, entry.orgId, entry.channelId].join("\u0000")));
+    const merged = [...staging];
+    for (const entry of bridge) {
+      const triple = [entry.teamId, entry.orgId, entry.channelId].join("\u0000");
+      if (seen.has(triple)) continue;
+      seen.add(triple);
+      merged.push(entry);
+    }
+    return merged;
+  }
+
+  /** Restricted Salesforce proxy. Tokens never leave this Worker. */
+  async inspectSalesforce(ref: Key, requests: Array<{
+    method: "GET" | "HEAD" | "POST";
+    path: string;
+    jsonBody?: Record<string, unknown>;
+  }>):
+    Promise<Array<{ status: number; body: unknown }>> {
+    const env = this.env as AuthEnv;
+    if (!key(ref) || !Array.isArray(requests) || requests.length < 1 || requests.length > 25) {
+      throw authFailure(400, "invalid_request", "A valid tenant and up to 25 requests are required.");
+    }
+    // Staging first, then the new-panel bridge for the exact triple; fail
+    // closed when neither serves this tenant. A staging enrollment is
+    // authoritative when present (wrong grant still denies).
+    let row = await credential(env, ref);
+    if (row) {
+      const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
+        JOIN oauth_token t ON t.id = c.oauthTokenId AND t.teamId = c.teamId
+        WHERE c.teamId = ? AND c.orgId = ? AND c.channelId = ?
+          AND c.channelSecretHash = ? AND t.expiresAt > unixepoch()`)
+        .bind(ref.teamId, ref.orgId, ref.channelId, row.channel_secret_hash)
+        .first<{ valid: number }>();
+      if (!grant) throw authFailure(403, "channel_not_authorized", "The Salesforce channel grant is unavailable.");
+    } else {
+      row = await resolveBridgeCredential(env, ref);
+      if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+    }
+    const results: Array<{ status: number; body: unknown; trailingDocuments?: unknown }> =
+      new Array(requests.length);
+    // QUOTABURN Q1: fold eligible GETs into composite/batch (25 max, 1 call
+    // per batch). Validation still runs per item in order and throws on the
+    // first invalid route exactly as before; only verified-valid items batch.
+    // QUOTABURN Q2: POST invocable-action invocations fold too. The REST API
+    // Developer Guide lists Actions (vXX.X/actions) as batch-eligible since
+    // API v35.0; the invocation body travels as the subrequest richInput.
+    // Verdicts still derive per subrequest (statusCode + result), so mapping
+    // is identical to one direct POST per action.
+    const batchVersion = (item: { method: string; path: string; jsonBody?: Record<string, unknown> }): string | null => {
+      if (typeof item.path !== "string") return null;
+      if (item.method === "GET") {
+        if (/^\/services\/data\/(?:v\d+(?:\.\d+)?\/)?tooling\//.test(item.path)) return null;
+        return item.path.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\//)?.[1] ?? null;
+      }
+      if (item.method === "POST" && item.jsonBody !== undefined) {
+        const version = item.path.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/(?:standard|custom)\//)?.[1] ?? null;
+        if (version === null) return null;
+        return Number(version.slice(1)) >= 35 ? version : null;
+      }
+      return null;
+    };
+    const fetchDirect = async (item: { method: "GET" | "HEAD" | "POST"; path: string; jsonBody?: Record<string, unknown> }):
+      Promise<{ status: number; body: unknown; trailingDocuments?: unknown }> => {
+      const response = await sfRequest(env, row, item.path, item.method,
+        item.method === "POST" ? (item.jsonBody ? JSON.stringify(item.jsonBody) : "{") : undefined,
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      if (item.method === "HEAD") return { status: response.status, body: null };
+      const route = item.path.split("?")[0].slice(0, 256);
+      const contentLength = response.headers.get("content-length");
+      if (contentLength && Number(contentLength) > MAX_SALESFORCE_INSPECTION_BYTES) {
+        await response.body?.cancel();
+        return { status: 502, body: {
+          errorCode: "RESPONSE_TOO_LARGE",
+          message: `Salesforce inspection response exceeds the size limit for ${item.method} ${route}.`,
+        } };
+      }
+      let raw: string;
+      try {
+        raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(await readBodyBounded(response, MAX_SALESFORCE_INSPECTION_BYTES));
+      } catch (failure) {
+        return { status: 502, body: {
+          errorCode: failure instanceof SecurityError && failure.code === 'body_too_large' ? 'RESPONSE_TOO_LARGE' : 'SALESFORCE_RESPONSE_UNREADABLE',
+          message: failure instanceof SecurityError && failure.code === 'body_too_large'
+            ? `Salesforce inspection response exceeds the size limit for ${item.method} ${route}.`
+            : `Salesforce inspection response could not be safely read for ${item.method} ${route}.`,
+        } };
+      }
+      const body = parseSalesforceResponseJson(raw, MAX_SALESFORCE_INSPECTION_BYTES);
+      const trailingDocuments = extractTrailingResponseDocuments(raw);
+      return trailingDocuments.length
+        ? { status: response.status, body, trailingDocuments }
+        : { status: response.status, body };
+    };
+    const fetchBatch = async (version: string, indices: number[]): Promise<boolean> => {
+      const subrequests = indices.map((i) => ({
+        method: requests[i].method,
+        url: requests[i].path.slice("/services/data/".length).replace(/'/g, "%27"),
+        ...(requests[i].method === "POST" && requests[i].jsonBody !== undefined
+          ? { richInput: requests[i].jsonBody }
+          : {}),
+      }));
+      let envelope: unknown;
+      try {
+        const response = await sfRequest(env, row, `/services/data/${version}/composite/batch`, "POST",
+          JSON.stringify({ batchRequests: subrequests }), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false })
+          .decode(await readBodyBounded(response, MAX_SALESFORCE_INSPECTION_BYTES));
+        if (response.status < 200 || response.status >= 300) return false;
+        envelope = parseSalesforceResponseJson(raw, MAX_SALESFORCE_INSPECTION_BYTES);
+      } catch { return false; }
+      const items = typeof envelope === "object" && envelope !== null && Array.isArray((envelope as { results?: unknown }).results)
+        ? (envelope as { results: unknown[] }).results : null;
+      if (!items || items.length !== indices.length ||
+        !items.every((entry) => typeof entry === "object" && entry !== null &&
+          typeof (entry as { statusCode?: unknown }).statusCode === "number")) return false;
+      items.forEach((entry, slot) => {
+        const typed = entry as { statusCode: number; result?: unknown };
+        results[indices[slot]] = { status: typed.statusCode, body: typed.result ?? null };
+      });
+      return true;
+    };
+    for (const item of requests) {
+      const isActionRoute = typeof item?.path === "string" &&
+        /^\/services\/data\/(?:v\d+(?:\.\d+)?\/)?actions(?:\/|$)/.test(item.path);
+      const isToolingQuery = typeof item?.path === "string" &&
+        /^\/services\/data\/(?:v\d+(?:\.\d+)?\/)?tooling\/query\?/.test(item.path);
+      const isVersionRoot = item?.method === "GET" && item.path === "/services/data/";
+      const isSObjectMetadata = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/(?:[A-Za-z][A-Za-z0-9_]{0,127}\/describe)?$/.test(item.path);
+      const isQuickActionDefinition = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/(?:sobjects\/[A-Za-z][A-Za-z0-9_]{0,127}\/)?quickActions\/[A-Za-z][A-Za-z0-9_]{0,127}\/describe$/.test(item.path);
+      const isCustomFieldMetadata = typeof item?.path === 'string' && item.method === 'GET' &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/tooling\/sobjects\/CustomField\/describe$/.test(item.path);
+      const isRelatedListMetadata = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/ui-api\/related-list-info\/[A-Za-z][A-Za-z0-9_]{0,127}(?:\?recordTypeId=[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)?$/.test(item.path);
+      const isReportTypeCatalog = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/analytics\/reportTypes$/.test(item.path);
+      const isDataSpaceCatalog = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/ssot\/data-spaces$/.test(item.path);
+      const isRetrieverCatalog = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/ssot\/machine-learning\/retrievers$/.test(item.path);
+      const isPromptMetadata = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/einstein\/prompt-templates\/[A-Za-z][A-Za-z0-9_]{0,127}$/.test(item.path);
+      const isIdentityRoute = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/chatter\/users\/me$/.test(item.path);
+      const isPromptGeneration = typeof item?.path === "string" && item.method === "POST" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/einstein\/prompt-templates\/[A-Za-z][A-Za-z0-9_]{0,127}\/generations$/.test(item.path);
+      const promptBody = isPromptGeneration && object(item.jsonBody) && item.jsonBody.isPreview === false &&
+        object(item.jsonBody.inputParams) && object(item.jsonBody.inputParams.valueMap) &&
+        Object.entries(item.jsonBody.inputParams.valueMap).length <= 10 &&
+        Object.entries(item.jsonBody.inputParams.valueMap).every(([name, wrapped]) =>
+          /^Input:[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name) && object(wrapped) && Object.hasOwn(wrapped, "value"));
+      const objectQuery = typeof item?.path === "string" &&
+        item.method === "GET" && item.path.match(/^\/services\/data\/v\d+(?:\.\d+)?\/query\?q=(.*)$/);
+      let isTestRecordQuery = false;
+      if (objectQuery) {
+        try {
+          const soql = decodeURIComponent(objectQuery[1]);
+          isTestRecordQuery = /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 1$/i.test(soql) ||
+            /^SELECT Id, DeveloperName, MasterLabel FROM Skill LIMIT 1$/i.test(soql) ||
+            /^SELECT Id, RecordTypeId FROM [A-Za-z][A-Za-z0-9_]{0,127} WHERE Id='[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?' LIMIT 1$/i.test(soql) ||
+            /^SELECT Id FROM MessagingSession WHERE ConversationId != null(?: AND Status = 'Ended')? LIMIT 1$/i.test(soql) ||
+            /^SELECT DurableId,ApiName,Label FROM FlowDefinitionView WHERE ApiName IN \('[A-Za-z][A-Za-z0-9_]{0,127}'(?:,'[A-Za-z][A-Za-z0-9_]{0,127}')?\)$/i.test(soql) ||
+            /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} WHERE [A-Za-z][A-Za-z0-9_]{0,127}='ACTIVE' LIMIT [1-5]$/i.test(soql) ||
+            /^SELECT Id FROM ContentDocument WHERE FileType IN \('AMR','AU','FLAC','M4A','MP3','MP4','MPEG','MPGA','OGG','OGA','WAV','WAVE','WEBM'\) LIMIT 1$/i.test(soql) ||
+            /^SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%__kav' LIMIT 10$/i.test(soql) ||
+            /^SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%[A-Za-z][A-Za-z0-9_]{2,127}%' LIMIT 50$/i.test(soql) ||
+            /^SELECT QualifiedApiName, KeyPrefix, Label FROM EntityDefinition WHERE QualifiedApiName IN \('[A-Za-z][A-Za-z0-9_]{0,127}'(?:,'[A-Za-z][A-Za-z0-9_]{0,127}')*\)$/i.test(soql) ||
+            /^SELECT QualifiedApiName, KeyPrefix, Label, IsQueryable, IsLayoutable FROM EntityDefinition WHERE QualifiedApiName IN \('[A-Za-z][A-Za-z0-9_]{0,127}'(?:,'[A-Za-z][A-Za-z0-9_]{0,127}')*\)$/i.test(soql) ||
+            /^SELECT QualifiedApiName, KeyPrefix, Label, IsQueryable, IsLayoutable FROM EntityDefinition(?: WHERE QualifiedApiName > '[A-Za-z][A-Za-z0-9_]{0,127}')? ORDER BY QualifiedApiName LIMIT 500$/i.test(soql) ||
+            /^SELECT TimeZoneSidKey FROM Organization LIMIT 1$/i.test(soql) ||
+            /^SELECT DeveloperName, Endpoint FROM NamedCredential LIMIT 50$/i.test(soql);
+        } catch { isTestRecordQuery = false; }
+      }
+      if (!object(item) || !["GET", "HEAD", "POST"].includes(item.method as string) ||
+          typeof item.path !== "string" || item.path.length > 4096 ||
+          (item.jsonBody !== undefined && (!object(item.jsonBody) || JSON.stringify(item.jsonBody).length > 32_000)) ||
+          (item.jsonBody !== undefined && !promptBody && (!Array.isArray(item.jsonBody.inputs) || item.jsonBody.inputs.length < 1 ||
+            item.jsonBody.inputs.length > 10 || !item.jsonBody.inputs.every(object))) ||
+          (item.jsonBody !== undefined && item.method !== "POST") ||
+          !(isVersionRoot || isActionRoute || isToolingQuery || isTestRecordQuery || isSObjectMetadata || isCustomFieldMetadata || isQuickActionDefinition ||
+            isRelatedListMetadata || isReportTypeCatalog || isDataSpaceCatalog || isRetrieverCatalog || isPromptMetadata || isIdentityRoute || (isPromptGeneration && promptBody)) ||
+          ((isToolingQuery || isTestRecordQuery) && item.method !== "GET") ||
+          /[\\#\u0000-\u001f\u007f]/.test(item.path) || item.path.includes("//") ||
+          item.path.split("?")[0].split("/").some(part => part === ".." || part === ".") ||
+          (item.method === "POST" && !isPromptGeneration && (!/^\/services\/data\/v\d+(?:\.\d+)?\/actions\/(?:standard|custom)\//.test(item.path) ||
+            !isActionRoute))) {
+        throw authFailure(400, "invalid_api_path", "The requested Salesforce inspection route is invalid.");
+      }
+    }
+    const direct: number[] = [];
+    const batched = new Map<string, number[]>();
+    requests.forEach((item, index) => {
+      const version = batchVersion(item);
+      if (version === null) { direct.push(index); return; }
+      const group = batched.get(version) ?? [];
+      group.push(index);
+      batched.set(version, group);
+    });
+    for (const index of direct) results[index] = await fetchDirect(requests[index]);
+    for (const [version, indices] of batched) {
+      for (let start = 0; start < indices.length; start += 25) {
+        const chunk = indices.slice(start, start + 25);
+        // A one-item "batch" saves no round-trip and only adds envelope
+        // overhead, so singles keep the exact direct path (byte-identical
+        // behavior, trailing-document evidence preserved).
+        if (chunk.length < 2) {
+          for (const index of chunk) results[index] = await fetchDirect(requests[index]);
+          continue;
+        }
+        const folded = await fetchBatch(version, chunk);
+        if (!folded) for (const index of chunk) results[index] = await fetchDirect(requests[index]);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Invoke only the standard speech transcription action with an ephemeral,
+   * tenant-scoped WAV file. The file is removed in a finally block so this
+   * test fixture does not remain in the connected org.
+   */
+  async invokeSpeechToTextWithSyntheticAudio(ref: Key, input: {
+    apiVersion: string;
+    route: string;
+    arguments: Record<string, unknown>;
+    audioBase64: string;
+  }): Promise<{ status: number; body: unknown; cleanupError?: string }> {
+    if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
+        input.route !== `/services/data/v${input.apiVersion}/actions/standard/speechToText` ||
+        !object(input.arguments) || Object.hasOwn(input.arguments, "contentDocumentId") ||
+        Object.keys(input.arguments).some(name => name !== "transcriptionModel") ||
+        typeof input.audioBase64 !== "string" || input.audioBase64.length > 160_000 ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.audioBase64)) {
+      throw authFailure(400, "invalid_synthetic_audio_test", "The synthetic speech test request is invalid.");
+    }
+    let audio: Uint8Array;
+    try {
+      const raw = atob(input.audioBase64);
+      audio = Uint8Array.from(raw, char => char.charCodeAt(0));
+    } catch {
+      throw authFailure(400, "invalid_synthetic_audio_test", "The synthetic speech test audio is invalid.");
+    }
+    const signature = new TextDecoder().decode(audio.subarray(0, 12));
+    if (audio.length < 44 || audio.length > 120_000 ||
+        signature.slice(0, 4) !== "RIFF" || signature.slice(8, 12) !== "WAVE") {
+      throw authFailure(400, "invalid_synthetic_audio_test", "The synthetic speech test must be a bounded WAV file.");
+    }
+
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+
+    const versionPath = `/services/data/v${input.apiVersion}/sobjects/ContentVersion`;
+    const versionResponse = await sfRequest(env, row, versionPath, "POST", JSON.stringify({
+      Title: `Action Searcher transient audio probe ${crypto.randomUUID()}`,
+      PathOnClient: "action-searcher-probe.wav",
+      VersionData: input.audioBase64,
+    }), crypto.randomUUID(), true);
+    const versionBody = await responseJson(versionResponse);
+    if (!versionResponse.ok || !object(versionBody) || typeof versionBody.id !== "string" ||
+        !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(versionBody.id)) {
+      return { status: versionResponse.status, body: versionBody ?? {
+        errorCode: "SYNTHETIC_AUDIO_CREATE_FAILED",
+        message: `Salesforce rejected the temporary audio file with HTTP ${versionResponse.status}.`,
+      } };
+    }
+
+    let contentDocumentId: string | undefined;
+    let result: { status: number; body: unknown };
+    let cleanupError: string | undefined;
+    try {
+      const soql = `SELECT ContentDocumentId FROM ContentVersion WHERE Id = '${versionBody.id}' LIMIT 1`;
+      const contentResponse = await sfRequest(env, row,
+        `/services/data/v${input.apiVersion}/query?q=${encodeURIComponent(soql)}`,
+        "GET", undefined, crypto.randomUUID(), true);
+      const contentBody = await responseJson(contentResponse);
+      const records = object(contentBody) && Array.isArray(contentBody.records) ? contentBody.records : [];
+      const contentRecord = records.find(object);
+      if (!contentResponse.ok || !contentRecord || typeof contentRecord.ContentDocumentId !== "string" ||
+          !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(contentRecord.ContentDocumentId)) {
+        result = { status: contentResponse.ok ? 502 : contentResponse.status, body: contentBody ?? {
+          errorCode: "SYNTHETIC_AUDIO_DOCUMENT_UNAVAILABLE",
+          message: "Salesforce did not return the temporary audio document ID.",
+        } };
+      } else {
+        contentDocumentId = contentRecord.ContentDocumentId;
+        const actionArguments = { ...input.arguments, contentDocumentId };
+        const response = await sfRequest(env, row, input.route, "POST",
+          JSON.stringify({ inputs: [actionArguments] }), crypto.randomUUID(), true);
+        result = { status: response.status, body: await responseJson(response) };
+      }
+    } finally {
+      const cleanupPath = contentDocumentId
+        ? `/services/data/v${input.apiVersion}/sobjects/ContentDocument/${contentDocumentId}`
+        : `${versionPath}/${versionBody.id}`;
+      let deleted = false;
+      for (let attempt = 0; attempt < 2 && !deleted; attempt++) {
+        try {
+          const cleanupResponse = await sfRequest(env, row, cleanupPath, "DELETE", undefined, crypto.randomUUID(), true);
+          deleted = cleanupResponse.status === 204 || cleanupResponse.status === 404;
+          if (!deleted) cleanupError = `Temporary audio fixture cleanup returned HTTP ${cleanupResponse.status}.`;
+        } catch {
+          cleanupError = "Temporary audio fixture cleanup could not reach Salesforce.";
+        }
+      }
+    }
+    return { ...result!, ...(cleanupError ? { cleanupError } : {}) };
+  }
+
+  /** Create temporary Commerce context from live describes, run one cart read, and delete it. */
+  async invokeCartReadWithSyntheticWebStore(ref: Key, input: {
+    apiVersion: string;
+    route: string;
+    arguments: Record<string, unknown>;
+  }): Promise<{ status: number; body: unknown; cleanupError?: string }> {
+    const routeMatch = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/standard\/(getCartItems|getCartPromotions)$/i,
+    );
+    const allowedArguments = new Set(["cartStateOrId", "effectiveAccountId", "currencyIsoCode", "userId", "pageToken"]);
+    if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
+        !routeMatch || routeMatch[1] !== input.apiVersion || !object(input.arguments) ||
+        input.arguments.cartStateOrId !== "current" ||
+        Object.keys(input.arguments).some(name => !allowedArguments.has(name))) {
+      throw authFailure(400, "invalid_synthetic_cart_test", "The synthetic cart test request is invalid.");
+    }
+
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const describeResponse = await sfRequest(env, row, `${apiRoot}/sobjects/WebStore/describe`,
+      "GET", undefined, crypto.randomUUID(), true);
+    const describeBody = await responseJson(describeResponse);
+    if (!describeResponse.ok || !object(describeBody) || !Array.isArray(describeBody.fields)) {
+      return { status: describeResponse.status, body: describeBody ?? {
+        errorCode: "WEBSTORE_SCHEMA_UNAVAILABLE",
+        message: `Salesforce could not describe WebStore (HTTP ${describeResponse.status}).`,
+      } };
+    }
+
+    const storeValues: Record<string, unknown> = {};
+    let storeTypeValues: string[] = [];
+    const referenceCache = new Map<string, string | null>();
+    for (const field of describeBody.fields.filter(object)) {
+      if (field.name === "Type" && field.type === "picklist" && Array.isArray(field.picklistValues)) {
+        storeTypeValues = field.picklistValues.filter(object)
+          .filter(value => value.active === true && typeof value.value === "string")
+          .map(value => value.value as string);
+      }
+      if (field.nillable !== false || field.defaultedOnCreate === true || field.calculated === true ||
+          field.autoNumber === true) continue;
+      // Read-only non-permissionable defaults are assigned by Salesforce during creation.
+      // Omit them and let the real create API validate the requested store configuration.
+      if (field.createable !== true && field.permissionable === false) continue;
+      if (typeof field.name !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(field.name) ||
+          field.createable !== true) {
+        return { status: 422, body: {
+          errorCode: "WEBSTORE_REQUIRED_FIELD_UNAVAILABLE",
+          message: `The temporary WebStore requires ${String(field.name)} but the integration user cannot create that field. Automatic fixture setup needs its field write permission or the owning Commerce feature entitlement.`,
+        } };
+      }
+      const type = typeof field.type === "string" ? field.type.toLowerCase() : "";
+      if (field.name === "Name" && type === "string") {
+        storeValues[field.name] = `Action Searcher temporary store probe ${crypto.randomUUID()}`;
+      } else if (type === "boolean") {
+        storeValues[field.name] = false;
+      } else if (type === "combobox") {
+        const choices = Array.isArray(field.picklistValues) ? field.picklistValues.filter(object) : [];
+        const choice = choices.find(value => value.active === true && typeof value.value === "string");
+        storeValues[field.name] = choice ? choice.value : "Action Searcher temporary validation";
+      } else if (type === "picklist" || type === "multipicklist") {
+        const choices = Array.isArray(field.picklistValues) ? field.picklistValues.filter(object) : [];
+        const choice = choices.find(value => value.active === true && typeof value.value === "string");
+        if (!choice) return { status: 422, body: {
+          errorCode: "WEBSTORE_REQUIRED_VALUE_UNAVAILABLE",
+          message: "Salesforce has no active value for a required temporary WebStore field.",
+        } };
+        storeValues[field.name] = choice.value;
+      } else if (type === "reference") {
+        const references = Array.isArray(field.referenceTo) ? field.referenceTo : [];
+        let id: string | undefined;
+        for (const objectName of references) {
+          if (typeof objectName !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(objectName)) continue;
+          if (!referenceCache.has(objectName)) {
+            const soql = `SELECT Id FROM ${objectName} LIMIT 1`;
+            const lookup = await sfRequest(env, row, `${apiRoot}/query?q=${encodeURIComponent(soql)}`,
+              "GET", undefined, crypto.randomUUID(), true);
+            const lookupBody = await responseJson(lookup);
+            const records = object(lookupBody) && Array.isArray(lookupBody.records) ? lookupBody.records : [];
+            const first = records.find(object);
+            referenceCache.set(objectName, typeof first?.Id === "string" &&
+              /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(first.Id) ? first.Id : null);
+          }
+          id = referenceCache.get(objectName) ?? undefined;
+          if (id) break;
+        }
+        if (!id) return { status: 422, body: {
+          errorCode: "WEBSTORE_REQUIRED_RECORD_UNAVAILABLE",
+          message: "Salesforce has no live record for a required temporary WebStore reference.",
+        } };
+        storeValues[field.name] = id;
+      } else if (type === "email") {
+        storeValues[field.name] = "action-searcher@example.invalid";
+      } else if (type === "phone") {
+        storeValues[field.name] = "+15550100123";
+      } else if (type === "url") {
+        storeValues[field.name] = "https://example.invalid/action-searcher";
+      } else if (["int", "integer", "double", "currency", "percent"].includes(type)) {
+        storeValues[field.name] = 1;
+      } else if (type === "date") {
+        storeValues[field.name] = new Date().toISOString().slice(0, 10);
+      } else if (type === "datetime") {
+        storeValues[field.name] = new Date().toISOString();
+      } else if (type === "time") {
+        storeValues[field.name] = `${new Date().toISOString().slice(11, 23)}Z`;
+      } else if (type === "base64") {
+        storeValues[field.name] = "QWN0aW9uUHJvYmU=";
+      } else if (["string", "textarea", "encryptedstring", "phone", "email", "url"].includes(type)) {
+        storeValues[field.name] = "Action Searcher temporary validation";
+      } else {
+        return { status: 422, body: {
+          errorCode: "WEBSTORE_REQUIRED_FIELD_UNSUPPORTED",
+          message: "Salesforce exposes a required WebStore field type the worker cannot safely synthesize.",
+        } };
+      }
+    }
+
+    const storePath = `${apiRoot}/sobjects/WebStore`;
+    const storeCandidates: Array<string | undefined> = storeTypeValues.length ? storeTypeValues : [undefined];
+    let lastResult: { status: number; body: unknown } = {
+      status: 422,
+      body: { errorCode: "SYNTHETIC_WEBSTORE_TYPE_UNAVAILABLE", message: "Salesforce exposes no usable WebStore type." },
+    };
+    for (const storeType of storeCandidates) {
+      const values = { ...storeValues, ...(storeType ? { Type: storeType } : {}) };
+      const createResponse = await sfRequest(env, row, storePath, "POST", JSON.stringify(values),
+        crypto.randomUUID(), true);
+      const createBody = await responseJson(createResponse);
+      if (!createResponse.ok || !object(createBody) || typeof createBody.id !== "string" ||
+          !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(createBody.id)) {
+        const errorDetails = salesforceError(createBody);
+        lastResult = { status: createResponse.status, body: {
+          errorCode: errorDetails.code ?? "SYNTHETIC_WEBSTORE_CREATE_FAILED",
+          message: `Temporary WebStore type ${storeType ?? "default"} creation failed (HTTP ${createResponse.status}): ${errorDetails.message ?? "Salesforce returned no error details."}`,
+        } };
+        continue;
+      }
+
+      const storeId = createBody.id;
+      let cartId: string | undefined;
+      let accountId: string | undefined;
+      let temporaryAccountId: string | undefined;
+      let cleanupError: string | undefined;
+      let result: { status: number; body: unknown } = { status: 500, body: null };
+      try {
+        const cartDescribeResponse = await sfRequest(env, row, `${apiRoot}/sobjects/WebCart/describe`,
+          "GET", undefined, crypto.randomUUID(), true);
+        const cartDescribeBody = await responseJson(cartDescribeResponse);
+        if (!cartDescribeResponse.ok || !object(cartDescribeBody) || !Array.isArray(cartDescribeBody.fields)) {
+          result = { status: cartDescribeResponse.status, body: {
+            errorCode: "WEBCART_SCHEMA_UNAVAILABLE",
+            message: `Salesforce could not describe WebCart (HTTP ${cartDescribeResponse.status}).`,
+          } };
+        } else {
+          const cartValues: Record<string, unknown> = {};
+          let cartFieldsAvailable = true;
+          const accountField = cartDescribeBody.fields.filter(object).find(field =>
+            field.name === "AccountId" && field.type === "reference" && field.createable === true &&
+            Array.isArray(field.referenceTo) && field.referenceTo.includes("Account"));
+          if (accountField) {
+            const account = await existingOrSyntheticAccount(env, row, apiRoot, referenceCache);
+            if ("failure" in account) {
+              result = account.failure;
+              cartFieldsAvailable = false;
+            } else {
+              accountId = account.id;
+              temporaryAccountId = account.temporaryId;
+            }
+          }
+          for (const field of cartDescribeBody.fields.filter(object)) {
+            if (!cartFieldsAvailable) break;
+            if ((field.name === "Status" || field.name === "Type") && field.type === "picklist" &&
+                field.createable === true && Array.isArray(field.picklistValues)) {
+              const preferred = field.name === "Status" ? "Active" : "Cart";
+              const supported = field.picklistValues.filter(object).find(value =>
+                value.active === true && typeof value.value === "string" &&
+                value.value.toLowerCase() === preferred.toLowerCase());
+              if (typeof supported?.value === "string") {
+                cartValues[field.name] = supported.value;
+                continue;
+              }
+            }
+            if (field.name === "AccountId" && field.type === "reference" && accountId &&
+                Array.isArray(field.referenceTo) && field.referenceTo.includes("Account")) {
+              cartValues[field.name] = accountId;
+              continue;
+            }
+            if (field.nillable !== false || field.defaultedOnCreate === true || field.calculated === true ||
+                field.autoNumber === true) continue;
+            if (typeof field.name !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(field.name) ||
+                field.createable !== true) {
+              result = { status: 422, body: {
+                errorCode: "WEBCART_REQUIRED_FIELD_UNAVAILABLE",
+                message: "The temporary WebCart has a required field the integration user cannot set.",
+              } };
+              cartFieldsAvailable = false;
+              break;
+            }
+            const type = typeof field.type === "string" ? field.type.toLowerCase() : "";
+            if (field.name === "Name" && type === "string") {
+              cartValues[field.name] = `Action Searcher temporary cart probe ${crypto.randomUUID()}`;
+            } else if (field.name === "WebStoreId" && type === "reference" &&
+                Array.isArray(field.referenceTo) && field.referenceTo.includes("WebStore")) {
+              cartValues[field.name] = storeId;
+            } else if (type === "boolean") {
+              cartValues[field.name] = false;
+            } else if (type === "combobox") {
+              const choices = Array.isArray(field.picklistValues) ? field.picklistValues.filter(object) : [];
+              const choice = choices.find(value => value.active === true && typeof value.value === "string");
+              cartValues[field.name] = choice ? choice.value : "Action Searcher temporary validation";
+            } else if (type === "picklist" || type === "multipicklist") {
+              const choices = Array.isArray(field.picklistValues) ? field.picklistValues.filter(object) : [];
+              const choice = choices.find(value => value.active === true && typeof value.value === "string");
+              if (!choice) {
+                result = { status: 422, body: {
+                  errorCode: "WEBCART_REQUIRED_VALUE_UNAVAILABLE",
+                  message: "Salesforce has no active value for a required temporary WebCart field.",
+                } };
+                cartFieldsAvailable = false;
+                break;
+              }
+              cartValues[field.name] = choice.value;
+            } else if (type === "reference") {
+              const references = Array.isArray(field.referenceTo) ? field.referenceTo : [];
+              let id: string | undefined;
+              for (const objectName of references) {
+                if (typeof objectName !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(objectName)) continue;
+                if (!referenceCache.has(objectName)) {
+                  const soql = `SELECT Id FROM ${objectName} LIMIT 1`;
+                  const lookup = await sfRequest(env, row, `${apiRoot}/query?q=${encodeURIComponent(soql)}`,
+                    "GET", undefined, crypto.randomUUID(), true);
+                  const lookupBody = await responseJson(lookup);
+                  const records = object(lookupBody) && Array.isArray(lookupBody.records) ? lookupBody.records : [];
+                  const first = records.find(object);
+                  referenceCache.set(objectName, typeof first?.Id === "string" &&
+                    /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(first.Id) ? first.Id : null);
+                }
+                id = referenceCache.get(objectName) ?? undefined;
+                if (id) break;
+              }
+              if (!id) {
+                result = { status: 422, body: {
+                  errorCode: "WEBCART_REQUIRED_RECORD_UNAVAILABLE",
+                  message: "Salesforce has no live record for a required temporary WebCart reference.",
+                } };
+                cartFieldsAvailable = false;
+                break;
+              }
+              cartValues[field.name] = id;
+            } else if (type === "email") {
+              cartValues[field.name] = "action-searcher@example.invalid";
+            } else if (type === "phone") {
+              cartValues[field.name] = "+15550100123";
+            } else if (type === "url") {
+              cartValues[field.name] = "https://example.invalid/action-searcher";
+            } else if (["int", "integer", "double", "currency", "percent"].includes(type)) {
+              cartValues[field.name] = 1;
+            } else if (type === "date") {
+              cartValues[field.name] = new Date().toISOString().slice(0, 10);
+            } else if (type === "datetime") {
+              cartValues[field.name] = new Date().toISOString();
+            } else if (type === "time") {
+              cartValues[field.name] = `${new Date().toISOString().slice(11, 23)}Z`;
+            } else if (type === "base64") {
+              cartValues[field.name] = "QWN0aW9uUHJvYmU=";
+            } else if (["string", "textarea", "encryptedstring"].includes(type)) {
+              cartValues[field.name] = "Action Searcher temporary validation";
+            } else {
+              result = { status: 422, body: {
+                errorCode: "WEBCART_REQUIRED_FIELD_UNSUPPORTED",
+                message: "Salesforce exposes a required WebCart field type the worker cannot synthesize.",
+              } };
+              cartFieldsAvailable = false;
+              break;
+            }
+          }
+          if (cartFieldsAvailable) {
+            const cartName = typeof cartValues.Name === "string" ? cartValues.Name
+              : `Action Searcher temporary cart probe ${crypto.randomUUID()}`;
+            const cartType = typeof cartValues.Type === "string" ? cartValues.Type : "Cart";
+            const commerceCartCollection = `${apiRoot}/commerce/webstores/${storeId}/carts${accountId
+              ? `?effectiveAccountId=${encodeURIComponent(accountId)}` : ""}`;
+            const cartResponse = await sfRequest(env, row, commerceCartCollection, "POST",
+              JSON.stringify({ name: cartName, type: cartType, ...(accountId ? { effectiveAccountId: accountId } : {}) }), crypto.randomUUID(), true);
+            const cartBody = await responseJson(cartResponse);
+            const nestedCart = object(cartBody) && object(cartBody.cartSummary) ? cartBody.cartSummary : undefined;
+            const createdCartId = object(cartBody) && typeof cartBody.cartId === "string" ? cartBody.cartId
+              : object(cartBody) && typeof cartBody.id === "string" ? cartBody.id
+                : nestedCart && typeof nestedCart.cartId === "string" ? nestedCart.cartId : undefined;
+            if (!cartResponse.ok || !createdCartId ||
+                !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(createdCartId)) {
+              const errorDetails = salesforceError(cartBody);
+              result = { status: cartResponse.status, body: {
+                errorCode: errorDetails.code ?? "SYNTHETIC_COMMERCE_CART_CREATE_FAILED",
+                message: `Temporary Commerce cart creation failed (HTTP ${cartResponse.status}): ${errorDetails.message ?? "Salesforce returned no cart ID or error details."}`,
+              } };
+            } else {
+              cartId = createdCartId;
+              // Read the actual owner assigned by Commerce; a registered integration identity
+              // is not proof of cart ownership in every org/auth configuration.
+              const cartRead = await sfRequest(env, row, `${apiRoot}/sobjects/WebCart/${cartId}`,
+                "GET", undefined, crypto.randomUUID(), true);
+              const cartRecord = await responseJson(cartRead);
+              const ownerId = object(cartRecord) && typeof cartRecord.OwnerId === "string" &&
+                /^005[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(cartRecord.OwnerId) ? cartRecord.OwnerId : null;
+              if (!cartRead.ok || !ownerId || !object(cartRecord) || cartRecord.WebStoreId !== storeId) {
+                result = { status: cartRead.ok ? 422 : cartRead.status, body: {
+                  errorCode: "COMMERCE_CART_OWNERSHIP_UNVERIFIED",
+                  message: "Salesforce did not expose the created cart's owning user and matching store. The action will not run with assumed ownership." } };
+              } else {
+              // Commerce may assign a different effective buyer account than a supplied query hint.
+              if (typeof cartRecord.AccountId === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(cartRecord.AccountId)) {
+                accountId = cartRecord.AccountId;
+              }
+              const commerceCartPath = `${apiRoot}/commerce/webstores/${storeId}/carts/${encodeURIComponent(cartId)}${accountId
+                ? `?effectiveAccountId=${encodeURIComponent(accountId)}` : ""}`;
+              const activate = cartRecord.Status === "Active" ? new Response(null, { status: 204 })
+                : await sfRequest(env, row, commerceCartPath, "PUT", undefined, crypto.randomUUID(), true);
+              if (!activate.ok) {
+                const errorDetails = salesforceError(await responseJson(activate));
+                result = { status: activate.status, body: {
+                  errorCode: errorDetails.code ?? "SYNTHETIC_COMMERCE_CART_ACTIVATION_FAILED",
+                  message: `Temporary Commerce cart activation failed (HTTP ${activate.status}): ${errorDetails.message ?? "Salesforce returned no error details."}`,
+                } };
+              } else {
+                const response = await sfRequest(env, row, input.route, "POST", JSON.stringify({
+                  inputs: [{ ...input.arguments, cartStateOrId: cartId, webStoreId: storeId,
+                    userId: ownerId,
+                    ...(accountId ? { effectiveAccountId: accountId } : {}) }],
+                }), crypto.randomUUID(), true);
+                result = { status: response.status, body: await responseJson(response) };
+                if (response.ok && (result.body === null || Array.isArray(result.body) && result.body.length === 0)) {
+                  result.body = { errorCode: "COMMERCE_ACTION_OUTCOME_MISSING",
+                    message: "Salesforce returned HTTP 200 without an action outcome for the verified temporary store and active cart. No success can be verified; the worker tries the remaining live store types." };
+                }
+                if (input.route.endsWith("/getCartPromotions") &&
+                    /No Active cart/i.test(salesforceError(result.body).message ?? "")) {
+                  // This read action resolves ownership differently across Commerce versions.
+                  // Try only context variants for our own cart, never mutate an unrelated cart.
+                  for (const state of [cartId, "current", "active"]) {
+                    const retry = await sfRequest(env, row, input.route, "POST", JSON.stringify({
+                      inputs: [{ ...input.arguments, cartStateOrId: state, webStoreId: storeId, userId: ownerId,
+                        ...(accountId ? { effectiveAccountId: accountId } : {}) }],
+                    }), crypto.randomUUID(), true);
+                    result = { status: retry.status, body: await responseJson(retry) };
+                    if (retry.ok && Array.isArray(result.body) && result.body.every(item => object(item) && item.isSuccess === true)) break;
+                    if (!/No Active cart/i.test(salesforceError(result.body).message ?? "")) break;
+                  }
+                }
+              }
+              }
+            }
+          }
+        }
+      } finally {
+        for (const [label, cleanupPath] of [
+          ...(cartId ? [["Commerce cart", `${apiRoot}/sobjects/WebCart/${cartId}`] as const] : []),
+          ["WebStore", `${storePath}/${storeId}`] as const,
+          ...(temporaryAccountId ? [["Account", `${apiRoot}/sobjects/Account/${temporaryAccountId}`] as const] : []),
+        ]) {
+          let deleted = false;
+          for (let attempt = 0; attempt < 2 && !deleted; attempt++) {
+            try {
+              const cleanup = await sfRequest(env, row, cleanupPath, "DELETE", undefined, crypto.randomUUID(), true);
+              deleted = cleanup.status === 204 || cleanup.status === 404;
+              if (deleted && label === "Commerce cart" && cartId) {
+                // Commerce deletion can leave an owned fixture in PendingDelete. Remove that
+                // specific record through the sObject API and verify it no longer exists.
+                const path = `${apiRoot}/sobjects/WebCart/${cartId}`;
+                const read = await sfRequest(env, row, path, "GET", undefined, crypto.randomUUID(), true);
+                const record = await responseJson(read);
+                if (read.status !== 404 && object(record) && record.Id === cartId && record.Status === "PendingDelete") {
+                  const purge = await sfRequest(env, row, path, "DELETE", undefined, crypto.randomUUID(), true);
+                  deleted = purge.ok || purge.status === 404;
+                } else if (read.status !== 404) deleted = false;
+                if (deleted && read.status !== 404) {
+                  const verified = await sfRequest(env, row, path, "GET", undefined, crypto.randomUUID(), true);
+                  deleted = verified.status === 404;
+                }
+              }
+              if (!deleted) cleanupError = `Temporary ${label} cleanup returned HTTP ${cleanup.status}.`;
+            } catch {
+              cleanupError = `Temporary ${label} cleanup could not reach Salesforce.`;
+            }
+          }
+        }
+      }
+      lastResult = result;
+      if (cleanupError) return { ...result, cleanupError };
+      const outcomes = Array.isArray(result.body) ? result.body.filter(object) : [];
+      if (result.status >= 200 && result.status < 300 && outcomes.length > 0 && outcomes.every(outcome =>
+        outcome.isSuccess === true && (!Array.isArray(outcome.errors) || outcome.errors.length === 0))) {
+        return result;
+      }
+    }
+    return lastResult;
+  }
+
+  /** Read graph metadata using an existing graph or a temporary schema-derived draft. */
+  async invokeDataGraphMetadataWithSyntheticGraph(ref: Key, input: {
+    apiVersion: string;
+    route: string;
+  }): Promise<{ status: number; body: unknown; cleanupError?: string; alternative?: { route: string; status: number; success: boolean; errorMessage: string | null } }> {
+    return this.#invokeDataGraphContext(ref, input);
+  }
+
+  async #invokeDataGraphContext(ref: Key, input: { apiVersion: string; route: string },
+    preparedRoot?: Record<string, unknown>, ownedRoot = false): Promise<{ status: number; body: unknown; cleanupError?: string; pending?: boolean;
+      alternative?: { route: string; status: number; success: boolean; errorMessage: string | null } }> {
+    if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
+        !["cdpGetDataGraphMetadata", "cdpGetDataGraph", "cdpGetDataGraphByLookup"].some(name =>
+          input.route === `/services/data/v${input.apiVersion}/actions/standard/${name}`)) {
+      throw authFailure(400, "invalid_synthetic_graph_test", "The synthetic data graph test request is invalid.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const graphPath = `${apiRoot}/ssot/data-graphs`;
+    const request = async (path: string, method: string, body?: unknown) => {
+      const response = await sfRequest(env, row, path, method,
+        body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    const readData = !input.route.endsWith("/cdpGetDataGraphMetadata");
+    if (!readData) {
+      const descriptor = await request(input.route, "GET");
+      if (!descriptor.ok) return { status: descriptor.status, body: descriptor.body };
+      const fields = object(descriptor.body) && Array.isArray(descriptor.body.inputs) ? descriptor.body.inputs.filter(object) : [];
+      if (["dataGraphApiName", "dataspaceApiName"].every(name => fields.some(field => field.name === name && field.required === false))) {
+        // The live descriptor explicitly permits listing metadata in the connected org default data space.
+        // This native read needs no temporary graph when the caller requests the catalog.
+        const listed = await request(input.route, "POST", { inputs: [{}] });
+        if (listed.ok && Array.isArray(listed.body) && listed.body.length === 1 && object(listed.body[0]) &&
+          listed.body[0].isSuccess === true && (!Array.isArray(listed.body[0].errors) || !listed.body[0].errors.length) &&
+          object(listed.body[0].outputValues) && typeof listed.body[0].outputValues.dataGraphMetadata === "string") {
+          return { status: listed.status, body: listed.body };
+        }
+      }
+    }
+    const job = readData ? await env.DB.prepare(`SELECT graph_name, root_schema_json, owned_model_name, created_at
+      FROM action_graph_context WHERE team_id=? AND org_id=? AND channel_id=? AND action_route=?`)
+      .bind(ref.teamId, ref.orgId, ref.channelId, input.route)
+      .first<{ graph_name: string; root_schema_json: string; owned_model_name: string | null; created_at: number }>() : null;
+    if (job) {
+      const saved: unknown = JSON.parse(job.root_schema_json);
+      if (!object(saved) || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(job.graph_name)) {
+        throw authFailure(500, "invalid_graph_context", "The saved graph context is invalid.");
+      }
+      preparedRoot = saved;
+      ownedRoot = !!job.owned_model_name;
+      if (Date.now() - job.created_at >= 24 * 60 * 60 * 1000) {
+        const graphCleanup = await request(`${graphPath}/${job.graph_name}`, "DELETE");
+        let clean = graphCleanup.ok || graphCleanup.status === 404;
+        if (clean && job.owned_model_name) {
+          if (!/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(job.owned_model_name)) {
+            throw authFailure(500, "invalid_graph_context", "The saved source context is invalid.");
+          }
+          const modelCleanup = await request(`${apiRoot}/ssot/data-model-objects/${job.owned_model_name}`, "DELETE");
+          clean = modelCleanup.ok || modelCleanup.status === 404;
+        }
+        if (clean) await env.DB.prepare(`DELETE FROM action_graph_context
+          WHERE team_id=? AND org_id=? AND channel_id=? AND action_route=? AND graph_name=?`)
+          .bind(ref.teamId, ref.orgId, ref.channelId, input.route, job.graph_name).run();
+        return { status: 422, body: { errorCode: "DATA_GRAPH_BUILD_EXPIRED",
+          message: "Salesforce did not materialize the graph within 24 hours. Automatic cleanup was attempted; the context must be rebuilt on a later retry." },
+          ...(!clean ? { cleanupError: "Expired graph context cleanup failed; its resource names remain tracked." } : {}) };
+      }
+    }
+    const lookup = input.route.endsWith("/cdpGetDataGraphByLookup");
+    const invoke = async (name: string, space: string, primaryKey?: string, primaryValue?: string, dmo?: string) => {
+      const result = await request(input.route, "POST", {
+        inputs: [{ dataGraphApiName: name, dataspaceApiName: space,
+          ...(readData ? lookup ? { lookupKey: `[${dmo ? `${dmo}.` : ""}${primaryKey}=${primaryValue}]` }
+            : { recordId: primaryValue } : {}) }],
+      });
+      const redact = (value: unknown, field = "", depth = 0): unknown => {
+        if (depth > 12) return null;
+        if (typeof value === "string" && ["message", "errorMessage", "error_description"].includes(field)) {
+          return [name, space, primaryValue].filter((item): item is string => !!item && item.length >= 4)
+            .reduce((text, argument) => text.split(argument).join("[value]"), value);
+        }
+        if (Array.isArray(value)) return value.map(item => redact(item, field, depth + 1));
+        if (object(value)) return Object.fromEntries(Object.entries(value)
+          .map(([key, child]) => [key, redact(child, key, depth + 1)]));
+        return value;
+      };
+      return { ...result, body: redact(result.body) };
+    };
+    const identifier = (value: unknown): value is string => typeof value === "string" &&
+      /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(value);
+    const existing = await request(`${graphPath}/metadata`, "GET");
+    if (!existing.ok) return { status: existing.status, body: existing.body };
+    if (!object(existing.body) || !Array.isArray(existing.body.dataGraphMetadata)) return { status: 502, body: {
+      errorCode: "DATA_GRAPH_SCHEMA_UNAVAILABLE", message: "Salesforce returned an invalid Data Graph metadata response.",
+    } };
+    const graphs = existing.body.dataGraphMetadata.filter(object);
+    const candidates = graphs.filter(item => identifier(item.developerName ?? item.name) &&
+      identifier(item.dataspaceName ?? item.dataSpaceName)).slice(0, 8);
+    if (!readData) for (const graph of candidates) {
+      const result = await invoke(String(graph.developerName ?? graph.name),
+        String(graph.dataspaceName ?? graph.dataSpaceName));
+      if (!missingGraphDefinition(result.body)) return { status: result.status, body: result.body };
+      // A catalog entry without a usable definition cannot ground this native read.
+      // Preserve all existing graphs; prepare a separately owned graph if none can be read.
+    }
+
+    const metadata = await request(`${apiRoot}/ssot/data-model-objects`, "GET");
+    if (!metadata.ok) return { status: metadata.status, body: metadata.body };
+    const models = preparedRoot ? [preparedRoot] : object(metadata.body) && Array.isArray(metadata.body.dataModelObject)
+      ? metadata.body.dataModelObject.filter(object) : [];
+    if (readData && !preparedRoot && models.length >= 50) {
+      for (let offset = 50; offset <= 1850; offset += 200) {
+        const page = await request(`${apiRoot}/ssot/data-model-objects?limit=200&offset=${offset}`, "GET");
+        if (!page.ok) return { status: page.status, body: page.body };
+        const items = object(page.body) && Array.isArray(page.body.dataModelObject)
+          ? page.body.dataModelObject.filter(object) : [];
+        models.push(...items);
+        if (items.length < 200) break;
+      }
+    }
+    const roots = models.filter(item => item.isEnabled === true && item.creationType !== "Adg" && identifier(item.name) &&
+      identifier(item.dataSpaceName) && Array.isArray(item.fields) &&
+      item.fields.some(field => object(field) && field.isPrimaryKey === true && identifier(field.name)));
+    let root = roots.find(item => String(item.category).toLowerCase() === "profile") ?? roots[0];
+    if (readData && !root && !preparedRoot) return this.#provisionDataGraphSource(ref, input, request);
+    if (!root || !Array.isArray(root.fields)) return { status: 422, body: {
+      errorCode: "DATA_GRAPH_CONTEXT_MISSING",
+      message: "No accessible data graph or enabled primary-key data model object is available for the probe.",
+    } };
+    let fields = root.fields.filter(object).filter(field => identifier(field.name) &&
+      (field.isPrimaryKey === true || field.name === "KQ_Id__c" ||
+        String(field.usageTag).toUpperCase() === "KEY_QUALIFIER"));
+    if (fields.some(field => typeof field.type !== "string")) return { status: 422, body: {
+      errorCode: "DATA_GRAPH_SCHEMA_UNAVAILABLE",
+      message: "The live data model key fields do not expose types needed to create a draft graph.",
+    } };
+    let primaryValue: string | undefined;
+    let primaryKey = fields.find(field => field.isPrimaryKey === true)?.name as string;
+    let populated: Array<{ candidate: typeof root; keyName: string; value: string }> = [];
+    if (readData) {
+      // PROFILE-first (canonical graph roots), then catalog order. Collect up
+      // to 3 populated roots so an activation refusal falls through to the
+      // next root instead of failing the probe on the first catalog entry.
+      const ordered = [...roots.slice(0, 24)].sort((a, b) =>
+        Number(String((b as Record<string, unknown>).category).toLowerCase() === "profile") -
+        Number(String((a as Record<string, unknown>).category).toLowerCase() === "profile"));
+      for (const candidate of ordered) {
+        if (populated.length >= 3) break;
+        const candidateKey = (candidate.fields as unknown[]).find(field => object(field) && field.isPrimaryKey === true) as Record<string, unknown>;
+        const keyName = String(candidateKey.name);
+        const path = `${apiRoot}/ssot/query-sql?dataspace=${encodeURIComponent(String(candidate.dataSpaceName))}`;
+        const schema = await request(path, "POST", { sql: `SELECT * FROM "${candidate.name}" LIMIT 0` });
+        const columns = object(schema.body) && Array.isArray(schema.body.metadata) ? schema.body.metadata.filter(object) : [];
+        if (!schema.ok || !columns.some(column => column.name === keyName)) continue;
+        const sample = await request(path, "POST", { sql: `SELECT "${keyName}" FROM "${candidate.name}" WHERE "${keyName}" IS NOT NULL LIMIT 1` });
+        const values = object(sample.body) && Array.isArray(sample.body.data) ? sample.body.data : [];
+        const first = values[0];
+        const value = Array.isArray(first) ? first[0] : object(first) ? first[keyName] : undefined;
+        if (!sample.ok || (typeof value !== "string" && typeof value !== "number") ||
+            !/^[A-Za-z0-9_.:@/-]{1,256}$/.test(String(value))) continue;
+        populated.push({ candidate, keyName, value: String(value) });
+      }
+      if (populated.length) {
+        root = populated[0].candidate;
+        fields = (root.fields as unknown[]).filter(object).filter(field => identifier(field.name) &&
+          (field.isPrimaryKey === true || String(field.usageTag).replaceAll("_", "").toUpperCase() === "KEYQUALIFIER"));
+        primaryKey = fields.find(field => field.isPrimaryKey === true)?.name as string;
+        primaryValue = populated[0].value;
+      }
+      if (!populated.length && !preparedRoot) return this.#provisionDataGraphSource(ref, input, request);
+      if (!populated.length) return { status: 422, body: {
+        errorCode: "DATA_GRAPH_SOURCE_MAPPING_REQUIRED",
+        message: "Automatically paginated live DMOs and checked physical key schemas and source rows; no populated, mapped primary-key DMO is available. Data 360 source ingestion and primary-key mapping are needed.",
+      } };
+      /* Recheck the selected physical schema before provisioning. */
+      // Identifiers are validated against live metadata; query only the key, never a full customer record.
+      const queryPath = `${apiRoot}/ssot/query-sql?dataspace=${encodeURIComponent(String(root.dataSpaceName))}`;
+      const schema = await request(queryPath, "POST", { sql: `SELECT * FROM "${root.name}" LIMIT 0` });
+      if (!schema.ok) return { status: schema.status, body: schema.body };
+      const columns = object(schema.body) && Array.isArray(schema.body.metadata) ? schema.body.metadata.filter(object) : [];
+      if (!columns.some(column => column.name === primaryKey)) return { status: 422, body: {
+        errorCode: "DATA_GRAPH_SOURCE_MAPPING_REQUIRED",
+        message: "Live DMO metadata advertises a primary key absent from its physical query schema. Automatically checked SQL metadata; Data 360 source ingestion and primary-key mapping are needed before this action can run.",
+      } };
+      const source = await request(queryPath,
+        "POST", { sql: `SELECT "${primaryKey}" FROM "${root.name}" WHERE "${primaryKey}" IS NOT NULL LIMIT 1` });
+      if (!source.ok) return { status: source.status, body: source.body };
+      const rows = object(source.body) && Array.isArray(source.body.rows) ? source.body.rows
+        : object(source.body) && Array.isArray(source.body.data) ? source.body.data : [];
+      const first = rows[0];
+      const value = Array.isArray(first) ? first[0] : object(first) ? first[primaryKey] : undefined;
+      if ((typeof value !== "string" && typeof value !== "number") ||
+          !/^[A-Za-z0-9_.:@/-]{1,256}$/.test(String(value))) return { status: 422, body: {
+        errorCode: "DATA_GRAPH_SOURCE_DATA_REQUIRED",
+        message: "Data Graph source has no usable primary key. Automatically attempted live DMO key discovery; a populated, mapped Data 360 source is needed before graph activation and action execution.",
+      } };
+      primaryValue = String(value);
+    }
+    let name = job?.graph_name ?? `ActionProbe${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const draftPayload = (draftName: string) => ({
+      name: draftName, label: draftName, creationMode: "draft", type: "NONE", dataspaceName: root.dataSpaceName,
+      primaryObjectName: root.name,
+      sourceObject: {
+        devName: "ProbeRoot", name: root.name, label: root.label ?? root.name, jsonPath: "$",
+        type: root.creationType === "Standard" ? "standard" : "custom",
+        fields: fields.map((field, index) => ({
+          devName: `ProbeField${index}`, sourceFieldName: field.name,
+          isKeyColumn: field.isPrimaryKey === true, isProjected: true, dataType: field.type,
+          usageTag: field.name === "KQ_Id__c" || String(field.usageTag).replaceAll("_", "").toUpperCase() === "KEYQUALIFIER"
+            ? "KEY_QUALIFIER" : "NONE",
+        })),
+        relatedObjects: [],
+      },
+    });
+    // Phase 1 (fresh read probes only): create+activate against each populated
+    // root in PROFILE-first order until one activates. Refused drafts are
+    // deleted immediately so fallthrough leaves no residue.
+    let draftReady = false;
+    let lastRefusal: { status: number; body: unknown } | null = null;
+    if (readData && !job) {
+      for (const [index, attempt] of populated.entries()) {
+        root = attempt.candidate;
+        fields = (root.fields as unknown[]).filter(object).filter(field => identifier(field.name) &&
+          (field.isPrimaryKey === true || String(field.usageTag).replaceAll("_", "").toUpperCase() === "KEYQUALIFIER"));
+        primaryKey = attempt.keyName;
+        primaryValue = attempt.value;
+        name = `${name.replace(/R\d+$/, "")}R${index}`;
+        const draftPath = `${graphPath}/${name}`;
+        const draftCreate = await request(graphPath, "POST", draftPayload(name));
+        if (!draftCreate.ok) {
+          lastRefusal = { status: draftCreate.status, body: draftCreate.body };
+          continue;
+        }
+        const draftActivation = await request(`${draftPath}/actions/activate`, "POST", {
+          fullRefreshConfig: { schedule: { frequency: 1, timeGranularity: "Day" } },
+        });
+        if (!draftActivation.ok || !object(draftActivation.body) || draftActivation.body.success !== true) {
+          lastRefusal = { status: draftActivation.ok ? 422 : draftActivation.status, body: draftActivation.body };
+          const swept = await request(draftPath, "DELETE");
+          if (!swept.ok && swept.status !== 404) return { status: lastRefusal.status, body: lastRefusal.body,
+            cleanupError: `Refused Data Graph draft ${name} could not be deleted; its resource name remains tracked.` };
+          continue;
+        }
+        draftReady = true;
+        break;
+      }
+      if (!draftReady) return { status: lastRefusal?.status ?? 422, body: lastRefusal?.body ?? {
+        errorCode: "DATA_GRAPH_CREATE_PAYLOAD_ERROR",
+        message: "Salesforce refused every populated graph root at create or activate time.",
+      } };
+    }
+    const temporaryPath = `${graphPath}/${name}`;
+    let created = false;
+    let cleanupError: string | undefined;
+    let pending = false;
+    let result: { status: number; body: unknown; alternative?: { route: string; status: number; success: boolean; errorMessage: string | null } };
+    try {
+      created = true;
+      const create = (job || draftReady) ? { ok: true, status: 200, body: null } : await request(graphPath, "POST", draftPayload(name));
+      created = create.ok || create.status >= 500;
+      if (!create.ok) {
+        result = { status: create.status, body: create.body };
+      } else {
+        if (readData) {
+          const activation = (job || draftReady) ? { ok: true, status: 200, body: { success: true } } : await request(`${temporaryPath}/actions/activate`, "POST", {
+            fullRefreshConfig: { schedule: { frequency: 1, timeGranularity: "Day" } },
+          });
+          if (!activation.ok || !object(activation.body) || activation.body.success !== true) {
+            result = { status: activation.ok ? 422 : activation.status, body: activation.body };
+          }
+          else {
+            if (!job) await env.DB.prepare(`INSERT INTO action_graph_context
+              (team_id,org_id,channel_id,action_route,graph_name,root_schema_json,owned_model_name,created_at)
+              VALUES (?,?,?,?,?,?,?,?)`).bind(ref.teamId, ref.orgId, ref.channelId, input.route, name,
+                JSON.stringify({ name: root.name, label: root.label, category: root.category,
+                  creationType: root.creationType, dataSpaceName: root.dataSpaceName, isEnabled: true, fields }),
+                ownedRoot ? String(root.name) : null, Date.now()).run();
+            // Bound readiness checks. Never treat activation acceptance as an action success.
+            result = { status: 409, body: { errorCode: "DATA_GRAPH_BUILD_PENDING",
+              message: "Automatically created and activated a schema-derived graph; Salesforce materialization is not ready for action execution." } };
+            let materialized = false;
+            for (let attempt = 0; attempt < 8; attempt++) {
+              const readiness = await request(`${apiRoot}/query?q=${encodeURIComponent(
+                `SELECT LastRunStatus,RecordCount FROM DataGraph WHERE DataGraphApiName='${name}' LIMIT 1`)}`, "GET");
+              if (!readiness.ok) {
+                pending = false;
+                result = { status: readiness.status, body: readiness.body };
+                break;
+              }
+              const records = object(readiness.body) && Array.isArray(readiness.body.records) ? readiness.body.records : [];
+              const state = records.length && object(records[0]) ? String(records[0].LastRunStatus ?? "") : "";
+              if (/^(success|succeeded|completed|active)$/i.test(state)) { materialized = true; break; }
+              if (/fail|error|cancel/i.test(state)) {
+                pending = false;
+                result = { status: 422, body: { errorCode: "DATA_GRAPH_BUILD_FAILED",
+                  message: `Salesforce Data Graph materialization ended with status ${state}. Automatic cleanup will run before rebuilding context.` } };
+                break;
+              }
+              pending = true;
+              if (attempt < 7) await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+            if (materialized) {
+              pending = false;
+              const action = await invoke(name, String(root.dataSpaceName), primaryKey, primaryValue, String(root.name));
+              result = { status: action.status, body: action.body };
+              pending = /DaoEntity.*not found|materializ/i.test(salesforceError(result.body).message ?? "");
+            }
+            if (pending) result = { status: 202, body: {
+              errorCode: "DATA_GRAPH_BUILD_PENDING",
+              message: "Automatically created and activated a graph with a real source key. Salesforce materialization is pending; the scheduler will reuse this graph and retry the action, then clean up the temporary context.",
+            } };
+            if (!pending && /unknown column|json_blob/i.test(salesforceError(result.body).message ?? "")) {
+              const liveRoute = `${graphPath}/data/${name}${lookup ? "" : `/${encodeURIComponent(primaryValue!)}`}?dataspace=${encodeURIComponent(String(root.dataSpaceName))}&live=true${lookup
+                ? `&lookupKeys=${encodeURIComponent(`[${root.name}.${primaryKey}=${primaryValue}]`)}` : ""}`;
+              const live = await request(liveRoute, "GET");
+              const containsKey = (value: unknown, depth = 0): boolean => depth < 8 && (
+                (typeof value === "string" || typeof value === "number") ? String(value) === primaryValue
+                : Array.isArray(value) ? value.some(item => containsKey(item, depth + 1))
+                  : object(value) ? Object.values(value).some(item => containsKey(item, depth + 1)) : false);
+              const success = live.ok && !salesforceError(live.body).code && containsKey(live.body);
+              let errorMessage = success ? null : salesforceError(live.body).message ?? "Salesforce returned no matching graph record.";
+              if (errorMessage) for (const value of [name, String(root.dataSpaceName), primaryValue!].filter(value => value.length >= 4)) {
+                errorMessage = errorMessage.split(value).join("[value]");
+              }
+              result.alternative = { route: `${graphPath}/data/{graph}${lookup ? "" : "/{recordId}"}?live=true`,
+                status: live.status, success, errorMessage };
+            }
+          }
+        } else {
+          const action = await readOwnedGraphMetadata({ invoke: () => invoke(name, String(root.dataSpaceName)),
+            activate: () => request(temporaryPath + "/actions/activate", "POST", {
+              fullRefreshConfig: { schedule: { frequency: 1, timeGranularity: "Day" } } }),
+            wait: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)) });
+          result = { status: action.status, body: action.body };
+        }
+      }
+    } finally {
+      if (created && !pending) {
+        let deleted = false;
+        for (let attempt = 0; attempt < 2 && !deleted; attempt++) {
+          try {
+            const cleanup = await request(temporaryPath, "DELETE");
+            deleted = cleanup.ok || cleanup.status === 404 || (cleanup.status === 400 &&
+              /data graph not found/i.test(salesforceError(cleanup.body).message ?? ""));
+            if (!deleted) cleanupError = `Temporary Data Graph cleanup returned HTTP ${cleanup.status}.`;
+          } catch {
+            cleanupError = "Temporary Data Graph cleanup could not reach Salesforce.";
+          }
+        }
+        if (deleted) cleanupError = undefined;
+        if (deleted && readData) {
+          if (job?.owned_model_name) {
+            const cleanup = await request(`${apiRoot}/ssot/data-model-objects/${job.owned_model_name}`, "DELETE");
+            if (!cleanup.ok && cleanup.status !== 404) cleanupError = `Temporary source cleanup returned HTTP ${cleanup.status}.`;
+          }
+          if (!cleanupError) await env.DB.prepare(`DELETE FROM action_graph_context
+            WHERE team_id=? AND org_id=? AND channel_id=? AND action_route=? AND graph_name=?`)
+            .bind(ref.teamId, ref.orgId, ref.channelId, input.route, name).run();
+        }
+      }
+    }
+    return { ...result, ...(pending ? { pending: true } : {}), ...(cleanupError ? { cleanupError } : {}) };
+  }
+
+  /** Tenant-authorized preparation endpoints for Data Graph read actions. */
+  async invokeDataGraphWithContext(ref: Key, input: { apiVersion: string }) {
+    return this.invokeDataGraphMetadataWithSyntheticGraph(ref, { ...input,
+      route: `/services/data/v${input.apiVersion}/actions/standard/cdpGetDataGraph` });
+  }
+
+  async invokeDataGraphByLookupWithContext(ref: Key, input: { apiVersion: string }) {
+    return this.invokeDataGraphMetadataWithSyntheticGraph(ref, { ...input,
+      route: `/services/data/v${input.apiVersion}/actions/standard/cdpGetDataGraphByLookup` });
+  }
+
+  async #provisionDataGraphSource(ref: Key, input: { apiVersion: string; route: string },
+    request: (path: string, method: string, body?: unknown) => Promise<{ status: number; ok: boolean; body: unknown }>) {
+    const root = `/services/data/v${input.apiVersion}/ssot`;
+    const catalog = await request(`${root}/data-lake-objects`, "GET");
+    if (!catalog.ok) return { status: catalog.status, body: catalog.body };
+    const objects = object(catalog.body) && Array.isArray(catalog.body.dataLakeObjects)
+      ? catalog.body.dataLakeObjects.filter(object) : [];
+    const safe = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(value);
+    let source: Record<string, unknown> | undefined;
+    let keyField: Record<string, unknown> | undefined;
+    let space: string | undefined;
+    for (const candidate of objects.slice(0, 12)) {
+      const field = Array.isArray(candidate.fields) ? candidate.fields.filter(object)
+        .find(field => field.isPrimaryKey === true && safe(field.name) && typeof field.dataType === "string") : undefined;
+      const spaces = Array.isArray(candidate.dataSpaceInfo) ? candidate.dataSpaceInfo.filter(object) : [];
+      const candidateSpace = spaces.find(item => safe(item.name))?.name;
+      if (!safe(candidate.name) || !field || !safe(candidateSpace)) continue;
+      const sample = await request(`${root}/query-sql?dataspace=${encodeURIComponent(candidateSpace)}`, "POST", {
+        sql: `SELECT "${field.name}" FROM "${candidate.name}" WHERE "${field.name}" IS NOT NULL LIMIT 1`,
+      });
+      if (sample.ok && object(sample.body) && Number(sample.body.returnedRows) > 0) {
+        source = candidate; keyField = field; space = candidateSpace; break;
+      }
+    }
+    if (!source || !keyField || !space) return { status: 422, body: {
+      errorCode: "DATA_GRAPH_SOURCE_DATA_REQUIRED",
+      message: "Automatically inspected DMO and DLO keys; no populated source is accessible. A connected Data 360 ingestion source is needed before temporary DMO mapping and graph activation can run.",
+    } };
+    const name = `ActionProbe${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    let modelName: string | undefined;
+    let mappingName: string | undefined;
+    let cleanupError: string | undefined;
+    let result: { status: number; body: unknown; cleanupError?: string; pending?: boolean } = { status: 422, body: {
+      errorCode: "DATA_GRAPH_SOURCE_MAPPING_PENDING", message: "Automatic DMO mapping has not materialized yet.",
+    } };
+    try {
+      result = await (async () => {
+      const create = await request(`${root}/data-model-objects`, "POST", {
+        name, label: name, category: "Other", dataSpaceName: space,
+        fields: [{ name: "ProbeKey", label: "Probe key", dataType: keyField.dataType, isPrimaryKey: true }],
+      });
+      if (!create.ok || !object(create.body) || !safe(create.body.name)) return { status: create.status, body: create.body };
+      modelName = create.body.name;
+      const fields = Array.isArray(create.body.fields) ? create.body.fields.filter(object) : [];
+      const primary = fields.find(field => field.isPrimaryKey === true && safe(field.name));
+      if (!primary) return { status: 502, body: { errorCode: "DATA_GRAPH_SOURCE_SCHEMA_INVALID",
+        message: "Created DMO did not expose a primary key; automatic setup cannot continue." } };
+      const mapping = await request(`${root}/data-model-object-mappings`, "POST", {
+        sourceEntityDeveloperName: source.name, targetEntityDeveloperName: modelName,
+        fieldMapping: [{ sourceFieldDeveloperName: keyField.name, targetFieldDeveloperName: primary.name }],
+      });
+      if (!mapping.ok || !object(mapping.body) || !safe(mapping.body.developerName)) {
+        return { status: mapping.status, body: mapping.body };
+      }
+      mappingName = mapping.body.developerName;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const current = await request(`${root}/data-model-objects/${modelName}`, "GET");
+        const sample = await request(`${root}/query-sql?dataspace=${encodeURIComponent(space)}`, "POST", {
+          sql: `SELECT "${primary.name}" FROM "${modelName}" WHERE "${primary.name}" IS NOT NULL LIMIT 1`,
+        });
+        if (current.ok && object(current.body) && sample.ok && object(sample.body) && Number(sample.body.returnedRows) > 0) {
+          result = await this.#invokeDataGraphContext(ref, input, { ...current.body, isEnabled: true }, true);
+          break;
+        }
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      return result;
+      })();
+    } finally {
+      // Deleting the only DLO mapping independently is rejected by Salesforce. Delete our DMO first;
+      // Salesforce removes its owned mapping with it, then independently check the mapping is gone.
+      for (const path of [modelName ? `${root}/data-model-objects/${modelName}` : null]) {
+        if (!path || result.pending) continue;
+        try {
+          const cleanup = await request(path, "DELETE");
+          if (!cleanup.ok && cleanup.status !== 404) cleanupError = `Temporary Data Graph source cleanup returned HTTP ${cleanup.status}.`;
+        } catch { cleanupError = "Temporary Data Graph source cleanup could not reach Salesforce."; }
+      }
+      if (mappingName && !result.pending) {
+        try {
+          const check = await request(`${root}/data-model-object-mappings/${mappingName}`, "GET");
+          if (check.ok) cleanupError = "Temporary Data Graph mapping still exists after DMO cleanup.";
+        } catch { cleanupError = "Temporary Data Graph mapping cleanup could not be verified."; }
+      }
+    }
+    return { ...result, ...(cleanupError ? { cleanupError } : {}) };
+  }
+
+  /** Infer a typed prompt fixture through the real Salesforce preview validator. */
+  async prepareTypedPromptContext(ref: Key, input: { apiVersion: string; route: string;
+    arguments: Record<string, unknown> }): Promise<{ status: number; body: unknown;
+      arguments?: Record<string, unknown>; schemas?: Record<string, unknown>; executionRoute?: string }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/generatePromptResponse\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.arguments) ||
+        JSON.stringify(input.arguments).length > 32_000) {
+      throw authFailure(400, "invalid_prompt_context", "A discovered prompt route and bounded input arguments are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const templatePath = `/services/data/v${input.apiVersion}/einstein/prompt-templates/${match[2]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method,
+        body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true);
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    const metadata = await request(templatePath);
+    if (!metadata.ok) return { status: metadata.status, body: metadata.body };
+    const relationships = object(metadata.body) && object(metadata.body.childRelationships)
+      ? metadata.body.childRelationships : {};
+    const versions = Array.isArray(relationships.GenAiPromptTemplateVersions)
+      ? relationships.GenAiPromptTemplateVersions.filter(object) : [];
+    const version = versions.find(item => object(item.fields) && object(item.fields.Status) &&
+      item.fields.Status.value === "Published");
+    const inputs = version && object(version.childRelationships) &&
+      Array.isArray(version.childRelationships.GenAiPromptTemplateInputs)
+      ? version.childRelationships.GenAiPromptTemplateInputs.filter(object) : [];
+    const typed: Array<{ name: string; definition: string; value: Record<string, unknown> }> = [];
+    const args: Record<string, unknown> = {};
+    for (const item of inputs) {
+      if (!object(item.fields)) continue;
+      const name = object(item.fields.ReferenceName) ? item.fields.ReferenceName.value : undefined;
+      const definition = object(item.fields.Definition) ? item.fields.Definition.value : undefined;
+      if (typeof name !== "string" || !/^Input:[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name) ||
+          typeof definition !== "string") continue;
+      if (definition.startsWith("lightningtype://")) {
+        const value = {};
+        typed.push({ name, definition, value }); args[name] = { value };
+      } else if (Object.hasOwn(input.arguments, name)) args[name] = input.arguments[name];
+    }
+    // Error paths are relative to one typed document. Ambiguous multi-document repair is rejected.
+    if (typed.length !== 1) return { status: 422, body: { errorCode: "PROMPT_CONTEXT_SCHEMA_UNAVAILABLE",
+      message: "The live template must expose exactly one typed document for validation-based context discovery." } };
+    const executionRoute = `${templatePath}/generations`;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const preview = await request(executionRoute, "POST", { isPreview: true,
+        inputParams: { valueMap: args }, additionalConfig: { applicationName: "PromptBuilderPreview" } });
+      if (preview.ok && object(preview.body) && typeof preview.body.prompt === "string" && preview.body.prompt.length) {
+        return { status: preview.status, body: null, arguments: args, executionRoute,
+          schemas: { [typed[0].name]: { definition: typed[0].definition,
+            source: "salesforce_live_validation", schema: inferredContextSchema(typed[0].value) } } };
+      }
+      const error = salesforceError(preview.body);
+      if (preview.status !== 400 || error.code !== "INVALID_INPUT" || !error.message ||
+          !repairPromptContext(typed[0].value, error.message)) {
+        return { status: preview.status, body: preview.body };
+      }
+    }
+    return { status: 422, body: { errorCode: "PROMPT_CONTEXT_VALIDATION_EXHAUSTED",
+      message: "Salesforce rejected the synthetic typed context after the bounded discovery attempts." } };
+  }
+
+  /** Build disposable lookup records using the active Flow's own input/filter definitions. */
+  async describeFlowCreationContext(ref: Key, input: { route: string }): Promise<{ status: number; body: unknown; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !match) throw authFailure(400, "invalid_flow_creation_context", "A discovered Flow route is required.");
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string) => {
+      const response = await sfRequest(env, row, path, "GET", undefined, crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    const descriptor = await request(input.route);
+    if (!descriptor.ok) return descriptor;
+    const local = match[2].includes("__") ? match[2].slice(match[2].indexOf("__") + 2) : match[2];
+    const definition = await request(`${root}/tooling/query?q=${encodeURIComponent(`SELECT DeveloperName,NamespacePrefix,ActiveVersionId FROM FlowDefinition WHERE DeveloperName IN ('${match[2]}','${local}')`)}`);
+    if (!definition.ok) return definition;
+    const definitions = object(definition.body) && Array.isArray(definition.body.records) ? definition.body.records.filter(object)
+      .filter(item => (item.NamespacePrefix ? `${item.NamespacePrefix}__${item.DeveloperName}` : item.DeveloperName) === match[2]) : [];
+    const versionId = definitions.length === 1 ? definitions[0].ActiveVersionId : null;
+    if (typeof versionId !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(versionId)) {
+      const contract = await describePackagedFlowContract({ root, route: input.route, descriptor: descriptor.body, request });
+      return contract.status !== 422 ? contract : { status: 422, body: { errorCode: "FLOW_CREATION_METADATA_UNAVAILABLE", message: "The active Flow metadata is not exposed and its descriptor does not declare a complete typed record-creation contract." } };
+    }
+    const retrieved = await request(`${root}/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id='${versionId}'`)}`);
+    if (!retrieved.ok) return retrieved;
+    const metadata = object(retrieved.body) && Array.isArray(retrieved.body.records) ? retrieved.body.records.filter(object)[0]?.Metadata : null;
+    const recipes = flowCreationRecipes(metadata);
+    if (!recipes.length || !object(metadata) || !Array.isArray(metadata.variables)) return { status: 422, body: {
+      errorCode: "FLOW_CREATION_CHAIN_UNRESOLVED", message: "The live Flow needs additional dependency handling beyond resolved record creation assignments." } };
+    const variables = metadata.variables.filter(object).filter(item => item.isInput === true);
+    const targets: Array<{ objectName: string; fields: unknown; bindings: unknown[]; fixtureAccessReady: boolean }> = [];
+    const fixtures: Array<{ inputName: string; objectName: string; markerField?: string; collection: boolean; fixtureAccessReady: boolean }> = [];
+    for (const recipe of recipes) {
+      const schema = await request(`${root}/sobjects/${recipe.objectName}/describe`);
+      if (!schema.ok) return schema;
+      const fields = object(schema.body) && Array.isArray(schema.body.fields) ? schema.body.fields.filter(object) : [];
+      const bindings: unknown[] = [];
+      for (const assignment of recipe.fields) {
+        const field = fields.find(item => item.name === assignment.field);
+        if (!field) return { status: 422, body: { errorCode: "FLOW_CREATION_FIELD_UNAVAILABLE", message: "A Flow creation field is absent from the live object schema." } };
+        if (assignment.inputName && field.type === "reference") {
+          const references = Array.isArray(field.referenceTo) ? field.referenceTo.filter(value => typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(value)) : [];
+          const variable = variables.find(item => item.name === assignment.inputName);
+          const objectName = references.includes(variable?.objectType) ? String(variable?.objectType) : references.length === 1 ? String(references[0]) : null;
+          if (!objectName || assignment.inputField && assignment.inputField !== "Id") return { status: 422, body: {
+            errorCode: "FLOW_CREATION_REFERENCE_UNRESOLVED", message: "The live Flow reference requires an unambiguous disposable object context." } };
+          if (!fixtures.some(item => item.inputName === assignment.inputName)) {
+            const parentSchema = await request(`${root}/sobjects/${objectName}/describe`);
+            if (!parentSchema.ok) return parentSchema;
+            const parentFields = object(parentSchema.body) && Array.isArray(parentSchema.body.fields) ? parentSchema.body.fields.filter(object) : [];
+            const markers = parentFields.filter(item => !parentFields.some(component => component.compoundFieldName === item.name) && item.calculated !== true && item.autoNumber !== true && item.filterable === true && ["string", "combobox"].includes(String(item.type)) && typeof item.length === "number" && item.length >= 48);
+            const writableMarkers = markers.filter(item => item.createable === true);
+            const preferredMarkers = writableMarkers.length ? writableMarkers : markers;
+            const marker = preferredMarkers.find(item => item.nameField === true && !item.compoundFieldName) ?? preferredMarkers.find(item => item.nillable === false) ?? preferredMarkers[0];
+            fixtures.push({ inputName: assignment.inputName, objectName, fixtureAccessReady: object(parentSchema.body) && parentSchema.body.createable === true && parentSchema.body.deletable === true && (!marker || marker.createable === true), ...(typeof marker?.name === "string" ? { markerField: marker.name } : {}), collection: assignment.collection === true });
+          }
+        }
+        bindings.push({ ...assignment, type: field.type });
+      }
+      targets.push({ objectName: recipe.objectName, fixtureAccessReady: object(schema.body) && schema.body.deletable === true && schema.body.queryable === true, fields: fields.filter(field => recipe.fields.some(item => item.field === field.name)).map(field => ({ name: field.name, type: field.type })), bindings });
+    }
+    if (targets.some(target => !target.bindings.some(binding => object(binding) && binding.type === "reference" && fixtures.some(item => item.inputName === binding.inputName)))) return { status: 422, body: {
+      errorCode: "FLOW_CREATION_OWNERSHIP_UNRESOLVED", message: "Every creation target must reference a disposable owned context before execution." } };
+    const anchor = fixtures.find(item => item.markerField);
+    const anchoredTarget = anchor && targets.find(target => target.bindings.some(binding => object(binding) && binding.inputName === anchor.inputName && binding.type === "reference"));
+    const reference = anchoredTarget?.bindings.find(binding => object(binding) && binding.inputName === anchor?.inputName && binding.type === "reference");
+    if (!anchor || !anchoredTarget || !object(reference)) return { status: 422, body: { errorCode: "FLOW_CREATION_OWNERSHIP_UNRESOLVED", message: "No queryable synthetic parent ownership anchor was discovered." } };
+    const contextSchema = { source: "salesforce_live_flow_creation", fixtures, targets,
+      inputVariables: variables.map(item => ({ name: item.name, dataType: item.dataType })),
+      targetObject: anchoredTarget.objectName, parentContextObject: anchor.objectName, markerField: anchor.markerField,
+      referenceField: reference.field, anchorInput: anchor.inputName,
+      automaticSteps: ["Retrieve active Flow creation metadata", "Resolve scalar and collection assignments", "Describe target and reference object schemas", "Create disposable referenced records", "Invoke with owned context", "Query and verify created children", "Delete children and referenced fixtures and verify cleanup"] };
+    return { status: 200, body: { discovered: true }, contextSchema };
+  }
+
+  async invokeFlowCreationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    if (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) throw authFailure(400, "invalid_verification_window", "A bounded verification window is required.");
+    const described = await this.describeFlowCreationContext(ref, input);
+    if (described.status !== 200 || !object(described.contextSchema)) return described;
+    const plan = described.contextSchema;
+    if ([...(Array.isArray(plan.targets) ? plan.targets : []), ...(Array.isArray(plan.fixtures) ? plan.fixtures : [])].some(item => !object(item) || item.fixtureAccessReady !== true)) {
+      return { status: 403, body: { errorCode: "FLOW_CREATION_FIXTURE_PERMISSIONS_REQUIRED", message: "Live Flow targets or references lack the create/read/delete or marker access needed for verification. Run dynamic fixture permission setup and retry." }, contextSchema: plan };
+    }
+    const env = this.env as AuthEnv;
+    const row = (await credential(env, ref)) ?? (await resolveBridgeCredential(env, ref));
+    if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+    const root = input.route.split("/actions/")[0];
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "FLOW_CREATION_UPSTREAM_UNAVAILABLE", message: "Salesforce execution or readback failed; owned cleanup will still run." } }; }
+    };
+    if (plan.source === "salesforce_live_flow_scalar_creation_contract") return invokeFlowScalarCreationContract({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (plan.source === "salesforce_live_flow_record_contract" || plan.source === "salesforce_live_flow_update_contract") return (plan.source === "salesforce_live_flow_update_contract" ? invokeFlowUpdateContract : invokeFlowRecordContract)({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    return invokeOwnedFlowCreation({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => {
+        const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result;
+      } });
+  }
+
+  /** Owned lifecycle for single-recordCreate invocable flows (e.g. Create_Booking). */
+  async invokeRemainderBookingFlow(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !match || match[2] !== "Create_Booking" ||
+      (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000))) {
+      throw authFailure(400, "invalid_remainder_booking_context", "A discovered remainder booking Flow route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "REMAINDER_BOOKING_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeRemainderBookingFlow({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Invoke a spec'd managed Flow with a live platform sObject and verify the Finished outcome. */
+  async invokeFlowLiveSObjectWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !match || FLOW_LIVE_SOBJECT_SPECS[match[2]] === undefined ||
+      (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000))) {
+      throw authFailure(400, "invalid_flow_sobject_context", "A discovered spec'd Flow route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "FLOW_SOBJECT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; the native call was not verified." } }; }
+    };
+    const result = await invokeFlowLiveSObject({ root, route: input.route, actionName: match[2], request });
+    return { status: result.status, body: result.body, contextSchema: result.contextSchema };
+  }
+
+  async invokeRecordActionWithContext(ref: Key, input: { route: string; objectApiName: string; verificationWindowMs?: number; attendeePayloadFields?: string[]; invitationPrefixField?: string; fixtureIdInput?: string; contextArgs?: Record<string, unknown> }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/(createCart|deleteCart|addCartItem|updateCartItem|createInvRsvForCart|deleteInvRsvForCart|saveAppointmentInvitationDetails|saveServiceAppointmentAttendees|cancelAppointment|createWaitlist|contactRequestAction|createCustomField|invocableApplyLeadAssignmentRules|createRecord|updateRecord|chatterPost|publishKnowledgeArticles|assignKnowledgeArticles|archiveKnowledgeArticles|deleteKnowledgeArticles|createDraftFromOnlineKnowledgeArticle|restoreKnowledgeArticleVersion|getArticleSmartLinkUrl|submitKnowledgeArticleForTranslation|activateSessionPermSet|deactivateSessionPermSet|addWorkPlans|addWorkSteps|deleteWorkPlans|choosePricebook|skillsBasedRouting|routeWork|runCampaign|contentWorkspaceEnableFolders|updateVisualization|changeOrderSummaryPreview|changeOrderSummarySubmit|registerGuestBuyer|createSearchBoostBuryRule|authorizePayment|generateWorkPlans|holdFulfillmentOrderCapacity|confirmHeldFulfillmentOrderCapacity|releaseHeldFulfillmentOrderCapacity|getFulfillmentOrderCapacityValues|createServiceReport|generateWorkOrders|getRecord|getRelatedList)$/);
+    if (input?.invitationPrefixField !== undefined && (typeof input.invitationPrefixField !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(input.invitationPrefixField))) throw authFailure(400, "invalid_invitation_schema", "A discovered invitation prefix field is required.");
+    if (input?.attendeePayloadFields !== undefined && (!Array.isArray(input.attendeePayloadFields) || input.attendeePayloadFields.length > 20 || input.attendeePayloadFields.some(name => typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name)))) throw authFailure(400, "invalid_attendee_schema", "A bounded live attendee schema is required.");
+    if (!key(ref) || !match || typeof input.objectApiName !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(input.objectApiName) ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_record_action_context", "A discovered record action, object API name and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`, target = input.objectApiName, update = match[2] === "updateRecord";
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "RECORD_ACTION_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    if (['createCart','deleteCart'].includes(match[2])) {
+      if(target!=='WebCart') throw authFailure(400,'invalid_cart_context','The discovered native cart lifecycle requires WebCart context.');
+      return invokeCartMutation({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if (CART_ITEM_MUTATION_ACTIONS.includes(match[2])) {
+      if(target!=='WebCart') throw authFailure(400,'invalid_cart_context','The discovered native cart item lifecycle requires WebCart context.');
+      return invokeCartItemMutation({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((INVENTORY_RESERVATION_ACTIONS as readonly string[]).includes(match[2]) || CART_INVENTORY_RESERVATION_ACTIONS.includes(match[2])) {
+      if(target!=='WebCart') throw authFailure(400,'invalid_inventory_context','The discovered native inventory reservation lifecycle requires WebCart context.');
+      return invokeInventoryReservation({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values,schema)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values,new Map(),schema);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((GUEST_BUYER_ACTIONS as readonly string[]).includes(match[2])) {
+      if(target!=='WebStore') throw authFailure(400,'invalid_guest_buyer_context','The discovered native guest-buyer lifecycle requires WebStore context.');
+      return invokeGuestBuyerRegistration({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((SEARCH_RULE_ACTIONS as readonly string[]).includes(match[2])) {
+      if(target!=='WebStore') throw authFailure(400,'invalid_search_rule_context','The discovered native search-rule lifecycle requires WebStore context.');
+      return invokeSearchBoostBuryRuleWithContext({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((PAYMENT_AUTH_ACTIONS as readonly string[]).includes(match[2])) {
+      return invokePaymentAuthorizationWithContext({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((FULFILLMENT_CAPACITY_ACTIONS as readonly string[]).includes(match[2])) {
+      return invokeFulfillmentCapacityWithContext({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((SERVICE_REPORT_ACTIONS as readonly string[]).includes(match[2])) {
+      return invokeServiceReportWithContext({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if ((WORK_ORDERS_ACTIONS as readonly string[]).includes(match[2])) {
+      return invokeWorkOrdersWithContext({root,route:input.route,verificationWindowMs:input.verificationWindowMs,request,
+        build:async(name,marker,values)=>{const result=await synthesizeRecordValues(env,row,root,name,marker,values);return 'failure' in result?{failure:{...result.failure,ok:false}}:result;}});
+    }
+    if (match[2] === 'contactRequestAction') return invokeContactRequestContext({root,route:input.route,userId:row.integration_user_id,verificationWindowMs:input.verificationWindowMs,request});
+    if ((ORDER_SUMMARY_ACTIONS as readonly string[]).includes(match[2])) return invokeOrderSummaryPreviewWithContext({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, request });
+    if (match[2] === 'saveAppointmentInvitationDetails') return invokeAppointmentInvitation({ root, route: input.route, userId: row.integration_user_id, verificationWindowMs: input.verificationWindowMs, invitationPrefixField: input.invitationPrefixField, connectedOrigin: async () => (await token(env, row)).instanceUrl, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return 'failure' in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (['cancelAppointment','saveServiceAppointmentAttendees'].includes(match[2])) return invokeAppointmentCancellation({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, attendeePayloadFields: input.attendeePayloadFields, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return 'failure' in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (match[2] === 'createWaitlist') return invokeWaitlistContext({ root, route: input.route, userId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return 'failure' in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (match[2] === 'createCustomField') return invokeCustomFieldActionContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, request,
+      remove: async fullName => {
+        if (!new RegExp('^' + target + '\\.(?:[A-Za-z][A-Za-z0-9_]*__)?AS_field_[a-f0-9]{24}__c$').test(fullName)) return { status: 400, ok: false, missing: false };
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const auth = await token(env, row);
+          const body = `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata"><s:Header><m:SessionHeader><m:sessionId>${xmlText(auth.accessToken)}</m:sessionId></m:SessionHeader></s:Header><s:Body><m:deleteMetadata><m:type>CustomField</m:type><m:fullNames>${xmlText(fullName)}</m:fullNames></m:deleteMetadata></s:Body></s:Envelope>`;
+          try {
+            const response = await fetch(auth.instanceUrl + '/services/Soap/m/' + match[1].slice(1), { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=UTF-8', SOAPAction: 'deleteMetadata' }, body, signal: AbortSignal.timeout(60_000) });
+            const text = await response.text();
+            if (attempt === 0 && (response.status === 401 || /INVALID_SESSION_ID/.test(text))) { tokenCache.delete(cacheKey(row)); continue; }
+            const ok = response.ok && /<(?:\w+:)?success>\s*true\s*<\/(?:\w+:)?success>/.test(text);
+            const missing = response.ok && /<(?:\w+:)?statusCode>\s*(?:NOT_FOUND|INVALID_CROSS_REFERENCE_KEY)\s*<\/(?:\w+:)?statusCode>/.test(text) && text.includes(fullName);
+            return { status: response.status, ok, missing };
+          } catch { return { status: 502, ok: false, missing: false }; }
+        }
+        return { status: 401, ok: false, missing: false };
+      } });
+    if (match[2] === 'invocableApplyLeadAssignmentRules') return invokeLeadAssignmentContext({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return 'failure' in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (["skillsBasedRouting", "routeWork"].includes(match[2])) return invokeRoutingContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (match[2] === "choosePricebook") return invokePricebookContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (WORK_PLAN_CONTEXT_ACTIONS.includes(match[2])) return invokeWorkPlanContext({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    if (["activateSessionPermSet", "deactivateSessionPermSet"].includes(match[2])) return invokeSessionPermissionContext({ root, route: input.route, userId: row.integration_user_id, verificationWindowMs: input.verificationWindowMs, request });
+    if (Object.hasOwn(SINGLE_FIXTURE_ACTION_SPECS, match[2])) {
+      const spec = SINGLE_FIXTURE_ACTION_SPECS[match[2]];
+      if (target !== spec.object || input.fixtureIdInput !== spec.idInput) {
+        throw authFailure(400, "invalid_single_fixture_spec", "The fixture object and identity input must match the discovered action spec.");
+      }
+      return invokeSingleFixtureAction({ root, route: input.route, target, idInput: spec.idInput, markerField: spec.markerField,
+        ownerId: row.integration_user_id, verificationWindowMs: input.verificationWindowMs, request,
+        build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+          return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    }
+    if (Object.hasOwn(FIXTURE_READ_ACTION_SPECS, match[2])) {
+      const spec = FIXTURE_READ_ACTION_SPECS[match[2]];
+      if (input.fixtureIdInput !== spec.idInput || !object(input.contextArgs) ||
+          Object.keys(input.contextArgs).length > 20 ||
+          Object.keys(input.contextArgs).some(key => typeof key !== "string" || key.length > 128)) {
+        throw authFailure(400, "invalid_fixture_read_spec", "The identity input and bounded read arguments must match the discovered action spec.");
+      }
+      return invokeFixtureBackedRead({ root, route: input.route, target, idInput: spec.idInput,
+        verifyIdentityInResponse: spec.verifyIdentityInResponse, args: input.contextArgs,
+        verificationWindowMs: input.verificationWindowMs, request,
+        build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+          return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    }
+    if (!["createRecord", "updateRecord", "chatterPost"].includes(match[2])) return invokeKnowledgeContext({ root, route: input.route, target, userId: row.integration_user_id, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    const descriptor = await request(input.route);
+    if (!descriptor.ok) return descriptor;
+    if (match[2] === "chatterPost") {
+      if (!object(descriptor.body) || !Array.isArray(descriptor.body.inputs) || !["text", "subjectNameOrId"].every(name => object(descriptor.body) && Array.isArray(descriptor.body.inputs) && descriptor.body.inputs.some(f => object(f) && f.name === name)))
+        return { status: 422, body: { errorCode: "CHATTER_ACTION_SCHEMA_MISMATCH", message: "The live Chatter action does not expose its required inputs." } };
+      const child = await request(`${root}/sobjects/FeedItem/describe`);
+      if (!child.ok || !object(child.body) || child.body.queryable !== true || child.body.deletable !== true || !Array.isArray(child.body.fields))
+        return { status: 403, body: { errorCode: "CHATTER_FIXTURE_PERMISSIONS_REQUIRED", message: "Live feed-item read/delete access is required to verify and clean the Chatter post." } };
+      const fields = child.body.fields.filter(object);
+      if (!fields.some(f => f.name === "Body" && f.createable === true)) return { status: 403, body: { errorCode: "CHATTER_FIXTURE_PERMISSIONS_REQUIRED", message: "Writable feed-item body access is required." } };
+      return invokeReferenceQuickAction({ root, route: input.route, target: "FeedItem", parent: target, parentField: "ParentId", fields,
+        inputs: descriptor.body.inputs.filter(object), integrationUserId: row.integration_user_id, verificationWindowMs: input.verificationWindowMs,
+        contextInputName: "subjectNameOrId", markerInputName: "text", markerTargetField: "Body", outputRecordField: "feedItemId", source: "salesforce_live_chatter_action", request,
+        build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+          return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+    }
+    if (!object(descriptor.body) || !Array.isArray(descriptor.body.inputs) ||
+      !["objectApiName", "recordData", ...(update ? ["recordId"] : [])].every(name => descriptor.body && object(descriptor.body) &&
+        Array.isArray(descriptor.body.inputs) && descriptor.body.inputs.some(field => object(field) && field.name === name))) {
+      return { status: 422, body: { errorCode: "RECORD_ACTION_SCHEMA_MISMATCH", message: "The live record action does not declare the required request fields." } };
+    }
+    const schema = await request(`${root}/sobjects/${target}/describe`);
+    if (!schema.ok) return schema;
+    if (!object(schema.body) || schema.body.createable !== true || schema.body.deletable !== true || schema.body.queryable !== true || !Array.isArray(schema.body.fields)) {
+      return { status: 403, body: { errorCode: "RECORD_ACTION_FIXTURE_PERMISSIONS_REQUIRED", message: `Automatic ${target} context requires live create, read and delete access.` } };
+    }
+    const fields = schema.body.fields.filter(object);
+    const candidates = fields.filter(field => typeof field.name === "string" && field.createable === true && field.filterable === true &&
+      (!update || field.updateable === true) && ["string", "combobox"].includes(String(field.type)) && typeof field.length === "number" && field.length >= 48);
+    const markerField = candidates.find(field => field.nameField === true && !field.compoundFieldName) ?? candidates.find(field => field.nillable === false) ?? candidates[0];
+    if (!markerField || typeof markerField.name !== "string") return { status: 422, body: { errorCode: "RECORD_ACTION_MARKER_UNAVAILABLE", message: "The live object has no writable and queryable ownership marker." } };
+    const marker = `AS probe ${crypto.randomUUID()}`;
+    const built = await synthesizeRecordValues(env, row, root, target, marker, { [markerField.name]: marker });
+    if ("failure" in built) return built.failure;
+    return invokeOwnedRecordAction({ root, route: input.route, target, update, markerField: markerField.name,
+      marker, markerLength: Number(markerField.length), values: built.values,
+      verificationWindowMs: input.verificationWindowMs, request });
+  }
+
+  async invokeApprovalActionWithContext(ref: Key, input: { route: string; verificationWindowMs?: number; reassignUserId?: string }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? approvalActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000) ||
+      input.reassignUserId !== undefined && !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(input.reassignUserId)) {
+      throw authFailure(400, "invalid_approval_action_context", "A discovered standard approval action and bounded verification window are required.");
+    }
+    if (![...APPROVAL_ADVANCED_ACTIONS, APPROVAL_SUBMIT_ACTION].includes(action)) {
+      throw authFailure(400, "invalid_approval_action_context", "A discovered standard approval action and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APPROVAL_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeApprovalActionWithContext({ root, route: input.route, verificationWindowMs: input.verificationWindowMs,
+      reassignUserId: input.reassignUserId ?? row.integration_user_id, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeProcSimpleApprovalWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? procSimpleApprovalActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_proc_simple_approval_context", "A discovered simple-approval flow route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APPROVAL_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeProcSimpleApprovalWithContext({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeNotificationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/sendNotification\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? notificationActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_notification_action_context", "A discovered custom notification action and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "NOTIFICATION_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeNotificationWithContext({ root, route: input.route, recipientUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Invoke a notification-flow email consumer over an owned alert-object fixture. */
+  async invokeNotificationFlowWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? notificationFlowActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_notification_flow_context", "A discovered notification-flow consumer route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "NOTIFICATION_FLOW_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    // Self-email is read live: the recipient invariant (record-field mail to
+    // example.invalid, creator mail to self) is asserted, never assumed.
+    const self = await request(`${root}/sobjects/User/${row.integration_user_id}`);
+    const selfEmail = object(self.body) ? self.body.Email : null;
+    if (!self.ok || typeof selfEmail !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(selfEmail)) {
+      return { status: 422, body: { errorCode: "NOTIFICATION_FLOW_SELF_INVALID", message: "The live integration user's email could not be read; the recipient invariant cannot be proven." } };
+    }
+    return invokeNotificationFlowWithContext({ root, route: input.route, selfUserId: row.integration_user_id, selfEmail,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeEmailAlertWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/emailAlert\/([A-Za-z][A-Za-z0-9_]{0,127})\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const parts = match ? emailAlertRouteParts(input.route) : null;
+    if (!key(ref) || !match || !parts ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_email_alert_action_context", "A discovered custom emailAlert action and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "EMAIL_ALERT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeEmailAlertWithContext({ root, route: input.route, selfUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Invoke a side-effect-free invocable Apex relay over owned Ended-session fixtures. */
+  async invokeApexRelayWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? apexRelayActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_apex_relay_context", "A discovered invocable apex relay route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APEX_RELAY_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeApexRelayWithContext({ root, route: input.route, ownerUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Invoke a generic sObject-id invocable Apex over an owned marked fixture. */
+  async invokeApexExecWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? apexExecActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_apex_exec_context", "A discovered invocable apex route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APEX_EXEC_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeApexExecWithContext({ root, route: input.route, ownerUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Evaluate a decision-table action with a fully populated descriptor-built payload. */
+  async invokeDecisionTableWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/decisionTableAction\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? decisionTableActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_decision_table_context", "A discovered decision-table action route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "DECISION_TABLE_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; no owned rows exist for this read-only evaluation." } }; }
+    };
+    return invokeDecisionTableWithContext({ root, route: input.route,
+      verificationWindowMs: input.verificationWindowMs, request });
+  }
+
+  async invokeApexCsvWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? apexCsvActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_apex_csv_context", "A discovered invocable apex route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APEX_CSV_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeApexCsvWithContext({ root, route: input.route, ownerUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeApexOverlapWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? apexOverlapActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_apex_overlap_context", "A discovered invocable apex route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APEX_OVERLAP_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeApexOverlapWithContext({ root, route: input.route, ownerUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request });
+  }
+
+  async invokeResearchWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    const action = match ? researchActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_research_action_context", "A discovered standard research action and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "RESEARCH_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeResearchWithOwnedContext({ root, route: input.route,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeSkippedStandardWithContext(ref: Key, input: { route: string; family: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const info = typeof input?.route === "string" ? skippedStandardRouteInfo(input.route) : null;
+    const family = skippedStandardFamilySlug(input?.family);
+    if (!key(ref) || !info || !family ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_skipped_standard_context", "A discovered skipped-standard route, executable family, and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${info.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "SKIPPED_STANDARD_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeSkippedStandardWithOwnedContext({ root, route: input.route, family,
+      ownerUserId: row.integration_user_id, verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeAgentCustomerWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{1,127})$/);
+    if (!key(ref) || !match ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_agent_customer_context", "A discovered custom agent-flow route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "FLOW_AGENT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeAgentFlowWithProducerContext({ root, route: input.route,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeCommerceLifecycleWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_.]{0,127})$/);
+    const action = match ? commerceLifecycleActionName(input.route) : null;
+    if (!key(ref) || !match || !action ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_commerce_action_context", "A discovered standard commerce action and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "COMMERCE_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeCommerceLifecycleWithContext({ root, route: input.route,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  async invokeQuickActionWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/quickAction\/([A-Za-z][A-Za-z0-9_]{0,127})\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !match) throw authFailure(400, "invalid_quick_action_context", "A discovered Quick Action route is required.");
+    if (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_verification_window", "The independent verification window must be between zero and 15000 milliseconds.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+          crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch {
+        return { status: 502, ok: false, body: { errorCode: "QUICK_ACTION_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned contexts remain eligible for cleanup." } };
+      }
+    };
+    const global = match[2] === "Global";
+    const definition = await request(global ? `${root}/quickActions/${match[3]}/describe`
+      : `${root}/sobjects/${match[2]}/quickActions/${match[3]}/describe`);
+    if (!definition.ok) return quickActionRouteTerminal(definition, "describe") ?? definition;
+    const ownedChildCreation = !global && object(definition.body) && ["Create", "LogACall"].includes(String(definition.body.type)) &&
+      definition.body.contextSobjectType === match[2] && typeof definition.body.targetParentField === "string" &&
+      /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(definition.body.targetParentField);
+    const targetValid = object(definition.body) && typeof definition.body.targetSobjectType === "string" &&
+      /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(definition.body.targetSobjectType);
+    // Context-fixture creation: a non-global Create/LogACall with no declared
+    // parent field where the target does not reference the context object at
+    // all (e.g. FeedItem -> Task). The action is addressed at an owned context
+    // record while the target carries its own marker.
+    let contextFixtureCreation = false;
+    if (!global && object(definition.body) && ["Create", "LogACall"].includes(String(definition.body.type)) &&
+      !ownedChildCreation && targetValid) {
+      const probe = await request(`${root}/sobjects/${definition.body.targetSobjectType}/describe`);
+      if (probe.ok && object(probe.body) && Array.isArray(probe.body.fields)) {
+        contextFixtureCreation = !probe.body.fields.filter(object).some(field =>
+          field.type === "reference" && Array.isArray(field.referenceTo) && field.referenceTo.includes(match[2]));
+      }
+    }
+    if (!object(definition.body) || !(global && ["Create", "LogACall"].includes(String(definition.body.type)) || !global && definition.body.type === "Update" && definition.body.targetSobjectType === match[2] || ownedChildCreation || contextFixtureCreation) ||
+      !targetValid) {
+      return { status: 422, body: { errorCode: "QUICK_ACTION_FIXTURE_TYPE_UNSUPPORTED", message: "The live action needs a context lifecycle beyond global creation, owned updates, creation with a declared parent reference, or context-fixture creation." } };
+    }
+    const target = definition.body.targetSobjectType as string;
+    const descriptor = await request(input.route);
+    if (!descriptor.ok) return quickActionRouteTerminal(descriptor, "describe") ?? descriptor;
+    if (!object(descriptor.body) || descriptor.body.targetEntityName !== target || !Array.isArray(descriptor.body.inputs)) {
+      return { status: 422, body: { errorCode: "QUICK_ACTION_TARGET_MISMATCH", message: "The action descriptor and live definition disagree." } };
+    }
+    const allowed = new Set(descriptor.body.inputs.filter(object).map(field => String(field.name)));
+    const schema = await request(`${root}/sobjects/${target}/describe`);
+    if (!schema.ok || !object(schema.body) || schema.body.queryable !== true || schema.body.deletable !== true) {
+      return { status: 403, body: { errorCode: "QUICK_ACTION_FIXTURE_PERMISSIONS_REQUIRED",
+        message: `Automatic ${target} context requires read and delete access for mutation verification and cleanup.`,
+        setupRequirement: `${target} read and delete access for the execution user.` } };
+    }
+    const fields = schema.ok && object(schema.body) && Array.isArray(schema.body.fields) ? schema.body.fields.filter(object) : [];
+    // Required target references resolve to live foreign keys (rows are never
+    // written); without this, owned Update targets such as MessagingSession
+    // cannot be created. No query runs when no required reference exists.
+    const liveReferenceCache = await seedLiveReferenceCache(request, root, fields);
+    const candidates = fields.filter(field => typeof field.name === "string" && (!global || allowed.has(field.name)) &&
+      field.createable === true && field.filterable === true && typeof field.length === "number" && field.length >= 48 && ["string", "textarea", "combobox"].includes(String(field.type)));
+    let markerField = candidates.find(field => field.nameField === true && !field.compoundFieldName) ??
+      candidates.find(field => field.nillable === false) ?? candidates.find(field => ["Subject", "Title"].includes(String(field.name)));
+    if (!markerField && !ownedChildCreation) {
+      // Targets such as group/messaging objects expose no 48-char Name marker.
+      // Fall back to a relaxed writable + filterable text field (>= 24 chars)
+      // so ownership stays provable without inventing schema.
+      const relaxedPool = fields.filter(field => typeof field.name === "string" && (!global || allowed.has(field.name)));
+      const relaxed = selectAlternativeMarkerField(relaxedPool as TargetField[]);
+      if (relaxed) markerField = { name: relaxed.name, length: relaxed.length };
+    }
+    if (!markerField && ownedChildCreation) return invokeReferenceQuickAction({ root, route: input.route,
+      target, parent: match[2], parentField: String(definition.body.targetParentField), fields,
+      inputs: descriptor.body.inputs.filter(object), integrationUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => {
+        const result = await synthesizeRecordValues(env, row, root, name, marker, values, liveReferenceCache);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result;
+      } });
+    if (!markerField || typeof markerField.name !== "string") return { status: 422, body: {
+      errorCode: "QUICK_ACTION_MARKER_UNAVAILABLE", message: "The action exposes no writable record marker for independent verification." } };
+    // 36-char marker fields are UUID keys by convention (MessagingSession
+    // SessionKey is trigger-validated as one); a bare UUID stays a unique
+    // ownership marker while satisfying the format.
+    const markerLength = typeof markerField.length === "number" ? markerField.length : 80;
+    const marker = markerLength === 36 ? crypto.randomUUID() : `AS probe ${crypto.randomUUID()}`.slice(0, markerLength);
+    let parentPlan: { objectName: string; field: string; markerField: string; marker: string; values: Record<string, unknown> } | undefined;
+    if (ownedChildCreation) {
+      const parentFieldName = String(definition.body.targetParentField);
+      const parentField = fields.find(field => field.name === parentFieldName);
+      if (!parentField || parentField.type !== "reference" || !Array.isArray(parentField.referenceTo) || !parentField.referenceTo.includes(match[2])) {
+        return { status: 422, body: { errorCode: "QUICK_ACTION_PARENT_SCHEMA_MISMATCH", message: "The live parent field does not reference the discovered context object." } };
+      }
+      const parentSchema = target === match[2] ? schema : await request(root + "/sobjects/" + match[2] + "/describe");
+      if (!parentSchema.ok || !object(parentSchema.body) || parentSchema.body.queryable !== true || parentSchema.body.deletable !== true || !Array.isArray(parentSchema.body.fields)) {
+        return { status: 403, body: { errorCode: "QUICK_ACTION_PARENT_PERMISSIONS_REQUIRED", message: "Automatic parent context requires live read, create and delete access.",
+          setupRequirement: `${match[2]} read, create and delete access for the execution user.` } };
+      }
+      const parentFields = parentSchema.body.fields.filter(object).filter(field => typeof field.name === "string" && field.createable === true && field.filterable === true && typeof field.length === "number" && field.length >= 48 &&
+        ["string", "textarea", "combobox"].includes(String(field.type)));
+      const parentMarkerField = parentFields.find(field => field.nameField === true && !field.compoundFieldName) ??
+        parentFields.find(field => field.nillable === false) ?? parentFields.find(field => ["Subject", "Title"].includes(String(field.name)));
+      if (!parentMarkerField || typeof parentMarkerField.name !== "string") return { status: 422, body: { errorCode: "QUICK_ACTION_PARENT_MARKER_UNAVAILABLE", message: "The live context has no writable, filterable ownership marker with enough space for a unique identity." } };
+      const parentMarker = "AS context " + crypto.randomUUID();
+      // Required parent references (Case.BusinessHoursId, FeedItem.ParentId)
+      // seed from live lookups, mirroring the target seeding above; borrowed
+      // rows are never written, and unresolved fields fail honest through the
+      // builder as before. The unique parent marker stays authoritative.
+      const parentRefSeed = await seedRequiredReferenceValues(request, root,
+        object(parentSchema.body) && Array.isArray(parentSchema.body.fields) ? parentSchema.body.fields : []);
+      const parentBuilt = await synthesizeRecordValues(env, row, root, match[2], parentMarker,
+        { ...parentRefSeed.overrides, [parentMarkerField.name]: parentMarker });
+      if ("failure" in parentBuilt) return parentBuilt.failure;
+      parentPlan = { objectName: match[2], field: parentFieldName, markerField: parentMarkerField.name, marker: parentMarker, values: parentBuilt.values };
+    }
+    let contextFixture: { objectName: string; values: Record<string, unknown>; parentField?: string; markerField?: string; marker?: string } | undefined;
+    if (contextFixtureCreation) {
+      // The context record needs its own owned creation. Visible parents
+      // (a Chatter post renders on its parent) stay owned: prefer an owned
+      // Account when the context requires a parent reference to one.
+      const contextObject = match[2];
+      const contextSchema = await request(`${root}/sobjects/${contextObject}/describe`);
+      if (!contextSchema.ok || !object(contextSchema.body) || contextSchema.body.createable !== true ||
+        contextSchema.body.queryable !== true || contextSchema.body.deletable !== true || !Array.isArray(contextSchema.body.fields)) {
+        return { status: 403, body: { errorCode: "QUICK_ACTION_CONTEXT_FIXTURE_UNAVAILABLE",
+          message: `Automatic ${contextObject} context requires live create, read and delete access.`,
+          setupRequirement: `${contextObject} create, read and delete access for the execution user.` } };
+      }
+      const contextFields = contextSchema.body.fields.filter(object);
+      const requiredRefs = contextFields.filter(field => typeof field.name === "string" && field.type === "reference" &&
+        field.createable === true && field.nillable === false && field.defaultedOnCreate !== true &&
+        field.calculated !== true && field.autoNumber !== true && Array.isArray(field.referenceTo));
+      const linkField = requiredRefs.find(field => (field.referenceTo as unknown[]).includes("Account"));
+      if (requiredRefs.length > 0 && !linkField) {
+        return { status: 422, body: { errorCode: "QUICK_ACTION_CONTEXT_FIXTURE_UNAVAILABLE",
+          message: `The live ${contextObject} context needs an owned parent no supported fixture supplies.` } };
+      }
+      if (linkField && typeof linkField.name === "string") {
+        const accountSchema = await request(`${root}/sobjects/Account/describe`);
+        const accountFields = accountSchema.ok && object(accountSchema.body) && accountSchema.body.createable === true &&
+          accountSchema.body.queryable === true && accountSchema.body.deletable === true && Array.isArray(accountSchema.body.fields)
+          ? accountSchema.body.fields.filter(object).filter(field => typeof field.name === "string" && field.createable === true &&
+            field.filterable === true && typeof field.length === "number" && field.length >= 48 &&
+            ["string", "textarea", "combobox"].includes(String(field.type))) : [];
+        const accountMarkerField = accountFields.find(field => field.nameField === true && !field.compoundFieldName) ??
+          accountFields.find(field => field.nillable === false);
+        if (!accountMarkerField || typeof accountMarkerField.name !== "string") {
+          return { status: 422, body: { errorCode: "QUICK_ACTION_PARENT_MARKER_UNAVAILABLE",
+            message: "The live context parent has no writable, filterable ownership marker with enough space for a unique identity." } };
+        }
+        const accountMarker = "AS context " + crypto.randomUUID();
+        const accountBuilt = await synthesizeRecordValues(env, row, root, "Account", accountMarker, { [accountMarkerField.name]: accountMarker });
+        if ("failure" in accountBuilt) return accountBuilt.failure;
+        parentPlan = { objectName: "Account", field: linkField.name, markerField: accountMarkerField.name, marker: accountMarker, values: accountBuilt.values as Record<string, unknown> };
+        const fixtureMarker = "AS fixture " + crypto.randomUUID();
+        // Bodies and notes are trigger-required on some context objects
+        // (FeedItem posts); seed the first createable text field so the
+        // fixture is a complete record, never a bare parent link.
+        const textCandidates = contextFields.filter(field => typeof field.name === "string" && field.createable === true &&
+          ["string", "textarea"].includes(String(field.type)) && (typeof field.length !== "number" || field.length >= 24));
+        const textField = textCandidates.find(field => ["Body", "Description", "TextBody", "Note"].includes(String(field.name))) ?? textCandidates[0];
+        const fixtureOverrides: Record<string, unknown> = { [linkField.name]: "OWNED_PARENT_PENDING" };
+        if (textField && typeof textField.name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(textField.name)) {
+          fixtureOverrides[textField.name] = fixtureMarker.slice(0, typeof textField.length === "number" ? textField.length : 80);
+        }
+        // Gap-filled only: the owned-parent placeholder and trigger-required
+        // text stay authoritative over borrowed live ids.
+        const fixtureRefSeed = await seedRequiredReferenceValues(request, root, contextFields);
+        const fixtureBuilt = await synthesizeRecordValues(env, row, root, contextObject, fixtureMarker, { ...fixtureRefSeed.overrides, ...fixtureOverrides });
+        if ("failure" in fixtureBuilt) return fixtureBuilt.failure;
+        contextFixture = { objectName: contextObject, values: fixtureBuilt.values as Record<string, unknown>, parentField: linkField.name };
+      } else {
+        const markerCandidates = contextFields.filter(field => typeof field.name === "string" && field.createable === true &&
+          field.filterable === true && typeof field.length === "number" && field.length >= 24 &&
+          ["string", "textarea", "combobox"].includes(String(field.type)));
+        const fixtureMarkerField = markerCandidates.find(field => field.nameField === true && !field.compoundFieldName) ??
+          markerCandidates.find(field => field.nillable === false) ?? markerCandidates[0];
+        if (!fixtureMarkerField || typeof fixtureMarkerField.name !== "string") {
+          return { status: 422, body: { errorCode: "QUICK_ACTION_CONTEXT_FIXTURE_UNAVAILABLE",
+            message: `The live ${contextObject} context has no writable marker for independent verification.` } };
+        }
+        const fixtureMarker = "AS fixture " + crypto.randomUUID();
+        const fixtureRefSeed = await seedRequiredReferenceValues(request, root, contextFields);
+        const fixtureBuilt = await synthesizeRecordValues(env, row, root, contextObject, fixtureMarker, { ...fixtureRefSeed.overrides, [fixtureMarkerField.name]: fixtureMarker });
+        if ("failure" in fixtureBuilt) return fixtureBuilt.failure;
+        contextFixture = { objectName: contextObject, values: fixtureBuilt.values as Record<string, unknown>,
+          markerField: fixtureMarkerField.name, marker: fixtureMarker };
+      }
+    }
+    // Active/waiting/new Messaging Sessions can be neither ended nor deleted
+    // via API; Ended ones accept update actions and delete cleanly (verified
+    // live). Create the owned session already ended so cleanup is provable.
+    const targetOverrides = target === "MessagingSession" ? { Status: "Ended" } : {};
+    return invokeOwnedQuickAction({ root, route: input.route, target, markerField: markerField.name, marker,
+      global, fields, inputs: descriptor.body.inputs.filter(object), integrationUserId: row.integration_user_id,
+      buildTarget: overrides => synthesizeRecordValues(env, row, root, target, marker, { ...targetOverrides, ...overrides }, liveReferenceCache),
+      ...(parentPlan ? { parent: parentPlan } : {}), ...(contextFixture ? { contextFixture } : {}),
+      verificationWindowMs: input.verificationWindowMs, request });
+  }
+
+  async invokeFlowWithContext(ref: Key, input: { apiVersion: string; route: string; arguments: Record<string, unknown> }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.arguments)) {
+      throw authFailure(400, "invalid_flow_context", "A discovered Flow route and arguments are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    const described = await request(input.route);
+    if (!described.ok) return described;
+    const descriptor = object(described.body) ? described.body : Array.isArray(described.body) ? described.body.find(object) : null;
+    const inputs = descriptor && Array.isArray(descriptor.inputs) ? descriptor.inputs.filter(object) : [];
+    const outputs = descriptor && Array.isArray(descriptor.outputs) ? descriptor.outputs.filter(object) : [];
+    const allowed = new Set(inputs.map(field => field.name));
+    if (Object.keys(input.arguments).some(name => !allowed.has(name))) {
+      throw authFailure(400, "invalid_flow_arguments", "Arguments must match the live Flow schema.");
+    }
+    // A verification producer returns null outputs for identities matching no record. Create a
+    // disposable owned Contact carrying the probe identity first, then invoke and clean up.
+    const producerField = verificationProducerInput(inputs, outputs);
+    if (producerField) {
+      const contactSchema = await request(`${apiRoot}/sobjects/Contact/describe`);
+      const emailField = object(contactSchema.body) && Array.isArray(contactSchema.body.fields)
+        ? contactSchema.body.fields.filter(object).find(field => field.name === "Email") : null;
+      if (!emailField || emailField.createable !== true) return { status: 403, body: {
+        errorCode: "VERIFICATION_FIXTURE_PERMISSION_REQUIRED",
+        message: "Automatic verification context needs create/delete Contact access and Email write access. Run setup:context-permissions for the connected org." } };
+      const supplied = input.arguments[producerField];
+      const email = typeof supplied === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(supplied)
+        ? supplied : `action-probe-${crypto.randomUUID()}@example.invalid`;
+      const built = await synthesizeRecordValues(env, row, apiRoot, "Contact", "Action Searcher temporary verification probe", { Email: email });
+      if ("failure" in built) return built.failure;
+      const created = await request(`${apiRoot}/sobjects/Contact`, "POST", built.values);
+      const id = object(created.body) ? created.body.id : null;
+      if (!created.ok || typeof id !== "string" || !/^003[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(id)) return created;
+      let cleanupError: string | undefined;
+      let producerSweep: unknown = null;
+      let result: { status: number; body: unknown };
+      try {
+        const verified = await request(`${apiRoot}/sobjects/Contact/${id}`);
+        if (!verified.ok || !object(verified.body) || verified.body.Id !== id || verified.body.Email !== email) result = {
+          status: 422, body: { errorCode: "VERIFICATION_FIXTURE_UNVERIFIED", message: "The disposable verification Contact failed independent readback." } };
+        else {
+          const challenge = await request(input.route, "POST", { inputs: [{ [producerField]: email }] });
+          const challengeResult = Array.isArray(challenge.body) ? challenge.body.find(object) : null;
+          const values = challengeResult && object(challengeResult.outputValues) ? challengeResult.outputValues : null;
+          result = !challenge.ok || challengeResult?.isSuccess !== true || !values ||
+            (PRODUCER_REQUIRED_OUTPUTS as readonly string[]).some(name => typeof values[name] !== "string" || !values[name]) ? {
+            status: challenge.ok ? 422 : challenge.status, body: { errorCode: "VERIFICATION_CHALLENGE_CONTEXT_UNAVAILABLE",
+              message: salesforceError(challenge.body).message ?? "Salesforce did not supply a usable code and authentication context for the owned verification identity." } }
+            : challenge;
+        }
+      } finally {
+        const residueSweep = await sweepFlowCommunicationResidue(request, apiRoot, { contactIds: [id], emails: [email] });
+        if (residueSweep.queried && !residueSweep.verified) cleanupError = "Temporary verification communication residue cleanup could not be verified.";
+        producerSweep = residueSweep;
+        const deleted = await request(`${apiRoot}/sobjects/Contact/${id}`, "DELETE");
+        const gone = await request(`${apiRoot}/sobjects/Contact/${id}`);
+        if ((!deleted.ok && deleted.status !== 404) || gone.status !== 404) cleanupError = "Temporary verification Contact cleanup could not be verified.";
+      }
+      return { ...result, contextSchema: { source: "salesforce_live_verification_producer", producerInput: producerField, residueSweep: producerSweep,
+        requiredOutputs: [...PRODUCER_REQUIRED_OUTPUTS],
+        requirement: "If Salesforce masks the returned code, a tenant-owned test delivery channel must supply the real code. Generated authentication keys and codes are never persisted." },
+        ...(cleanupError ? { cleanupError } : {}) };
+    }
+    const fullName = match[2];
+    const recordInputs = inputs.filter(field => field.type === "SOBJECT" && typeof field.name === "string" &&
+      (typeof field.maxOccurs !== "number" || field.maxOccurs <= 1));
+    if (recordInputs.length > 0 && recordInputs.length <= 3) {
+      // Bounded existence check: the full /sobjects/ catalog (6.3MB on
+      // large SDO orgs) fails under load and the loop break below then
+      // mislabels the transient as schema truth. A failed catalog call is
+      // passed through honestly instead.
+      const catalogSoql = flowRecordCatalogSoql(flowRecordCatalogCandidates(recordInputs));
+      const catalog = catalogSoql ? await request(`${apiRoot}/query?q=${encodeURIComponent(catalogSoql)}`) : null;
+      const qualified = catalog !== null && catalog.ok && object(catalog.body) && Array.isArray(catalog.body.records)
+        ? catalog.body.records.filter(object).map(entry => entry.QualifiedApiName)
+          .filter((name): name is string => typeof name === "string") : null;
+      const fixtures: Array<{ objectName: string; id: string }> = [];
+      const fixtureEmails: string[] = [];
+      const args = { ...input.arguments };
+      const mappings: Array<{ inputName: string; objectName: string }> = [];
+      const defaultOutcome: { status: number; body: unknown } = { status: 422, body: {
+        errorCode: "FLOW_RECORD_CONTEXT_UNAVAILABLE", message: "The live Flow schema does not resolve its record inputs to createable objects." } };
+      let result: { status: number; body: unknown } = defaultOutcome;
+      let cleanupError: string | undefined;
+      let residueSweep: ResidueSweep | null = null;
+      let omittedProbe = false;
+      // Live-input safety gate: borrowed FK ids ride the owned fixture
+      // into the native interview, and caller scalar args pass through
+      // verbatim, so a custom flow that is not provably read-only must
+      // receive neither. Borrowing stays allowed ONLY for provably
+      // read-only shapes; anything else mints owned parents or refuses
+      // honest, and identity-shaped caller scalars are refused before
+      // anything is created. (Record inputs are overwritten with owned
+      // fixtures below, so only non-record caller args are scanned.)
+      const readOnlyEvident = isReadOnlyEvident(descriptor, input.route);
+      if (!readOnlyEvident) {
+        const recordNames = new Set(recordInputs.map(field => String(field.name)));
+        let foreignIdentity = false;
+        const scan = (value: unknown): void => {
+          if (foreignIdentity) return;
+          if (typeof value === "string") {
+            if (/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(value)) foreignIdentity = true;
+          } else if (Array.isArray(value)) value.forEach(scan);
+          else if (object(value)) Object.values(value).forEach(scan);
+        };
+        for (const [name, value] of Object.entries(input.arguments)) {
+          if (!recordNames.has(name)) scan(value);
+        }
+        if (foreignIdentity) return { status: 422, body: {
+          errorCode: "FLOW_RECORD_LIVE_INPUT_REFUSED",
+          message: "The live Flow is not provably read-only, so identity-shaped inputs cannot be passed to it; only owned fixtures may supply its context." },
+          contextSchema: { source: "salesforce_live_flow_record_inputs", mappings: [],
+            readOnlyEvident: false, ownedReferencesOnly: true,
+            automaticSteps: ["Resolve record inputs against the live sObject catalog", "Describe required writable fields", "Create and read back disposable records", "Invoke with real record IDs", "Sweep communication residue", "Delete and verify fixtures"] } };
+      }
+      try {
+        // No valid candidate names keeps the schema-truth default below; a
+        // failed catalog call passes through so transients never masquerade
+        // as unresolvable record inputs.
+        const catalogFailed = catalog !== null && (!catalog.ok || qualified === null);
+        if (catalogFailed && catalog !== null) result = { status: catalog.status, body: catalog.body };
+        const missedInputs: string[] = [];
+        for (const field of catalogFailed ? [] : recordInputs) {
+          const objectName = resolveFlowRecordTarget(qualified, field);
+          if (objectName === null) { missedInputs.push(String(field.name)); break; }
+          const schema = await request(`${apiRoot}/sobjects/${objectName}/describe`);
+          if (schema.ok) {
+            const blocked = flowRecordFixtureBlocker(objectName, schema.body);
+            if (blocked) { result = { status: 422, body: { errorCode: "FLOW_RECORD_FIXTURE_PERMISSIONS_REQUIRED", message: blocked } }; break; }
+          }
+          const fields = schema.ok && object(schema.body) && Array.isArray(schema.body.fields) ? schema.body.fields.filter(object) : [];
+          const marker = fields.find(item => ["Subject", "Name"].includes(String(item.name)) && item.createable === true && item.autoNumber !== true);
+          const name = `Action Searcher temporary flow probe ${crypto.randomUUID()}`;
+          const description = fields.find(item => item.name === "Description" && item.createable === true &&
+            ["string", "textarea"].includes(String(item.type)));
+          // Required fixture references seed from live lookups (borrowed FK
+          // ids; borrowed rows are never written) ONLY when the flow is
+          // provably read-only: a mutating (or unknown) custom flow is
+          // arbitrary tenant logic, so live customer identities must never
+          // ride its inputs. Otherwise every field is treated as rowless:
+          // single-target references with a mintable target
+          // (RebateProgramPayoutPeriod on a programless org) mint an owned
+          // parent with its own marker, tracked in fixtures ahead of the
+          // child so ordered cleanup deletes the child first. Unresolved
+          // fields fail honest through the builder with the same code as
+          // before.
+          const refSeed = await seedRequiredReferenceValues(request, apiRoot, fields, { allowLiveBorrow: readOnlyEvident });
+          const parentOverrides: Record<string, unknown> = {};
+          let parentFailed = false;
+          for (const plan of refSeed.mintPlans) {
+            const parentName = `Action Searcher temporary flow parent ${crypto.randomUUID()}`;
+            const parentMarker = plan.fields.find(item => ["Subject", "Name"].includes(String(item.name)) &&
+              item.createable === true && item.autoNumber !== true);
+            if (!parentMarker || typeof parentMarker.name !== "string") {
+              result = { status: 422, body: { errorCode: "FLOW_RECORD_PARENT_MARKER_UNAVAILABLE",
+                message: `The live ${plan.objectName} parent has no writable ownership marker.` } };
+              parentFailed = true; break;
+            }
+            const parentSeeds = await seedRequiredReferenceValues(request, apiRoot, plan.fields, { allowLiveBorrow: readOnlyEvident });
+            const parentBuilt = await synthesizeRecordValues(env, row, apiRoot, plan.objectName, parentName,
+              { [parentMarker.name]: parentName, ...parentSeeds.overrides });
+            if ("failure" in parentBuilt) { result = parentBuilt.failure; parentFailed = true; break; }
+            const parentCreated = await request(`${apiRoot}/sobjects/${plan.objectName}`, "POST", parentBuilt.values);
+            const parentId = object(parentCreated.body) ? parentCreated.body.id : null;
+            if (!parentCreated.ok || typeof parentId !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(parentId)) {
+              result = parentCreated; parentFailed = true; break;
+            }
+            fixtures.push({ objectName: plan.objectName, id: parentId });
+            const parentVerified = await request(`${apiRoot}/sobjects/${plan.objectName}/${parentId}`);
+            if (!parentVerified.ok || !object(parentVerified.body) || parentVerified.body.Id !== parentId ||
+              parentVerified.body[parentMarker.name] !== parentName) {
+              result = { status: 422, body: { errorCode: "FLOW_RECORD_PARENT_UNVERIFIED",
+                message: "The owned Flow parent record failed readback verification." } };
+              parentFailed = true; break;
+            }
+            parentOverrides[plan.field] = parentId;
+          }
+          if (parentFailed) break;
+          const built = await synthesizeRecordValues(env, row, apiRoot, objectName, name,
+            { ...(marker ? { [String(marker.name)]: name } : {}), ...(description ? {
+              Description: "Disposable action validation record. Inspect the equipment and record the work performed. This fixture is deleted after validation." } : {}),
+              ...refSeed.overrides, ...parentOverrides });
+          if ("failure" in built) { result = built.failure; break; }
+          // People-record flows fault on fixtures without a routable identity; complete a
+          // createable Email with an undeliverable probe address (never a real recipient).
+          const priorEmail = (built.values as Record<string, unknown>).Email;
+          const completed = personIdentityCompletion(fields, built.values as Record<string, unknown>);
+          if ((priorEmail == null || priorEmail === "") && typeof completed.Email === "string" && completed.Email.length) fixtureEmails.push(completed.Email);
+          let created = await request(`${apiRoot}/sobjects/${objectName}`, "POST", completed);
+          let id = object(created.body) ? created.body.id : null;
+          const minted = () => created.ok && typeof id === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(id);
+          // Trigger-null-tolerant enrichment (same mechanism as the
+          // owned-substrate chain): a fixture insert that faults inside a
+          // managed BeforeInsert trigger retries once with nillable
+          // references populated from owned mints. Enrichment parents join
+          // fixtures, so ordered cleanup deletes them even when the retry
+          // fails; anything unplannable keeps the original fault honestly.
+          if (!minted() && isTriggerNullInsertFault(created.status, created.body)) {
+            const retried = await (async (): Promise<{ created: typeof created; id: unknown } | null> => {
+              const describes = new Map<string, unknown>();
+              const describeTarget = async (target: string) => {
+                if (!describes.has(target)) {
+                  const schema = await request(`${apiRoot}/sobjects/${target}/describe`).catch(() => null);
+                  describes.set(target, schema && schema.ok && object(schema.body) ? schema.body : null);
+                }
+                const body = describes.get(target);
+                return body && typeof body === "object" ? body as { name?: unknown; createable?: unknown; queryable?: unknown; deletable?: unknown; fields?: unknown } : undefined;
+              };
+              const candidates = await planTriggerNullEnrichment({
+                objectName,
+                fields,
+                plannedObjectNames: fixtures.map((fixture) => fixture.objectName),
+                boundFields: [...Object.keys(refSeed.overrides), ...Object.keys(parentOverrides)],
+                describe: describeTarget,
+              });
+              if (candidates.length === 0) return null;
+              const enrichmentOverrides: Record<string, unknown> = {};
+              for (const candidate of candidates) {
+                const reused = fixtures.find((fixture) => fixture.objectName === candidate.target)?.id;
+                if (reused !== undefined) {
+                  if (!/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(reused)) return null;
+                  enrichmentOverrides[candidate.field] = reused;
+                  continue;
+                }
+                const targetBody = await describeTarget(candidate.target);
+                const targetFields = targetBody && Array.isArray(targetBody.fields) ? targetBody.fields.filter(object) : [];
+                const parentName = `Action Searcher temporary flow parent ${crypto.randomUUID()}`;
+                const parentMarker = targetFields.find((item) => ["Subject", "Name"].includes(String(item.name)) &&
+                  item.createable === true && item.autoNumber !== true);
+                if (!parentMarker || typeof parentMarker.name !== "string") return null;
+                const parentSeeds = await seedRequiredReferenceValues(request, apiRoot, targetFields, { allowLiveBorrow: readOnlyEvident });
+                const parentBuilt = await synthesizeRecordValues(env, row, apiRoot, candidate.target, parentName,
+                  { [parentMarker.name]: parentName, ...parentSeeds.overrides });
+                if ("failure" in parentBuilt) return null;
+                const parentCreated = await request(`${apiRoot}/sobjects/${candidate.target}`, "POST", parentBuilt.values);
+                const parentId = object(parentCreated.body) ? parentCreated.body.id : null;
+                if (!parentCreated.ok || typeof parentId !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(parentId)) return null;
+                fixtures.push({ objectName: candidate.target, id: parentId });
+                const parentVerified = await request(`${apiRoot}/sobjects/${candidate.target}/${parentId}`);
+                if (!parentVerified.ok || !object(parentVerified.body) || parentVerified.body.Id !== parentId ||
+                  parentVerified.body[parentMarker.name] !== parentName) return null;
+                enrichmentOverrides[candidate.field] = parentId;
+              }
+              const rebuilt = await synthesizeRecordValues(env, row, apiRoot, objectName, name,
+                { ...(marker ? { [String(marker.name)]: name } : {}), ...(description ? {
+                  Description: "Disposable action validation record. Inspect the equipment and record the work performed. This fixture is deleted after validation." } : {}),
+                  ...refSeed.overrides, ...parentOverrides, ...enrichmentOverrides });
+              if ("failure" in rebuilt) return null;
+              const recompleted = personIdentityCompletion(fields, rebuilt.values as Record<string, unknown>);
+              const retryEmail = (recompleted as Record<string, unknown>).Email;
+              if ((priorEmail == null || priorEmail === "") && typeof retryEmail === "string" && retryEmail.length &&
+                !fixtureEmails.includes(retryEmail)) fixtureEmails.push(retryEmail);
+              const retry = await request(`${apiRoot}/sobjects/${objectName}`, "POST", recompleted);
+              return { created: retry, id: object(retry.body) ? retry.body.id : null };
+            })();
+            if (retried) {
+              created = retried.created;
+              id = retried.id;
+            }
+          }
+          if (!created.ok || typeof id !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(id)) { result = created; break; }
+          fixtures.push({ objectName, id });
+          const verified = await request(`${apiRoot}/sobjects/${objectName}/${id}`);
+          if (!verified.ok || !object(verified.body) || verified.body.Id !== id ||
+            marker && verified.body[String(marker.name)] !== name) {
+            result = { status: 422, body: { errorCode: "FLOW_RECORD_FIXTURE_UNVERIFIED", message: "The disposable Flow record failed readback verification." } }; break;
+          }
+          // Flow record variables do not automatically hydrate fields from an Id.
+          // Pass the fields read from our own disposable record, including server defaults.
+          args[String(field.name)] = { ...verified.body, attributes: { type: objectName } };
+          mappings.push({ inputName: String(field.name), objectName });
+        }
+        if (mappings.length === recordInputs.length) {
+          result = await request(input.route, "POST", { inputs: [args] });
+        } else if (result === defaultOutcome && missedInputs.length > 0) {
+          // Tried candidates missed the live catalog: the declared object is
+          // absent from the org schema, which is exact terminal evidence
+          // (not the createable-objects default). Read-only-evident flows
+          // get one omitted-input attempt first: with no record to bind,
+          // the flow takes its null path and the real outcome decides.
+          const missed = recordInputs.find(field => String(field.name) === missedInputs[0]);
+          const declared = missed && typeof missed.sObjectType === "string" ? missed.sObjectType : null;
+          const absent: { status: number; body: unknown } = { status: 422, body: {
+            errorCode: "FLOW_RECORD_TARGET_ABSENT",
+            message: `Record input '${missedInputs[0]}'${declared ? ` declares '${declared}', absent` : " resolves to no object, missing"} from the live org schema; the flow cannot run without it.` } };
+          if (descriptor && readOnlyEvident && inputs.every(field => field.required !== true)) {
+            const omitted = { ...args };
+            for (const field of recordInputs) delete omitted[String(field.name)];
+            const probe = await request(input.route, "POST", { inputs: [omitted] });
+            const single = probe.status === 200 && Array.isArray(probe.body) && probe.body.length === 1 && object(probe.body[0])
+              ? probe.body[0] as Record<string, unknown> : null;
+            const probeOutputs = single && object((single as Record<string, unknown>).outputValues)
+              ? (single as Record<string, unknown>).outputValues as Record<string, unknown> : {};
+            const probeErrors = single && Array.isArray((single as Record<string, unknown>).errors)
+              ? (single as Record<string, unknown>).errors as unknown[] : [];
+            const probeFault = [probeOutputs.errorMessage, (single as Record<string, unknown> | null)?.errorMessage]
+              .find((entry): entry is string => typeof entry === "string" && entry.length > 0);
+            const failureSnippet = Object.entries(probeOutputs)
+              .filter(([name]) => name !== "Flow__InterviewGuid" && name !== "Flow__InterviewStatus")
+              .map(([, value]) => flowOutputFailureSnippet(value)).find((snippet): snippet is string => snippet !== null);
+            const finished = probeOutputs.Flow__InterviewStatus === undefined || probeOutputs.Flow__InterviewStatus === null ||
+              probeOutputs.Flow__InterviewStatus === "Finished";
+            if (single && (single as Record<string, unknown>).isSuccess === true && probeErrors.length === 0 &&
+              !probeFault && !failureSnippet && finished) {
+              omittedProbe = true;
+              result = probe;
+            } else {
+              result = probe.status !== 200 ? probe : absent;
+            }
+          } else {
+            result = absent;
+          }
+        }
+      } finally {
+        // Email-sending flows log Task/EmailMessage residue that outlives the fixture; sweep
+        // exact fixture-owned values before deleting so nothing probe-owned survives.
+        residueSweep = await sweepFlowCommunicationResidue(request, apiRoot, { contactIds: fixtures.filter(fixture => fixture.objectName === "Contact" || fixture.objectName === "Lead").map(fixture => fixture.id), emails: fixtureEmails });
+        if (residueSweep.queried && !residueSweep.verified) cleanupError = "Temporary Flow communication residue cleanup could not be verified.";
+        for (const fixture of fixtures.reverse()) {
+          const path = `${apiRoot}/sobjects/${fixture.objectName}/${fixture.id}`;
+          const deleted = await request(path, "DELETE");
+          const verified = await request(path);
+          if ((!deleted.ok && deleted.status !== 404) || verified.status !== 404) cleanupError = "Temporary Flow record cleanup could not be verified.";
+        }
+      }
+      return { ...result, contextSchema: { source: "salesforce_live_flow_record_inputs", mappings, residueSweep,
+        ...(omittedProbe ? { readOnlyOmittedProbe: true } : {}),
+        ...(readOnlyEvident ? {} : { ownedReferencesOnly: true }),
+        automaticSteps: ["Resolve record inputs against the live sObject catalog", "Describe required writable fields", "Create and read back disposable records", "Invoke with real record IDs", "Sweep communication residue", "Delete and verify fixtures"] },
+        ...(cleanupError ? { cleanupError } : {}) };
+    }
+    // A verifier requires a real challenge. The producer masks its returned code
+    // ("xxxxxx") and delivers the real one out of band, so the chain runs the
+    // producer against a disposable receivable inbox and passes the delivered
+    // code with the producer's customer context (never persisted, never logged).
+    if (["customerCode", "customerId", "customerType", "authenticationKey"].every(name => allowed.has(name))) {
+      return invokeFlowVerificationCodeChain({ root: apiRoot, route: input.route, request, inbox: verificationInbox(env),
+        build: async (values) => synthesizeRecordValues(env, row, apiRoot, "Contact", "Action Searcher temporary verification probe", values) });
+    }
+    const localName = fullName.includes("__") ? fullName.slice(fullName.indexOf("__") + 2) : fullName;
+    const query = `SELECT Id,DeveloperName,NamespacePrefix,ActiveVersionId FROM FlowDefinition WHERE DeveloperName IN ('${fullName}','${localName}')`;
+    const definition = await request(`${apiRoot}/tooling/query?q=${encodeURIComponent(query)}`);
+    if (!definition.ok) return definition;
+    const definitions = object(definition.body) && Array.isArray(definition.body.records) ? definition.body.records.filter(object)
+      .filter(item => (item.NamespacePrefix ? `${item.NamespacePrefix}__${item.DeveloperName}` : item.DeveloperName) === fullName) : [];
+    const versionId = definitions.length === 1 ? definitions[0].ActiveVersionId : null;
+    if (typeof versionId !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(versionId)) return {
+      status: 422, body: { errorCode: "FLOW_DEFINITION_UNAVAILABLE",
+        message: "The active Flow definition is not exposed to this integration user. Automatic lookup-context discovery requires readable Flow metadata." } };
+    const retrieved = await request(`${apiRoot}/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id='${versionId}'`)}`);
+    if (!retrieved.ok) return retrieved;
+    const records = object(retrieved.body) && Array.isArray(retrieved.body.records) ? retrieved.body.records.filter(object) : [];
+    const metadata = records[0]?.Metadata;
+    const bindings = flowLookupBindings(metadata).filter(binding => allowed.has(binding.inputName));
+    const contextSchema = { source: "salesforce_active_flow_metadata", lookupBindings: bindings };
+    if (!bindings.length) return { status: 422, body: { errorCode: "FLOW_CONTEXT_RECIPE_UNAVAILABLE",
+      message: "The live Flow does not expose a direct input-to-record lookup recipe. Its required upstream context cannot be inferred from optional inputs alone." }, contextSchema };
+    if (object(metadata) && ["recordCreates", "recordUpdates", "recordDeletes", "actionCalls", "subflows"].some(name =>
+      Array.isArray(metadata[name]) && metadata[name].length > 0)) return { status: 422,
+      body: { errorCode: "FLOW_CONTEXT_RECIPE_REQUIRES_CHAIN",
+        message: "This Flow calls upstream actions or mutates records. Lookup-only context is insufficient; its dependency chain must be prepared before testing." }, contextSchema };
+    const arguments_ = { ...input.arguments };
+    const fixtures: Array<{ objectName: string; id: string }> = [];
+    let cleanupError: string | undefined;
+    let result: { status: number; body: unknown } = { status: 422, body: { errorCode: "FLOW_CONTEXT_UNAVAILABLE",
+      message: "The Flow lookup context could not be created from the accessible schema." } };
+    try {
+      for (const objectName of [...new Set(bindings.map(binding => binding.objectName))].slice(0, 3)) {
+        const schema = await request(`${apiRoot}/sobjects/${objectName}/describe`);
+        if (!schema.ok) { result = schema; break; }
+        const blocked = flowRecordFixtureBlocker(objectName, schema.body);
+        if (blocked) { result = { status: 422, body: { errorCode: "FLOW_RECORD_FIXTURE_PERMISSIONS_REQUIRED", message: blocked } }; break; }
+        const fields = object(schema.body) && Array.isArray(schema.body.fields) ? schema.body.fields.filter(object) : [];
+        const overrides: Record<string, unknown> = {};
+        const nonce = crypto.randomUUID().replaceAll("-", "");
+        for (const binding of bindings.filter(item => item.objectName === objectName)) {
+          const field = fields.find(field => field.name === binding.fieldName);
+          const value = field && flowFixtureValue(field, nonce);
+          if (value !== undefined) { overrides[binding.fieldName] = value; arguments_[binding.inputName] = value; }
+        }
+        if (!Object.keys(overrides).length) continue;
+        const values = await synthesizeRecordValues(env, row, apiRoot, objectName,
+          "Action Searcher temporary flow context", overrides);
+        if ("failure" in values) { result = values.failure; break; }
+        const created = await request(`${apiRoot}/sobjects/${objectName}`, "POST", values.values);
+        const id = object(created.body) ? created.body.id : null;
+        if (!created.ok || typeof id !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(id)) { result = created; break; }
+        fixtures.push({ objectName, id });
+        const verified = await request(`${apiRoot}/sobjects/${objectName}/${id}`);
+        if (!verified.ok || !object(verified.body) || verified.body.Id !== id ||
+          Object.entries(overrides).some(([field, value]) => verified.body && object(verified.body) && verified.body[field] !== value)) {
+          result = { status: 422, body: { errorCode: "FLOW_CONTEXT_VERIFICATION_FAILED",
+            message: "The created lookup context did not match Salesforce's independent record read." } }; break;
+        }
+        const action = await request(input.route, "POST", { inputs: [arguments_] });
+        result = action;
+        if (action.ok && Array.isArray(action.body) && action.body.every(item => object(item) && item.isSuccess === true)) break;
+      }
+    } finally {
+      for (const fixture of fixtures.reverse()) {
+        const deleted = await request(`${apiRoot}/sobjects/${fixture.objectName}/${fixture.id}`, "DELETE");
+        if (!deleted.ok && deleted.status !== 404) cleanupError = `Temporary ${fixture.objectName} cleanup returned HTTP ${deleted.status}.`;
+      }
+    }
+    return { status: result.status, body: result.body, contextSchema, ...(cleanupError ? { cleanupError } : {}) };
+  }
+
+  /** Run the verified-contact consumer chain for a metadata-hidden Flow action. */
+  async invokeFlowContactChain(ref: Key, input: { apiVersion: string; route: string }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion) {
+      throw authFailure(400, "invalid_flow_contact_chain", "A discovered Flow route and API version are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    return invokeFlowContactChain({ root: apiRoot, route: input.route, request,
+      build: async (values) => synthesizeRecordValues(env, row, apiRoot, "Contact", "Action Searcher temporary contact-chain probe", values) });
+  }
+
+  /** Run the verification-code consumer chain for a metadata-hidden Flow action. */
+  async invokeFlowVerificationCodeChain(ref: Key, input: { apiVersion: string; route: string }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion) {
+      throw authFailure(400, "invalid_flow_verification_code_chain", "A discovered Flow route and API version are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    return invokeFlowVerificationCodeChain({ root: apiRoot, route: input.route, request, inbox: verificationInbox(env),
+      build: async (values) => synthesizeRecordValues(env, row, apiRoot, "Contact", "Action Searcher temporary verification-chain probe", values) });
+  }
+
+  /** Run the owned-substrate chain for a refused custom Flow action. */
+  async invokeFlowOwnedSubstrateChain(ref: Key, input: { apiVersion: string; route: string; plan: OwnedSubstratePlan; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.plan)) {
+      throw authFailure(400, "invalid_flow_owned_substrate", "A discovered Flow route, API version, and substrate plan are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    if (!row.integration_user_id || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(row.integration_user_id)) {
+      throw authFailure(400, "invalid_flow_owned_substrate", "A live integration user identity is required; none is ever guessed.");
+    }
+    return invokeOwnedSubstrate({ root: apiRoot, route: input.route, plan: input.plan,
+      integrationUserId: row.integration_user_id,
+      ...(typeof input.verificationWindowMs === "number" ? { verificationWindowMs: input.verificationWindowMs } : {}),
+      request,
+      build: async (name, marker, values) => {
+        const result = await synthesizeRecordValues(env, row, apiRoot, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result;
+      } });
+  }
+
+  /** Apply a planned managed-flow-fault repair and re-probe (searcher repair-consumer entry). */
+  async invokeFlowFaultRepair(ref: Key, input: { apiVersion: string; route: string; fault: { code: string; requirement?: string; retryable?: boolean; objectName?: string; fieldName?: string; actionElement?: string; providerName?: string; invocableName?: string; inputName?: string }; priorArgs?: Record<string, unknown>; gating?: { lastAttemptAt?: number | null; repeatCount?: number | null; builderVersion?: number | null }; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.fault) ||
+      typeof (input.fault as Record<string, unknown>).code !== "string") {
+      throw authFailure(400, "invalid_flow_fault_repair", "A discovered Flow route, API version, and classified fault are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    const outcome = await runFlowFaultRepairConsumer({
+      fault: input.fault as ManagedFlowFault, root: apiRoot, route: input.route, request,
+      build: async (name, marker, values) => {
+        const result = await synthesizeRecordValues(env, row, apiRoot, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result;
+      },
+      ...(object(input.priorArgs) ? { priorArgs: input.priorArgs } : {}),
+      ...(object(input.gating) ? { gating: input.gating } : {}),
+      ...(typeof input.verificationWindowMs === "number" ? { verificationWindowMs: input.verificationWindowMs } : {}),
+    });
+    if (!outcome) {
+      throw authFailure(400, "invalid_flow_fault_repair", "The fault code is not a classified managed-flow fault with a repair consumer.");
+    }
+    return { status: 200, body: outcome };
+  }
+
+  /** Discover Data Cloud publish substrate, invoke natively, and verify the lifecycle state. */
+  async invokeCdpPublishWithContext(ref: Key, input: { actionName: string; apiVersion: string; descriptorInputs: Array<{ name: string; type?: string; required?: boolean }> }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const actions = ["cdpPublishSegment", "cdpPublishCalculatedInsight", "cdpSendToActivation"];
+    if (!key(ref) || !object(input) || !actions.includes(input.actionName) ||
+      !/^v\d+(?:\.\d+)?$/.test(input.apiVersion ?? "") || !Array.isArray(input.descriptorInputs)) {
+      throw authFailure(400, "invalid_cdp_publish", "A discovered CDP publish action, API version, and descriptor inputs are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${input.apiVersion}`;
+    const route = `${root}/actions/standard/${input.actionName}`;
+    const request: CdpPubTransport = async (path, method, body) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+          crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "CDP_PUB_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; discovery treats this as absent substrate." } }; }
+    };
+    const specs: Record<string, { soqls: string[]; valueFields: string[] }> = {
+      cdpPublishSegment: { soqls: ["SELECT Id FROM MarketSegment WHERE SegmentStatus='ACTIVE' LIMIT 1"], valueFields: ["Id"] },
+      cdpPublishCalculatedInsight: { soqls: ["SELECT Id, Name, CalculatedInsightStatus FROM MktCalculatedInsight LIMIT 1"], valueFields: ["Name"] },
+      cdpSendToActivation: { soqls: ["SELECT Id, Name FROM MarketSegmentActivation LIMIT 1", "SELECT Id, MasterLabel FROM ActivationTarget LIMIT 1"], valueFields: ["Name", "MasterLabel"] },
+    };
+    const spec = specs[input.actionName];
+    const discover = async (): Promise<CdpPubDiscovery> => {
+      const evidence: string[] = [];
+      for (const soql of spec.soqls) {
+        const res = await request(`${root}/query?q=${encodeURIComponent(soql)}`, "GET");
+        const rows = object(res.body) && Array.isArray(res.body.records) ? res.body.records.filter(object) : [];
+        evidence.push(`${soql} -> ${rows.length}`);
+        const first = rows[0] as Record<string, unknown> | undefined;
+        const value = first ? spec.valueFields.map(field => first[field]).find(candidate => typeof candidate === "string" && candidate.length > 0) : undefined;
+        const rowId = first && typeof first.Id === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(first.Id) ? first.Id : undefined;
+        if (typeof value === "string" && rowId) return { found: true, value, rowId, soql };
+      }
+      return { found: false, evidence };
+    };
+    const verify = async (discovery: { rowId: string; soql: string }): Promise<{ verified: boolean }> => {
+      const present = (value: unknown): boolean => (typeof value === "string" && value.length > 0) || (typeof value === "number" && Number.isFinite(value));
+      const soql = input.actionName === "cdpPublishSegment"
+        ? `SELECT Id, PublishStatus, LastPublishStatusDateTime FROM MarketSegment WHERE Id='${discovery.rowId}'`
+        : input.actionName === "cdpPublishCalculatedInsight"
+          ? `SELECT Id, CalculatedInsightStatus, LastRunStatus, LastRunStatusDateTime FROM MktCalculatedInsight WHERE Id='${discovery.rowId}'`
+          : discovery.soql.includes("ActivationTarget")
+            ? `SELECT Id, MasterLabel, TargetStatus, LastTargetStatusDateTime FROM ActivationTarget WHERE Id='${discovery.rowId}'`
+            : `SELECT Id, Name, ActivationStatus, LastActivationStatusDateTime, LastPublishStatus FROM MarketSegmentActivation WHERE Id='${discovery.rowId}'`;
+      const res = await request(`${root}/query?q=${encodeURIComponent(soql)}`, "GET");
+      const found = object(res.body) && Array.isArray(res.body.records) ? res.body.records.filter(object)[0] : undefined;
+      if (!found || found.Id !== discovery.rowId) return { verified: false };
+      return { verified: ["PublishStatus", "LastPublishStatusDateTime", "CalculatedInsightStatus", "LastRunStatus",
+        "LastRunStatusDateTime", "ActivationStatus", "LastActivationStatusDateTime", "LastPublishStatus",
+        "TargetStatus", "LastTargetStatusDateTime"].some(field => present(found[field])) };
+    };
+    const result = await runCdpPublishLifecycle({ root, route, actionName: input.actionName,
+      descriptorInputs: input.descriptorInputs, discover, request, verify });
+    return { status: result.status, body: result.body, contextSchema: result.contextSchema,
+      ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}) };
+  }
+
+  /** Refresh ONLY owned ActSetup probe data streams, invoking natively and verifying the lifecycle state. */
+  async invokeCdpRefreshWithContext(ref: Key, input: { actionName: string; apiVersion: string; descriptorInputs: Array<{ name: string; type?: string; required?: boolean }> }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    if (!key(ref) || !object(input) || input.actionName !== "cdpRefreshDataStream" ||
+      !/^v\d+(?:\.\d+)?$/.test(input.apiVersion ?? "") || !Array.isArray(input.descriptorInputs)) {
+      throw authFailure(400, "invalid_cdp_refresh", "The discovered CDP refresh action, API version, and descriptor inputs are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${input.apiVersion}`;
+    const route = `${root}/actions/standard/${input.actionName}`;
+    const request: CdpPubTransport = async (path, method, body) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+          crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "CDP_PUB_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; discovery treats this as absent substrate." } }; }
+    };
+    const soql = "SELECT Id, Name, ImportRunStatus FROM DataStream WHERE Name LIKE 'ActSetup%' AND DataStreamStatus='ACTIVE' LIMIT 1";
+    const discover = async (): Promise<CdpPubDiscovery> => {
+      const res = await request(`${root}/query?q=${encodeURIComponent(soql)}`, "GET");
+      const rows = object(res.body) && Array.isArray(res.body.records) ? res.body.records.filter(object) : [];
+      const first = rows[0] as Record<string, unknown> | undefined;
+      const value = first && typeof first.Id === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(first.Id) ? first.Id : undefined;
+      if (typeof value === "string") return { found: true, value, rowId: value, soql };
+      return { found: false, evidence: [`${soql} -> ${rows.length}`] };
+    };
+    const verify = async (discovery: { rowId: string; soql: string }): Promise<{ verified: boolean }> => {
+      void discovery.soql;
+      const res = await request(`${root}/query?q=${encodeURIComponent(
+        `SELECT Id, ImportRunStatus, LastDataChangeStatusDateTime FROM DataStream WHERE Id='${discovery.rowId}'`)}`, "GET");
+      const found = object(res.body) && Array.isArray(res.body.records) ? res.body.records.filter(object)[0] : undefined;
+      if (!found || found.Id !== discovery.rowId) return { verified: false };
+      const present = (value: unknown): boolean => (typeof value === "string" && value.length > 0) || (typeof value === "number" && Number.isFinite(value));
+      return { verified: present(found.ImportRunStatus) || present(found.LastDataChangeStatusDateTime) };
+    };
+    const result = await runCdpPublishLifecycle({ root, route, actionName: input.actionName,
+      descriptorInputs: input.descriptorInputs, discover, request, verify });
+    return { status: result.status, body: result.body, contextSchema: result.contextSchema,
+      ...(result.cleanupError ? { cleanupError: result.cleanupError } : {}) };
+  }
+
+  /** Ground summaries in a searchable UI API record, creating a disposable record if needed. */
+  async invokeRecordSummaryWithContext(ref: Key, input: { apiVersion: string; route: string }):
+    Promise<{ status: number; body: unknown; cleanupError?: string }> {
+    if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
+        input.route !== `/services/data/v${input.apiVersion}/actions/standard/summarizeRecord`) {
+      throw authFailure(400, "invalid_summary_probe", "A discovered record summary route is required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method,
+        body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true);
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    const catalog = await request(`${apiRoot}/sobjects/`);
+    if (!catalog.ok) return { status: catalog.status, body: catalog.body };
+    const objects = object(catalog.body) && Array.isArray(catalog.body.sobjects)
+      ? catalog.body.sobjects.filter(object).filter(item => typeof item.name === "string" &&
+        /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(item.name) && item.queryable === true &&
+        item.searchable === true && item.layoutable === true)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name))).slice(0, 32) : [];
+    const usable: Array<{ name: string; createable: boolean }> = [];
+    const succeeded = (body: unknown) => Array.isArray(body) && body.length > 0 && body.every(item =>
+      object(item) && item.isSuccess === true && (!Array.isArray(item.errors) || item.errors.length === 0));
+    let result: { status: number; body: unknown } = { status: 422, body: {
+      errorCode: "SUMMARY_CONTEXT_MISSING", message: "No searchable object with an accessible UI API layout is available.",
+    } };
+    for (const item of objects) {
+      const name = String(item.name);
+      const layout = await request(`${apiRoot}/ui-api/layout/${name}`);
+      if (!layout.ok || !object(layout.body) || typeof layout.body.id !== "string") continue;
+      usable.push({ name, createable: item.createable === true });
+      const sample = await request(`${apiRoot}/query?q=${encodeURIComponent(`SELECT Id FROM ${name} LIMIT 1`)}`);
+      if (!sample.ok) continue;
+      const records = object(sample.body) && Array.isArray(sample.body.records) ? sample.body.records.filter(object) : [];
+      const id = records[0]?.Id;
+      if (typeof id !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(id)) continue;
+      const action = await request(input.route, "POST", { inputs: [{ recordId: id }] });
+      result = { status: action.status, body: action.body };
+      // Preserve authorization failures; another record must not mask a missing user permission.
+      if ((action.ok && succeeded(action.body)) || /permission|access|authoriz/i.test(salesforceError(action.body).message ??
+        JSON.stringify(action.body))) return result;
+    }
+    for (const candidate of usable.filter(item => item.createable)) {
+      const built = await synthesizeRecordValues(env, row, apiRoot, candidate.name,
+        "Action Searcher temporary summary probe");
+      if ("failure" in built) { result = built.failure; continue; }
+      const path = `${apiRoot}/sobjects/${candidate.name}`;
+      const create = await request(path, "POST", built.values);
+      if (!create.ok || !object(create.body) || typeof create.body.id !== "string" ||
+          !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(create.body.id)) {
+        result = { status: create.status, body: create.body }; continue;
+      }
+      const id = create.body.id;
+      let cleanupError: string | undefined;
+      try {
+        const action = await request(input.route, "POST", { inputs: [{ recordId: id }] });
+        result = { status: action.status, body: action.body };
+      } finally {
+        let deleted = false;
+        for (let attempt = 0; attempt < 2 && !deleted; attempt++) {
+          try {
+            const cleanup = await request(`${path}/${id}`, "DELETE");
+            deleted = cleanup.ok || cleanup.status === 404;
+            if (!deleted) cleanupError = `Temporary summary record cleanup returned HTTP ${cleanup.status}.`;
+          } catch { cleanupError = "Temporary summary record cleanup could not reach Salesforce."; }
+        }
+        if (deleted) cleanupError = undefined;
+      }
+      // Never create another fixture after a cleanup failure.
+      if (cleanupError) return { ...result, cleanupError };
+      if (result.status >= 200 && result.status < 300 && succeeded(result.body)) return result;
+    }
+    return result;
+  }
+
+  async getCallableToolUrlsForChannel(channelId: string, options?: any): Promise<string[]> {
+    return getCallableToolUrlsForChannel(channelId, { ...options, env: this.env });
+  }
+
+  async getTokenForChannel(
+    channelId: string,
+    options?: { teamId?: string; orgId?: string; channelSecret?: string }
+  ): Promise<Token & { orgId: string; teamId: string }> {
+    let row: Credential | null = null;
+    if (options?.channelSecret || options?.teamId || options?.orgId) {
+      if (!options.channelSecret || !options.teamId || !options.orgId) throw new SecurityError(401,"complete_channel_credential_required");
+      row = await authorized(this.env, {
+        channelId,
+        teamId: options.teamId,
+        orgId: options.orgId,
+        channelSecret: options.channelSecret,
+      });
+    } else {
+      row = await resolveCredentialForChannel(this.env, channelId);
+      if (row && ((options?.teamId && options.teamId !== row.team_id) || (options?.orgId && options.orgId !== row.org_id))) row = null;
+    }
+    if (!row) {
+      throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${channelId}'.`);
+    }
+    const auth = await token(this.env, row);
+    return {
+      accessToken: auth.accessToken,
+      instanceUrl: auth.instanceUrl,
+      expiresAt: auth.expiresAt,
+      orgId: row.org_id,
+      teamId: row.team_id,
+    };
+  }
+
+  /** Returns the active ECAs attached to one connected channel without exposing secrets. */
+  async listExecutionUsersForChannel(channelId: string): Promise<ExecutionUserReference[]> {
+    return activeChannelExecutionUsers(this.env as AuthEnv, channelId);
+  }
+
+  /** Mints a token for one ECA after rechecking the exact active tenant grant. */
+  async getTokenForExecutionUser(
+    channelId: string,
+    integrationUserId: string,
+    scope: Key,
+  ): Promise<Token & Key & { integrationUserId: string }> {
+    const env = this.env as AuthEnv;
+    if (!validSalesforceChannelId(channelId) || !validSalesforceUserId(integrationUserId) ||
+        !key(scope as unknown as Record<string, unknown>) || !sameSalesforceId(scope.channelId, channelId)) {
+      throw authFailure(400, "invalid_request", "A valid channel, execution user, and tenant scope are required.");
+    }
+    const row = await activeExecutionCredential(env, scope, integrationUserId);
+    if (!row) throw authFailure(404, "execution_user_not_found", "The execution user is not connected to this active channel.");
+    const auth = await token(env, row);
+    return {
+      accessToken: auth.accessToken,
+      instanceUrl: auth.instanceUrl,
+      expiresAt: auth.expiresAt,
+      teamId: row.team_id,
+      orgId: row.org_id,
+      channelId: row.channel_id,
+      integrationUserId: row.integration_user_id,
+    };
+  }
+
+  private async cacheCredential(options: any): Promise<Credential> {
+    const scope=requireScope(options);
+    if(typeof options.channelSecret!=="string" || options.channelSecret.length<32) throw new SecurityError(401,"channel_credential_required");
+    const row=await authorized(this.env, {...scope,channelSecret:options.channelSecret});
+    if(!row) throw new SecurityError(403,"channel_not_authorized");
+    return row;
+  }
+
+  async getUserData(userId: string, channelId?: string, options?: any): Promise<any> {
+    const cacheRow = await this.cacheCredential(options);
+    if (typeof channelId !== "undefined" && channelId !== cacheRow.channel_id) throw new SecurityError(403,"conflicting_tenant_scope");
+    const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
+    const row = await cacheStore.get(userId);
+    if (!row) return null;
+    try {
+      return JSON.parse(row.data);
+    } catch {
+      return row.data;
+    }
+  }
+
+  async getUserETag(userId: string, options?: any): Promise<string | null> {
+    const cacheRow = await this.cacheCredential(options);
+    const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
+    return await cacheStore.getUserETag(userId);
+  }
+
+  async saveUserData(
+    userId: string,
+    channelId: string | undefined,
+    data: any,
+    ttlSeconds?: number,
+    options?: any
+  ): Promise<{ ok: boolean }> {
+    const cacheRow = await this.cacheCredential(options);
+    const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
+    await cacheStore.put({
+      userId,
+      channelId,
+      orgId: cacheRow.org_id,
+      teamId: cacheRow.team_id,
+      data,
+      ttlSeconds,
+    });
+    await purgeEdgeCache(this.ctx, scopedTags(requireScope(options),[`sf-user-${userId}`]));
+    return { ok: true };
+  }
+
+  async getUserData360(userId: string, channelId?: string, options?: any): Promise<any> {
+    const cacheRow = await this.cacheCredential(options);
+    const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
+    const cached = await cacheStore.get(userId);
+    if (cached) {
+      try {
+        return JSON.parse(cached.data);
+      } catch {
+        return cached.data;
+      }
+    }
+
+    const cred = cacheRow;
+    if (!cred) {
+      throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
+    }
+
+    const requestId = crypto.randomUUID();
+    const userData = await querySalesforceUserData(this.env, cred, userId, requestId);
+    if (!userData) {
+      throw authFailure(404, "user_not_found", `User '${userId}' not found in Salesforce.`);
+    }
+
+    await cacheStore.put({
+      userId,
+      channelId: cred.channel_id,
+      orgId: cred.org_id,
+      teamId: cred.team_id,
+      data: userData,
+      ttlSeconds: 300,
+    });
+
+    return userData;
+  }
+
+  async getMessagingSessionData360(sessionId: string, channelId?: string, options?: any): Promise<any> {
+    const cacheRow = await this.cacheCredential(options);
+    const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
+    const cached = await cacheStore.get(sessionId);
+    if (cached) {
+      try {
+        return JSON.parse(cached.data);
+      } catch {
+        return cached.data;
+      }
+    }
+
+    const cred = cacheRow;
+    if (!cred) {
+      throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
+    }
+
+    const requestId = crypto.randomUUID();
+    const sessionData = await querySalesforceMessagingSession(this.env, cred, sessionId, requestId);
+    if (!sessionData) {
+      throw authFailure(404, "session_not_found", `MessagingSession '${sessionId}' not found.`);
+    }
+
+    await cacheStore.put({
+      userId: sessionId,
+      channelId: cred.channel_id,
+      orgId: cred.org_id,
+      teamId: cred.team_id,
+      data: sessionData,
+      ttlSeconds: 300,
+    });
+
+    return sessionData;
+  }
+
+  async purgeCache(tags: string[] | string, options?: any): Promise<boolean> {
+    const tagList = Array.isArray(tags) ? tags : [tags];
+    scopedTags(requireScope(options),tagList);
+    const cacheRow = await this.cacheCredential(options);
+    const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
+    for (const tag of tagList) {
+      if (tag.startsWith("sf-user-")) {
+        await cacheStore.delete(tag.slice("sf-user-".length));
+      } else if (tag.startsWith("sf-session-")) {
+        await cacheStore.delete(tag.slice("sf-session-".length));
+      }
+    }
+    return purgeEdgeCache(this.ctx, scopedTags(requireScope(options),tagList));
+  }
+
+  async getUserConversationHistory(
+    userId: string,
+    options?: { channelId?: string; teamId?: string; orgId?: string; channelSecret?: string; currentSessionId?: string; limit?: number }
+  ): Promise<UserConversationHistory> {
+    const cred = await this.cacheCredential(options);
+    if (!cred) {
+      throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${options?.channelId || "default"}'.`);
+    }
+    const requestId = crypto.randomUUID();
+    return querySalesforceUserConversations(this.env, cred, userId, options, requestId);
+  }
+}
+
+export default {
+  async fetch(request: Request, env: AuthEnv, ctx?: any): Promise<Response> {
+    const incomingRequestId = request.headers.get("x-request-id");
+    const requestId = incomingRequestId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(incomingRequestId)
+      ? incomingRequestId.toLowerCase()
+      : crypto.randomUUID();
+    try { return await handle(request, env, requestId, ctx); }
+    catch (cause) {
+      const safe = cause instanceof SecurityError ? {status:cause.status,code:cause.code,message:cause.code,retryable:false} : cause instanceof AuthFailure ? cause.failure : {
+        status: 500,
+        code: "internal_error",
+        message: "The Salesforce auth service encountered an internal error. Retry and share the request ID with support.",
+        retryable: true,
+      };
+      console.error(JSON.stringify({ requestId, error: safe.code, status: safe.status }));
+      return failure(requestId, safe);
+    }
+  },
+} satisfies ExportedHandler<AuthEnv>;

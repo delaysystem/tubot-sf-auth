@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tubot-sf-auth-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-21",
+  "workers_dev": false,
+  "preview_urls": false,
+  "services": [
+    {
+      "binding": "RETRIEVE64",
+      "service": "retrieve64"
+    },
+    {
+      "binding": "NEW_PANEL",
+      "service": "tubot-new-panel"
+    }
+  ],
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "agent-dashboard-db-staging",
+    "database_id": "8f100c42-cb9a-44aa-b995-391f942edf10",
+    "migrations_dir": "migrations",
+    "migrations_table": "tubot_sf_auth_migrations"
+  }],
+  "observability": { "enabled": true },
+  "upload_source_maps": true
+}

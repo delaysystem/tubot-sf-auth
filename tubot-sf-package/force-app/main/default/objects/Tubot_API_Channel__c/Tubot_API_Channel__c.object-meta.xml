@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <description>Tracks channel grants and package-created API permission assignments. Contains no credentials.</description>
+    <label>Tubot API Channel</label>
+    <pluralLabel>Tubot API Channels</pluralLabel>
+    <nameField><displayFormat>TAC-{0000}</displayFormat><label>Connection</label><type>AutoNumber</type></nameField>
+    <sharingModel>Private</sharingModel>
+</CustomObject>

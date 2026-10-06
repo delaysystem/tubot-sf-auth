@@ -1,0 +1,324 @@
+{
+ "outcome": "Passed",
+ "testsRun": 98,
+ "testClasses": [
+  "AppExchangeReleaseCoverageTest",
+  "Data360MarketingAgentVerificationTest",
+  "EmbeddedDeploymentAdminControllerTest",
+  "MessagingBackupRestoreRoutingServiceTest",
+  "MessagingBackupServiceTest",
+  "MessagingChannelDiscoveryServiceTest",
+  "OmniChannelSetupServiceTest",
+  "PackagePostInstallHandlerTest",
+  "PanelAuthControllerTest",
+  "PanelAuthSupportServiceTest",
+  "PanelOAuthBearerSecurityTest",
+  "PanelSalesforceChannelServiceTest",
+  "PanelSelfOrgResponseParserTest",
+  "SessionFieldsProvisioningServiceTest",
+  "TubotAxiomTelemetryServiceTest",
+  "TuBotSelfOrgConnectionControllerTest",
+  "TubotSetupWizardControllerTest"
+ ],
+ "testClassNotes": "17 packaged test classes: 14 contain test methods; EmbeddedDeploymentAdminControllerTest, OmniChannelSetupServiceTest, TubotAxiomTelemetryServiceTest are empty stubs retained because 2GP cannot delete released components. The run total includes 9 org-stock Site/Communities tests on the verification scratch org.",
+ "testRunId": "7077100000aeVqM",
+ "verifiedOnUtc": "2026-10-06",
+ "verificationOrgId": "00D71000004utqjEAA",
+ "packageCoveragePercent": 79,
+ "coverageMetric": "testRunCoverage on verification org tubot-scratch-1773 (2361/2971 lines = 79.5%); 2GP packaging build for 1.2.0.2 reports 76 with HasPassedCodeCoverageCheck=true",
+ "packagingCoveragePercent": 76,
+ "packagingCoverageCheckPassed": true,
+ "classCoverage": [
+  {
+   "name": "EmbeddedDeploymentFlowActivationService",
+   "totalLines": 75,
+   "coveredLines": 23,
+   "percent": 31
+  },
+  {
+   "name": "MessagingBackupCaptureService",
+   "totalLines": 104,
+   "coveredLines": 97,
+   "percent": 93
+  },
+  {
+   "name": "MessagingBackupController",
+   "totalLines": 19,
+   "coveredLines": 18,
+   "percent": 95
+  },
+  {
+   "name": "MessagingBackupDeploymentCaptureService",
+   "totalLines": 58,
+   "coveredLines": 38,
+   "percent": 66
+  },
+  {
+   "name": "MessagingBackupFieldCaptureService",
+   "totalLines": 41,
+   "coveredLines": 36,
+   "percent": 88
+  },
+  {
+   "name": "MessagingBackupOmniCaptureService",
+   "totalLines": 129,
+   "coveredLines": 101,
+   "percent": 78
+  },
+  {
+   "name": "MessagingBackupRecordService",
+   "totalLines": 45,
+   "coveredLines": 39,
+   "percent": 87
+  },
+  {
+   "name": "MessagingBackupRestoreFlowService",
+   "totalLines": 13,
+   "coveredLines": 12,
+   "percent": 92
+  },
+  {
+   "name": "MessagingBackupRestoreRoutingService",
+   "totalLines": 87,
+   "coveredLines": 75,
+   "percent": 86
+  },
+  {
+   "name": "MessagingBackupRestoreService",
+   "totalLines": 81,
+   "coveredLines": 74,
+   "percent": 91
+  },
+  {
+   "name": "MessagingBackupRestoreSettingsService",
+   "totalLines": 72,
+   "coveredLines": 64,
+   "percent": 89
+  },
+  {
+   "name": "MessagingBackupRestoreToolingService",
+   "totalLines": 66,
+   "coveredLines": 41,
+   "percent": 62
+  },
+  {
+   "name": "MessagingBackupService",
+   "totalLines": 88,
+   "coveredLines": 74,
+   "percent": 84
+  },
+  {
+   "name": "MessagingBackupSettingsCaptureService",
+   "totalLines": 26,
+   "coveredLines": 23,
+   "percent": 88
+  },
+  {
+   "name": "MessagingChannelDiscoveryService",
+   "totalLines": 98,
+   "coveredLines": 85,
+   "percent": 87
+  },
+  {
+   "name": "MessagingConfigurationController",
+   "totalLines": 21,
+   "coveredLines": 15,
+   "percent": 71
+  },
+  {
+   "name": "PackageAdminPermissionAssignmentService",
+   "totalLines": 14,
+   "coveredLines": 8,
+   "percent": 57
+  },
+  {
+   "name": "PackagePostInstallDefaultsService",
+   "totalLines": 21,
+   "coveredLines": 20,
+   "percent": 95
+  },
+  {
+   "name": "PackagePostInstallHandler",
+   "totalLines": 31,
+   "coveredLines": 28,
+   "percent": 90
+  },
+  {
+   "name": "PanelAccountController",
+   "totalLines": 16,
+   "coveredLines": 13,
+   "percent": 81
+  },
+  {
+   "name": "PanelApiAssignmentQueueable",
+   "totalLines": 77,
+   "coveredLines": 64,
+   "percent": 83
+  },
+  {
+   "name": "PanelAuthController",
+   "totalLines": 80,
+   "coveredLines": 73,
+   "percent": 91
+  },
+  {
+   "name": "PanelAuthSupportService",
+   "totalLines": 58,
+   "coveredLines": 54,
+   "percent": 93
+  },
+  {
+   "name": "PanelBaseUrlResolver",
+   "totalLines": 19,
+   "coveredLines": 13,
+   "percent": 68
+  },
+  {
+   "name": "PanelExternalCredentialTokenService",
+   "totalLines": 29,
+   "coveredLines": 5,
+   "percent": 17
+  },
+  {
+   "name": "PanelOAuthExchangeService",
+   "totalLines": 84,
+   "coveredLines": 66,
+   "percent": 79
+  },
+  {
+   "name": "PanelOAuthTokenExchangeService",
+   "totalLines": 19,
+   "coveredLines": 17,
+   "percent": 89
+  },
+  {
+   "name": "PanelSalesforceChannelCleanupService",
+   "totalLines": 67,
+   "coveredLines": 46,
+   "percent": 69
+  },
+  {
+   "name": "PanelSalesforceChannelConnectService",
+   "totalLines": 67,
+   "coveredLines": 58,
+   "percent": 87
+  },
+  {
+   "name": "PanelSalesforceChannelPreparationService",
+   "totalLines": 74,
+   "coveredLines": 59,
+   "percent": 80
+  },
+  {
+   "name": "PanelSalesforceChannelQueryService",
+   "totalLines": 56,
+   "coveredLines": 54,
+   "percent": 96
+  },
+  {
+   "name": "PanelSalesforceChannelService",
+   "totalLines": 26,
+   "coveredLines": 26,
+   "percent": 100
+  },
+  {
+   "name": "PanelSalesforceChannelSupportService",
+   "totalLines": 69,
+   "coveredLines": 59,
+   "percent": 86
+  },
+  {
+   "name": "PanelSalesforceExecutionUserService",
+   "totalLines": 69,
+   "coveredLines": 59,
+   "percent": 86
+  },
+  {
+   "name": "PanelSelfOrgResponseParser",
+   "totalLines": 20,
+   "coveredLines": 20,
+   "percent": 100
+  },
+  {
+   "name": "SessionFieldAccessVerifier",
+   "totalLines": 87,
+   "coveredLines": 73,
+   "percent": 84
+  },
+  {
+   "name": "SessionFieldMetadataProvisioner",
+   "totalLines": 79,
+   "coveredLines": 23,
+   "percent": 29
+  },
+  {
+   "name": "SessionFieldPermissionPlanBuilder",
+   "totalLines": 77,
+   "coveredLines": 63,
+   "percent": 82
+  },
+  {
+   "name": "SessionFieldPermissionProvisioner",
+   "totalLines": 44,
+   "coveredLines": 38,
+   "percent": 86
+  },
+  {
+   "name": "SessionFieldPermissionRestService",
+   "totalLines": 63,
+   "coveredLines": 32,
+   "percent": 51
+  },
+  {
+   "name": "SessionFieldProvisioningPipelineService",
+   "totalLines": 69,
+   "coveredLines": 62,
+   "percent": 90
+  },
+  {
+   "name": "SessionFieldsProvisioningService",
+   "totalLines": 115,
+   "coveredLines": 73,
+   "percent": 63
+  },
+  {
+   "name": "TuBotSelfOrgApiCallout",
+   "totalLines": 25,
+   "coveredLines": 19,
+   "percent": 76
+  },
+  {
+   "name": "TuBotSelfOrgConnectionController",
+   "totalLines": 99,
+   "coveredLines": 88,
+   "percent": 89
+  },
+  {
+   "name": "TubotPackageFeatureGate",
+   "totalLines": 2,
+   "coveredLines": 2,
+   "percent": 100
+  },
+  {
+   "name": "TubotSettingsMetadataService",
+   "totalLines": 123,
+   "coveredLines": 101,
+   "percent": 82
+  },
+  {
+   "name": "TubotSettingsSchemaResolver",
+   "totalLines": 38,
+   "coveredLines": 31,
+   "percent": 82
+  },
+  {
+   "name": "TubotSetupWizardController",
+   "totalLines": 108,
+   "coveredLines": 95,
+   "percent": 88
+  }
+ ],
+ "requiredPackageCoveragePercent": 75,
+ "packagedTriggers": [],
+ "requiredTriggerCoveragePercent": 100
+}

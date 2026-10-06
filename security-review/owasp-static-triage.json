@@ -1,0 +1,74 @@
+{
+  "rawFindings": 7,
+  "confirmedVulnerabilities": {
+    "high": 0,
+    "moderate": 0,
+    "low": 0
+  },
+  "suppressedFindings": 0,
+  "triage": [
+    {
+      "ruleId": "security-review.javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp",
+      "path": "src/agent-script.ts",
+      "line": 107,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "MEDIUM",
+      "classification": "false_positive",
+      "evidence": "Tag names are validated against a bounded identifier regex before interpolation. Call sites use only id, done, faultstring and zipFile."
+    },
+    {
+      "ruleId": "security-review.javascript.lang.security.html-in-template-string.html-in-template-string",
+      "path": "src/agent-script.ts",
+      "line": 337,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "MEDIUM",
+      "classification": "false_positive",
+      "evidence": "SOAP XML sent to Salesforce, not browser HTML. Member names, tokens and async IDs are XML-escaped; API version is restricted to numeric dotted syntax. The metadata API version injection regression passes."
+    },
+    {
+      "ruleId": "security-review.javascript.lang.security.html-in-template-string.html-in-template-string",
+      "path": "src/agent-script.ts",
+      "line": 340,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "MEDIUM",
+      "classification": "false_positive",
+      "evidence": "SOAP XML sent to Salesforce, not browser HTML. Member names, tokens and async IDs are XML-escaped; API version is restricted to numeric dotted syntax. The metadata API version injection regression passes."
+    },
+    {
+      "ruleId": "security-review.javascript.lang.security.html-in-template-string.html-in-template-string",
+      "path": "src/agent-script.ts",
+      "line": 343,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "MEDIUM",
+      "classification": "false_positive",
+      "evidence": "SOAP XML sent to Salesforce, not browser HTML. Member names, tokens and async IDs are XML-escaped; API version is restricted to numeric dotted syntax. The metadata API version injection regression passes."
+    },
+    {
+      "ruleId": "security-review.javascript.lang.security.html-in-template-string.html-in-template-string",
+      "path": "src/agent-script.ts",
+      "line": 346,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "MEDIUM",
+      "classification": "false_positive",
+      "evidence": "SOAP XML sent to Salesforce, not browser HTML. Member names, tokens and async IDs are XML-escaped; API version is restricted to numeric dotted syntax. The metadata API version injection regression passes."
+    },
+    {
+      "ruleId": "security-review.javascript.lang.security.html-in-template-string.html-in-template-string",
+      "path": "src/agent-script.ts",
+      "line": 399,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "MEDIUM",
+      "classification": "false_positive",
+      "evidence": "SOAP XML sent to Salesforce, not browser HTML. Member names, tokens and async IDs are XML-escaped; API version is restricted to numeric dotted syntax. The metadata API version injection regression passes."
+    },
+    {
+      "ruleId": "security-review.javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop",
+      "path": "src/prompt-context.ts",
+      "line": 14,
+      "scannerSeverity": "WARNING",
+      "scannerImpact": "LOW",
+      "classification": "false_positive",
+      "evidence": "Prompt paths are restricted identifiers with __proto__, constructor and prototype rejected before traversal. Traversal uses Object.hasOwn and creates null-prototype objects. Prototype and inherited-object regression tests pass."
+    }
+  ]
+}

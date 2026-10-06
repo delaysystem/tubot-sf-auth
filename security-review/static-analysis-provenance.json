@@ -1,0 +1,34 @@
+{
+  "tool": {
+    "version": "v1.30.0",
+    "url": "https://github.com/opengrep/opengrep/releases/download/v1.30.0/opengrep_manylinux_x86",
+    "sha256": "35779bdd72e92129c8df2a77f0c55e8c08356801ea92591ef32108d6b28d564c"
+  },
+  "ruleRepository": "https://github.com/semgrep/semgrep-rules",
+  "ruleCommit": "a84ff9cc2453ca91d581380de4b8b3f272f6f4be",
+  "ruleCount": 184,
+  "suppressionsEnabled": false,
+  "scope": "sf-auth src/*.ts; test files excluded",
+  "sources": [
+    {
+      "path": "src/agent-script.ts",
+      "sha256": "b6e53f82c22013761aab2c242ec71c981ba4fab0fa05c90da05ef1ee982faa9c"
+    },
+    {
+      "path": "src/cache-helper.ts",
+      "sha256": "217a2ed2152a9ffea4e2aad4d1c101891762b6cb0214b5e0061208c91d31b445"
+    },
+    {
+      "path": "src/index.ts",
+      "sha256": "908e2d6f9a77cebb52f127e504b940214388d539e91f1cb2771175edde4676b8"
+    },
+    {
+      "path": "src/prompt-context.ts",
+      "sha256": "370e79c39c563bff97a38b50c1f2a2dbbcb2098fd4c1a7b64d73bc4110df4003"
+    },
+    {
+      "path": "src/request-security.ts",
+      "sha256": "8559f7c2944c49a761455a6ccbc3029ca21c9ade0722a36d683922147675701e"
+    }
+  ]
+}

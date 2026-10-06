@@ -1,0 +1,23 @@
+{
+	"name": "tubot-sf-auth",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"cf-typegen": "wrangler types",
+		"test": "bun test src/index.test.ts",
+		"setup:context-permissions": "bun scripts/setup-context-permissions.ts",
+		"typecheck": "bun x tsc --noEmit",
+		"release:check": "bun run test && bun run typecheck && bun x wrangler deploy --dry-run"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.2",
+		"typescript": "^5.5.2",
+		"wrangler": "^4.145.0"
+	},
+	"dependencies": {
+		"fflate": "^0.8.3"
+	}
+}

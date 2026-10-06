@@ -1,0 +1,899 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+TuBot Salesforce De-Setup (Teardown) Wizard (Zero-Mock Interactive CLI)
+==============================================================================
+Reverses the post-install and returns the org to bare state, keeping ONLY the
+TuBot managed package installed. The wizard always lists authenticated orgs
+and requires the user to pick the target — it never auto-selects an org.
+
+Removes (with per-run confirmation):
+  1. Panel-side channel + execution-user credentials (via Named Credential
+     callout, before logout).
+  2. tubot__Tubot_API_Channel__c records ("integration user config").
+  3. Tubot_Salesforce_API_Read permission set assignments for those users.
+  4. External Client App (ECA) metadata (default Tubot_SF_Channel_API).
+     The integration API never had an ExternalCredential object: its auth
+     was this ECA plus Panel-held secrets, both removed here.
+  5. Panel login (UserExternalCredential rows plus legacy MCP token fields).
+  6. Unpackaged credential definitions (repair-deployed Panel External /
+     Named Credential, Panel remote site, repair permission set).
+
+Optional, explicitly opted in per run:
+  6. A MessagingChannel (--delete-channel <DeveloperName|Id>).
+
+Kept by design: the TuBot package itself (including packaged credential
+definitions, which subscriber code cannot delete), admin permission set
+assignments (needed to use Panel Settings / re-run setup), queues, and
+the MCP config row itself (tokens cleared, public config kept).
+
+Every deletion is blind-verified by re-querying ground truth. Run with
+--inventory-only to preview without deleting anything.
+==============================================================================
+"""
+
+TEARDOWN_VERSION = "1.1.0"
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+# Resolve the canonical post-install module (shared sf/Panel helpers).
+_POSTINSTALL_CANDIDATES = [
+    Path(__file__).resolve().parent,
+    Path(__file__).resolve().parent.parent.parent.parent / "scripts",
+    Path.cwd() / "tubot-sf-auth" / "tubot-sf-package" / "scripts",
+]
+for _candidate in _POSTINSTALL_CANDIDATES:
+    if (_candidate / "tubot_postinstall.py").exists():
+        sys.path.insert(0, str(_candidate))
+        break
+
+try:
+    from tubot_postinstall import (  # noqa: E402
+        BOLD,
+        CYAN,
+        RESET,
+        extract_debug_values,
+        log_error,
+        log_info,
+        log_phase,
+        log_success,
+        log_warn,
+        prompt,
+        resolve_org,
+        run_apex,
+        run_sf,
+        select_target_org,
+    )
+except ImportError as exc:
+    print(f"[ERROR] Could not import tubot_postinstall module: {exc}", file=sys.stderr)
+    print("[ERROR] Teardown must run from tubot-sf-auth/tubot-sf-package/scripts/ (or alongside it).", file=sys.stderr)
+    sys.exit(1)
+
+
+# ==============================================================================
+# Inventory (read-only discovery)
+# ==============================================================================
+def list_api_channel_records(org: Dict[str, str], channel_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List tubot__Tubot_API_Channel__c records, optionally filtered to one channel."""
+    soql = (
+        "SELECT Id, tubot__Channel_Id__c, tubot__Integration_User_Id__c, tubot__Team_Id__c "
+        "FROM tubot__Tubot_API_Channel__c ORDER BY CreatedDate DESC"
+    )
+    res = run_sf(["data", "query", "--query", soql, "--target-org", org["target_flag"]])
+    if res["returncode"] != 0:
+        log_error(f"Failed to query Tubot API channel records: {res['stderr'] or res['stdout']}")
+        sys.exit(1)
+    records = res["data"].get("result", {}).get("records", [])
+    if channel_filter:
+        records = [r for r in records if channel_filter in (r.get("Id"), r.get("tubot__Channel_Id__c"))]
+    return records
+
+
+def list_api_perm_assignments(org: Dict[str, str], user_ids: List[str]) -> List[Dict[str, Any]]:
+    """List Tubot_Salesforce_API_Read assignments for the given users."""
+    if not user_ids:
+        return []
+    perm_res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id FROM PermissionSet WHERE Name = 'Tubot_Salesforce_API_Read' LIMIT 1",
+        "--target-org", org["target_flag"],
+    ])
+    perm_records = perm_res["data"].get("result", {}).get("records", [])
+    if not perm_records:
+        return []
+    perm_id = perm_records[0]["Id"]
+    quoted = ",".join(f"'{u}'" for u in sorted(set(user_ids)) if u)
+    assign_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id, AssigneeId FROM PermissionSetAssignment WHERE PermissionSetId = '{perm_id}' AND AssigneeId IN ({quoted})",
+        "--target-org", org["target_flag"],
+    ])
+    return assign_res["data"].get("result", {}).get("records", [])
+
+
+def list_panel_credential_rows(org: Dict[str, str]) -> List[Dict[str, Any]]:
+    """List UserExternalCredential rows holding the Panel login (both namespaces)."""
+    res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id, ExternalCredential.DeveloperName, ExternalCredential.NamespacePrefix "
+        "FROM UserExternalCredential WHERE ExternalCredential.DeveloperName = 'Panel_External_Credential'",
+        "--target-org", org["target_flag"],
+    ])
+    if res["returncode"] == 0:
+        return res["data"].get("result", {}).get("records", [])
+    # Fallback: resolve credential Ids first, then match rows by Id.
+    cred_res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id FROM ExternalCredential WHERE DeveloperName = 'Panel_External_Credential'",
+        "--target-org", org["target_flag"],
+    ])
+    cred_ids = [r["Id"] for r in cred_res["data"].get("result", {}).get("records", [])]
+    if not cred_ids:
+        return []
+    quoted = ",".join(f"'{c}'" for c in cred_ids)
+    row_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id FROM UserExternalCredential WHERE ExternalCredentialId IN ({quoted})",
+        "--target-org", org["target_flag"],
+    ])
+    if row_res["returncode"] != 0:
+        return []
+    return row_res["data"].get("result", {}).get("records", [])
+
+
+MCP_TOKEN_FIELDS = [
+    "tubot__Panel_Access_Token__c",
+    "tubot__Panel_Refresh_Token__c",
+    "tubot__Panel_Team_Id__c",
+    "tubot__Panel_Team_Name__c",
+    "tubot__Panel_User_Email__c",
+    "tubot__Panel_User_Role__c",
+    "tubot__Panel_Permissions__c",
+    "tubot__Self_Org_ECA_Client_Id__c",
+]
+
+
+def list_mcp_token_rows(org: Dict[str, str]) -> List[Dict[str, Any]]:
+    """List MCP config rows with populated legacy token/identity fields.
+
+    The config row itself and public fields (Base URL, Client Id) are kept;
+    only session/secret fields are cleared. Returns [] when the object is
+    absent (older package) or no row holds tokens.
+    """
+    fields = ", ".join(["Id", "SetupOwnerId"] + MCP_TOKEN_FIELDS)
+    res = run_sf([
+        "data", "query", "--query", f"SELECT {fields} FROM tubot__MCP_Config__c",
+        "--target-org", org["target_flag"],
+    ])
+    if res["returncode"] != 0:
+        err = res.get("error_msg") or res["stderr"] or ""
+        if "INVALID_TYPE" in err or "not supported" in err:
+            log_info("MCP config object absent (older package); nothing legacy to clear.")
+            return []
+        log_error(f"Failed to query MCP config: {res['stderr'] or res['stdout']}")
+        sys.exit(1)
+    populated = []
+    for row in res["data"].get("result", {}).get("records", []):
+        if any((row.get(f) or "") for f in MCP_TOKEN_FIELDS):
+            populated.append(row)
+    return populated
+
+
+# Setup-owned unpackaged credential definitions. ONLY namespace-less entries
+# with these exact DeveloperNames are ever deleted; packaged (tubot__*)
+# definitions are package-owned and listed as kept.
+CREDENTIAL_DEFINITION_ALLOWLIST = {
+    "ExternalCredential": {"Panel_External_Credential"},
+    "NamedCredential": {"Panel_Named_Credential"},
+    "RemoteSiteSetting": {"Panel_Tubot_Active"},
+    "PermissionSet": {"TuBot_Panel_External_Credential_Admin_Repair"},
+}
+
+
+def list_credential_definitions(org: Dict[str, str]) -> Dict[str, Any]:
+    """Inventory setup-owned credential definitions (delete vs package-kept)."""
+    flag = org["target_flag"]
+    ext_res = run_sf([
+        "data", "query", "--use-tooling-api", "--query",
+        "SELECT DeveloperName, NamespacePrefix FROM ExternalCredential",
+        "--target-org", flag,
+    ])
+    if ext_res["returncode"] != 0:
+        log_error(f"Failed to query ExternalCredential: {ext_res['stderr'] or ext_res['stdout']}")
+        sys.exit(1)
+    named_res = run_sf([
+        "data", "query", "--query",
+        "SELECT DeveloperName, NamespacePrefix FROM NamedCredential",
+        "--target-org", flag,
+    ])
+    if named_res["returncode"] != 0:
+        log_error(f"Failed to query NamedCredential: {named_res['stderr'] or named_res['stdout']}")
+        sys.exit(1)
+    site_res = run_sf([
+        "data", "query", "--use-tooling-api", "--query",
+        "SELECT SiteName, NamespacePrefix, FullName FROM RemoteProxy",
+        "--target-org", flag,
+    ])
+    if site_res["returncode"] != 0:
+        log_error(f"Failed to query remote sites: {site_res['stderr'] or site_res['stdout']}")
+        sys.exit(1)
+    perm_res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id, Name, NamespacePrefix FROM PermissionSet "
+        "WHERE Name = 'TuBot_Panel_External_Credential_Admin_Repair'",
+        "--target-org", flag,
+    ])
+    if perm_res["returncode"] != 0:
+        log_error(f"Failed to query repair permission set: {perm_res['stderr'] or perm_res['stdout']}")
+        sys.exit(1)
+
+    delete: List[Tuple[str, str]] = []
+    kept: List[str] = []
+    for meta, res, name_field in (("ExternalCredential", ext_res, "DeveloperName"),
+                                  ("NamedCredential", named_res, "DeveloperName"),
+                                  ("RemoteSiteSetting", site_res, "SiteName")):
+        for row in res["data"].get("result", {}).get("records", []):
+            dev = row.get(name_field) or ""
+            ns = row.get("NamespacePrefix") or ""
+            if dev not in CREDENTIAL_DEFINITION_ALLOWLIST[meta]:
+                continue
+            if ns:
+                kept.append(f"{meta} {ns}__{dev} (package-owned)")
+            else:
+                delete.append((meta, row.get("FullName") or dev))
+    repair_assignments: List[Dict[str, Any]] = []
+    repair_perm = None
+    for row in perm_res["data"].get("result", {}).get("records", []):
+        if not (row.get("NamespacePrefix") or ""):
+            repair_perm = row
+    if repair_perm:
+        delete.append(("PermissionSet", repair_perm["Name"]))
+        assign_res = run_sf([
+            "data", "query", "--query",
+            f"SELECT Id, AssigneeId FROM PermissionSetAssignment WHERE PermissionSetId = '{repair_perm['Id']}'",
+            "--target-org", flag,
+        ])
+        repair_assignments = assign_res["data"].get("result", {}).get("records", [])
+    return {"delete": delete, "kept": sorted(kept), "repair_assignments": repair_assignments}
+
+
+def _sf_access_token(org: Dict[str, str]) -> str:
+    res = run_sf(["org", "auth", "show-access-token", "--target-org", org["target_flag"]])
+    if res["returncode"] != 0:
+        log_error("Failed to retrieve access token.")
+        sys.exit(1)
+    token = res["data"].get("result", {}).get("accessToken")
+    if not token:
+        log_error("Access token response did not contain a token.")
+        sys.exit(1)
+    return token
+
+
+def list_tubot_ecas(org: Dict[str, str]) -> Optional[List[Dict[str, Any]]]:
+    """List Tubot External Client Apps from the OAuth usage registry (None = unknown)."""
+    try:
+        token = _sf_access_token(org)
+        url = f"{org['instance_url']}/services/data/v67.0/apps/oauth/usage"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        with urllib.request.urlopen(req) as resp:
+            usage = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        log_warn(f"Could not read External Client App registry: {exc}")
+        return None
+    return [a for a in usage.get("apps", []) if (a.get("developerName") or "").startswith("Tubot")]
+
+
+def list_panel_channels(org: Dict[str, str]) -> Tuple[bool, List[Dict[str, Any]]]:
+    """List Panel-side channel credentials for this org. connected=False when logged out."""
+    apex_code = f"""
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:tubot__Panel_Named_Credential/api/v1/salesforce/channels?orgId={org['org_id']}');
+req.setMethod('GET');
+Http http = new Http();
+HttpResponse res = http.send(req);
+System.debug('LIST_STATUS=' + res.getStatusCode());
+System.debug('LIST_BODY=' + res.getBody());
+"""
+    success, output = run_apex(apex_code, org["target_flag"])
+    if not success:
+        return False, []
+    statuses = extract_debug_values(output, "LIST_STATUS=")
+    bodies = extract_debug_values(output, "LIST_BODY=")
+    if not statuses or statuses[0] != "200" or not bodies:
+        return False, []
+    try:
+        return True, json.loads(bodies[0]).get("channels", [])
+    except json.JSONDecodeError:
+        return True, []
+
+
+def resolve_messaging_channel(org: Dict[str, str], ref: str) -> Optional[Dict[str, Any]]:
+    """Resolve a MessagingChannel by Id, DeveloperName, or MasterLabel."""
+    res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id, DeveloperName, MasterLabel, IsActive FROM MessagingChannel ORDER BY CreatedDate DESC",
+        "--target-org", org["target_flag"],
+    ])
+    if res["returncode"] != 0:
+        return None
+    for ch in res["data"].get("result", {}).get("records", []):
+        if ref in (ch.get("Id"), ch.get("DeveloperName"), ch.get("MasterLabel")):
+            return ch
+    return None
+
+
+# ==============================================================================
+# Deletes (each blind-verified)
+# ==============================================================================
+def _run_in_temp_project(sf_args: List[str], timeout: int = 600) -> Dict[str, Any]:
+    """Run an sf project command from a minimal temp DX project directory.
+
+    Commands like `project delete source` refuse to run outside a project
+    (RequiresProjectError), so metadata deletes always run here.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with open(os.path.join(temp_dir, "sfdx-project.json"), "w") as f:
+            json.dump({
+                "packageDirectories": [{"path": "force-app", "default": True}],
+                "name": "tubot-teardown",
+                "namespace": "",
+                "sfdcLoginUrl": "https://login.salesforce.com",
+                "sourceApiVersion": "67.0",
+            }, f, indent=2)
+        os.makedirs(os.path.join(temp_dir, "force-app", "main", "default"), exist_ok=True)
+        return run_sf(sf_args, cwd=temp_dir, timeout=timeout)
+def _panel_delete(org: Dict[str, str], path: str) -> Tuple[bool, str]:
+    """DELETE a Panel salesforce route via Named Credential callout.
+
+    200/204/404 all mean clean (404 = already gone).
+    """
+    apex_code = f"""
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:tubot__Panel_Named_Credential{path}');
+req.setMethod('DELETE');
+Http http = new Http();
+HttpResponse res = http.send(req);
+System.debug('DEL_STATUS=' + res.getStatusCode());
+System.debug('DEL_BODY=' + res.getBody());
+"""
+    success, output = run_apex(apex_code, org["target_flag"])
+    if not success:
+        return False, "apex callout failed"
+    statuses = extract_debug_values(output, "DEL_STATUS=")
+    bodies = extract_debug_values(output, "DEL_BODY=")
+    status = statuses[0] if statuses else "unknown"
+    if status in ("200", "204", "404"):
+        return True, status
+    return False, f"HTTP {status}: {(bodies[0] if bodies else output)[-300:]}"
+
+
+def _panel_list_execution_users(org: Dict[str, str], channel_id: str) -> List[str]:
+    """List Panel-side execution user ids for a channel (best effort)."""
+    apex_code = f"""
+HttpRequest req = new HttpRequest();
+req.setEndpoint('callout:tubot__Panel_Named_Credential/api/v1/salesforce/channels/{channel_id}/execution-users?orgId={org['org_id']}');
+req.setMethod('GET');
+Http http = new Http();
+HttpResponse res = http.send(req);
+System.debug('EXEC_STATUS=' + res.getStatusCode());
+System.debug('EXEC_BODY=' + res.getBody());
+"""
+    success, output = run_apex(apex_code, org["target_flag"])
+    if not success:
+        return []
+    statuses = extract_debug_values(output, "EXEC_STATUS=")
+    bodies = extract_debug_values(output, "EXEC_BODY=")
+    if not statuses or statuses[0] != "200" or not bodies:
+        return []
+    try:
+        users = json.loads(bodies[0]).get("executionUsers", [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    ids = []
+    for u in users:
+        if not isinstance(u, dict):
+            continue
+        uid = u.get("integrationUserId") or u.get("integration_user_id") or u.get("userId") or u.get("id")
+        if uid:
+            ids.append(uid)
+    return ids
+
+
+def panel_revoke_channel(org: Dict[str, str], channel_id: str) -> Tuple[bool, List[str]]:
+    """Revoke one channel's Panel-side credentials (execution users, then channel)."""
+    problems: List[str] = []
+    for uid in _panel_list_execution_users(org, channel_id):
+        ok, detail = _panel_delete(org, f"/api/v1/salesforce/channels/{channel_id}/execution-users/{uid}?orgId={org['org_id']}")
+        if ok:
+            log_info(f"Panel execution user revoked: {uid} ({detail})")
+        else:
+            problems.append(f"execution user {uid}: {detail}")
+    ok, detail = _panel_delete(org, f"/api/v1/salesforce/channels/{channel_id}?orgId={org['org_id']}")
+    if ok:
+        log_success(f"Panel channel credentials revoked: {channel_id} ({detail})")
+    else:
+        problems.append(f"channel {channel_id}: {detail}")
+    return (len(problems) == 0), problems
+
+
+def delete_api_channel_records(org: Dict[str, str], records: List[Dict[str, Any]]) -> List[str]:
+    """Delete tubot__Tubot_API_Channel__c records. Returns failed Ids."""
+    failed: List[str] = []
+    for rec in records:
+        res = run_sf([
+            "data", "delete", "record", "--sobject", "tubot__Tubot_API_Channel__c",
+            "--record-id", rec["Id"], "--target-org", org["target_flag"],
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Deleted channel config record {rec['Id']} (channel {rec.get('tubot__Channel_Id__c')})")
+        else:
+            log_warn(f"Could not delete record {rec['Id']}: {res.get('error_msg') or res['stderr']}")
+            failed.append(rec["Id"])
+    return failed
+
+
+def delete_perm_assignments(org: Dict[str, str], assignments: List[Dict[str, Any]]) -> List[str]:
+    """Delete API permission set assignments. Returns failed Ids."""
+    failed: List[str] = []
+    for a in assignments:
+        res = run_sf([
+            "data", "delete", "record", "--sobject", "PermissionSetAssignment",
+            "--record-id", a["Id"], "--target-org", org["target_flag"],
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Removed API permission from user {a.get('AssigneeId')}")
+        else:
+            log_warn(f"Could not remove assignment {a['Id']}: {res.get('error_msg') or res['stderr']}")
+            failed.append(a["Id"])
+    return failed
+
+
+def delete_eca(org: Dict[str, str], app_name: str) -> bool:
+    """Delete an External Client App and verify it left the OAuth registry."""
+    for attempt in (1, 2):
+        res = _run_in_temp_project([
+            "project", "delete", "source",
+            "--metadata", f"ExternalClientApplication:{app_name}",
+            "--target-org", org["target_flag"], "--no-prompt",
+        ])
+        if res["returncode"] != 0:
+            log_warn(f"ECA delete attempt {attempt} note: {res.get('error_msg') or res['stderr'] or res['stdout']}")
+        time.sleep(5)
+        remaining = list_tubot_ecas(org)
+        names = [(a.get("developerName") or "") for a in remaining] if remaining is not None else None
+        if names is not None and app_name not in names:
+            log_success(f"External Client App '{app_name}' deleted and verified gone.")
+            return True
+        if attempt == 1:
+            log_info(f"ECA '{app_name}' still registered; retrying delete...")
+    log_error(
+        f"ECA '{app_name}' is still present. Delete it manually in Setup > "
+        "External Client App Manager, then re-run teardown to verify."
+    )
+    return False
+
+
+def delete_panel_credentials(org: Dict[str, str], rows: List[Dict[str, Any]]) -> List[str]:
+    """Delete UserExternalCredential rows holding the Panel login. Returns failed Ids."""
+    failed: List[str] = []
+    for row in rows:
+        res = run_sf([
+            "data", "delete", "record", "--sobject", "UserExternalCredential",
+            "--record-id", row["Id"], "--target-org", org["target_flag"],
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Removed Panel login credential row {row['Id']}")
+        else:
+            log_warn(f"Could not remove credential row {row['Id']}: {res.get('error_msg') or res['stderr']}")
+            failed.append(row["Id"])
+    return failed
+
+
+def clear_mcp_tokens(org: Dict[str, str], rows: List[Dict[str, Any]]) -> List[str]:
+    """Clear legacy token/identity fields on MCP config rows. Returns failed Ids."""
+    failed: List[str] = []
+    values = " ".join(f"{f}=''" for f in MCP_TOKEN_FIELDS)
+    for row in rows:
+        res = run_sf([
+            "data", "update", "record", "--sobject", "tubot__MCP_Config__c",
+            "--record-id", row["Id"], "--values", values,
+            "--target-org", org["target_flag"],
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Cleared legacy tokens on MCP config row {row['Id']}")
+        else:
+            log_warn(f"Could not clear MCP row {row['Id']}: {res.get('error_msg') or res['stderr']}")
+            failed.append(row["Id"])
+    return failed
+
+
+# Deletion order: referencing objects before referenced ones.
+_DEFINITION_DELETE_RANK = {"PermissionSet": 0, "NamedCredential": 1, "ExternalCredential": 2, "RemoteSiteSetting": 3}
+
+
+def delete_credential_definitions(
+    org: Dict[str, str],
+    targets: List[Tuple[str, str]],
+    repair_assignments: List[Dict[str, Any]],
+) -> List[str]:
+    """Delete unpackaged credential definitions. Returns failed labels.
+
+    Refuses any namespaced (package-owned) target outright.
+    """
+    failed: List[str] = []
+    for a in repair_assignments:
+        res = run_sf([
+            "data", "delete", "record", "--sobject", "PermissionSetAssignment",
+            "--record-id", a["Id"], "--target-org", org["target_flag"],
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Removed repair permission from user {a.get('AssigneeId')}")
+        else:
+            log_warn(f"Could not remove repair assignment {a['Id']}: {res.get('error_msg') or res['stderr']}")
+            failed.append(f"repair assignment {a['Id']}")
+    for meta, name in sorted(targets, key=lambda t: _DEFINITION_DELETE_RANK.get(t[0], 9)):
+        label = f"{meta}:{name}"
+        if "__" in name:
+            log_error(f"Refusing to delete possibly-packaged definition '{label}'.")
+            failed.append(label)
+            continue
+        res = _run_in_temp_project([
+            "project", "delete", "source",
+            "--metadata", label,
+            "--target-org", org["target_flag"], "--no-prompt",
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Deleted {label}.")
+        else:
+            log_warn(f"Could not delete {label}: {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+            failed.append(label)
+    return failed
+
+
+def delete_messaging_channel(org: Dict[str, str], channel: Dict[str, Any]) -> str:
+    """Delete a MessagingChannel; fall back to deactivating it.
+
+    Returns "deleted", "deactivated", or "failed". Salesforce often blocks
+    MessagingChannel API deletes (cross-reference protection); an inactive
+    channel is inert, so deactivation is an acceptable fallback.
+    """
+    dev_name = channel.get("DeveloperName")
+    res = _run_in_temp_project([
+        "project", "delete", "source",
+        "--metadata", f"MessagingChannel:{dev_name}",
+        "--target-org", org["target_flag"], "--no-prompt",
+    ])
+    if res["returncode"] != 0:
+        log_warn(f"Channel delete note: {(res.get('error_msg') or res['stderr'] or 'unknown error')[-300:]}")
+    time.sleep(3)
+    if resolve_messaging_channel(org, dev_name) is None:
+        log_success(f"MessagingChannel '{dev_name}' deleted and verified gone.")
+        return "deleted"
+    log_warn(f"Salesforce blocked API delete of '{dev_name}'; deactivating instead...")
+    off = run_sf([
+        "data", "update", "record", "--sobject", "MessagingChannel",
+        "--record-id", channel["Id"], "--values", "IsActive=false",
+        "--target-org", org["target_flag"],
+    ])
+    current = resolve_messaging_channel(org, dev_name) or {}
+    if off["returncode"] == 0 and not current.get("IsActive", True):
+        log_success(f"MessagingChannel '{dev_name}' deactivated (inert).")
+        return "deactivated"
+    log_error(f"MessagingChannel '{dev_name}' is still active; remove it manually in Setup.")
+    return "failed"
+
+
+# ==============================================================================
+# Orchestrator
+# ==============================================================================
+def confirm_yes_no(text: str, default_no: bool = True) -> bool:
+    suffix = "[y/N]" if default_no else "[Y/n]"
+    ans = prompt(f"{text} {suffix}: ").strip().lower()
+    if not ans:
+        return not default_no
+    return ans in ("y", "yes")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="TuBot Salesforce De-Setup Wizard: clean an org to bare state, keeping only the package"
+    )
+    parser.add_argument("-c", "--channel", help="Limit teardown to one channel config (record Id or channel Id)")
+    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="ECA DeveloperName to remove (default: Tubot_SF_Channel_API)")
+    parser.add_argument("--delete-channel", dest="delete_channel", help="Also delete this MessagingChannel (DeveloperName, label, or Id)")
+    parser.add_argument("--skip-panel", action="store_true", help="Skip Panel-side credential revocation (local cleanup only)")
+    parser.add_argument("--inventory-only", action="store_true", help="List setup artifacts without deleting anything")
+    parser.add_argument("--non-interactive", action="store_true", help="Skip confirmation prompts (requires --force; org selection stays interactive)")
+    parser.add_argument("--force", action="store_true", help="Confirm all deletions without prompting (requires --non-interactive)")
+    parser.add_argument("--json", action="store_true", help="Output JSON result only")
+    parser.add_argument("--version", action="store_true", help="Print teardown version and exit")
+    return parser
+
+
+def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
+    """Inventory setup artifacts, confirm, delete in dependency order, verify."""
+    if not args.json:
+        print(f"\n{BOLD}{CYAN}=============================================================================={RESET}")
+        print(f"{BOLD}{CYAN}TuBot Salesforce De-Setup (Teardown) Wizard v{TEARDOWN_VERSION}{RESET}")
+        print(f"{BOLD}{CYAN}=============================================================================={RESET}")
+
+    scripted = bool(args.non_interactive and args.force)
+    if args.non_interactive and not args.force:
+        log_error("Refusing destructive teardown without --force. Re-run with --non-interactive --force, or interactively.")
+        sys.exit(1)
+
+    # 0. Org selection is ALWAYS interactive (never auto-selected).
+    target_org = select_target_org(False)
+    org = resolve_org(target_org)
+
+    # Step 2: inventory.
+    log_phase("Step 2: Inventory of setup artifacts")
+    records = list_api_channel_records(org, args.channel)
+    user_ids = [r.get("tubot__Integration_User_Id__c") for r in records if r.get("tubot__Integration_User_Id__c")]
+    assignments = list_api_perm_assignments(org, user_ids)
+    cred_rows = list_panel_credential_rows(org)
+    mcp_rows = list_mcp_token_rows(org)
+    cred_defs = list_credential_definitions(org)
+    ecas = list_tubot_ecas(org)
+    panel_connected, panel_channels = (False, []) if args.skip_panel else list_panel_channels(org)
+    panel_ids = [c.get("channelId") for c in panel_channels if c.get("channelId")]
+    record_ids = [r.get("tubot__Channel_Id__c") for r in records if r.get("tubot__Channel_Id__c")]
+    if args.channel:
+        panel_ids = [c for c in panel_ids if c == args.channel or c in record_ids]
+    revoke_targets = sorted(set(record_ids) | set(panel_ids))
+    eca_names = sorted((a.get("developerName") or "") for a in ecas) if ecas is not None else None
+    target_eca_present = bool(eca_names is not None and args.app_name in eca_names)
+    other_ecas = [n for n in (eca_names or []) if n != args.app_name]
+    opt_channel = resolve_messaging_channel(org, args.delete_channel) if args.delete_channel else None
+    if args.delete_channel and opt_channel is None:
+        log_error(f"Channel '{args.delete_channel}' not found; nothing deleted.")
+        sys.exit(1)
+
+    inventory = {
+        "channel_config_records": len(records),
+        "api_permission_assignments": len(assignments),
+        "panel_credential_rows": len(cred_rows),
+        "mcp_token_rows": len(mcp_rows),
+        "credential_definitions_to_delete": [f"{m}:{n}" for m, n in cred_defs["delete"]],
+        "credential_definitions_kept": cred_defs["kept"],
+        "repair_permission_assignments": len(cred_defs["repair_assignments"]),
+        "panel_connected": panel_connected,
+        "panel_channels_for_org": len(panel_ids),
+        "target_eca_present": target_eca_present,
+        "other_tubot_ecas": other_ecas,
+        "eca_registry_known": eca_names is not None,
+        "channel_delete_target": (opt_channel or {}).get("DeveloperName") if opt_channel else None,
+    }
+    if not args.json:
+        print(f"  Channel config records (tubot__Tubot_API_Channel__c): {len(records)}")
+        for r in records:
+            print(f"    - {r['Id']} channel={r.get('tubot__Channel_Id__c')} user={r.get('tubot__Integration_User_Id__c')} team={r.get('tubot__Team_Id__c')}")
+        print(f"  API permission assignments to remove: {len(assignments)}")
+        print(f"  Panel login credential rows: {len(cred_rows)} (Panel connected: {panel_connected})")
+        print(f"  MCP rows with legacy tokens: {len(mcp_rows)}")
+        print(f"  Credential definitions to delete: {len(cred_defs['delete'])} (+{len(cred_defs['repair_assignments'])} repair assignments)")
+        for meta, name in cred_defs["delete"]:
+            print(f"    - {meta}:{name}")
+        if cred_defs["kept"]:
+            print(f"  Packaged definitions kept: {', '.join(cred_defs['kept'])}")
+        print(f"  Panel-side channels to revoke: {len(revoke_targets)}")
+        for c in revoke_targets:
+            print(f"    - {c}")
+        print(f"  ECA '{args.app_name}': {'present' if target_eca_present else 'absent' if eca_names is not None else 'unknown'}")
+        if other_ecas:
+            print(f"  Other Tubot ECAs found: {', '.join(other_ecas)}")
+        if opt_channel:
+            print(f"  MessagingChannel to delete: {opt_channel.get('MasterLabel')} ({opt_channel.get('DeveloperName')})")
+
+    if args.inventory_only:
+        result = {"success": True, "teardown_version": TEARDOWN_VERSION, "org": org, "inventory": inventory, "deleted": {}, "failed": []}
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return result
+
+    nothing = (
+        not records and not assignments and not cred_rows and not revoke_targets
+        and not target_eca_present and not other_ecas and opt_channel is None
+        and not mcp_rows and not cred_defs["delete"]
+    )
+    if nothing and eca_names is not None:
+        log_success("Org is already bare (package kept). Nothing to delete.")
+        result = {"success": True, "teardown_version": TEARDOWN_VERSION, "org": org, "inventory": inventory, "deleted": {}, "failed": []}
+        if args.json:
+            print(json.dumps(result, indent=2))
+        return result
+
+    # Destructive gate: typed YES (skipped only when scripted).
+    if not scripted:
+        typed = prompt(f"\n{BOLD}Type YES in capitals to delete the above and de-setup {org['alias']}:{RESET} ").strip()
+        if typed != "YES":
+            log_info("Aborted by user; nothing deleted.")
+            sys.exit(1)
+
+    deleted: Dict[str, Any] = {"panel_channels_revoked": [], "channel_config_records": [], "api_permission_assignments": [],
+                               "ecas": [], "panel_credential_rows": [], "mcp_token_rows": [],
+                               "credential_definitions": [], "messaging_channel": None}
+    failed: List[str] = []
+
+    # Step 3: Panel-side revocation first (needs the login still present).
+    if revoke_targets and not args.skip_panel:
+        if not panel_connected:
+            log_warn("Org is not logged into Panel; Panel-side credentials (if any) cannot be revoked blind. Continuing locally.")
+            failed.append("panel-side revocation skipped: org not logged into Panel")
+        else:
+            log_phase("Step 3: Revoking Panel-side credentials")
+            for cid in revoke_targets:
+                ok, problems = panel_revoke_channel(org, cid)
+                if ok:
+                    deleted["panel_channels_revoked"].append(cid)
+                else:
+                    failed.extend(problems)
+
+    # Step 4: channel config records.
+    if records:
+        log_phase("Step 4: Deleting channel config records")
+        failed_ids = delete_api_channel_records(org, records)
+        deleted["channel_config_records"] = [r["Id"] for r in records if r["Id"] not in failed_ids]
+        failed.extend(f"record {i}" for i in failed_ids)
+
+    # Step 5: API permission assignments.
+    if assignments:
+        log_phase("Step 5: Removing API permission assignments")
+        failed_ids = delete_perm_assignments(org, assignments)
+        deleted["api_permission_assignments"] = [a["Id"] for a in assignments if a["Id"] not in failed_ids]
+        failed.extend(f"assignment {i}" for i in failed_ids)
+
+    # Step 6: ECAs (target + optionally other Tubot ECAs found).
+    eca_targets = [args.app_name] if target_eca_present else []
+    if other_ecas and not args.non_interactive:
+        for name in other_ecas:
+            if confirm_yes_no(f"Also delete Tubot ECA '{name}'?", default_no=True):
+                eca_targets.append(name)
+    elif other_ecas:
+        log_info(f"Keeping other Tubot ECAs in scripted mode: {', '.join(other_ecas)}")
+    if eca_targets:
+        log_phase("Step 6: Deleting External Client Apps")
+        for name in eca_targets:
+            if delete_eca(org, name):
+                deleted["ecas"].append(name)
+            else:
+                failed.append(f"eca {name}")
+
+    # Step 7: Panel login credentials.
+    if cred_rows or mcp_rows:
+        log_phase("Step 7: Removing Panel login")
+    if cred_rows:
+        failed_ids = delete_panel_credentials(org, cred_rows)
+        deleted["panel_credential_rows"] = [r["Id"] for r in cred_rows if r["Id"] not in failed_ids]
+        failed.extend(f"credential row {i}" for i in failed_ids)
+    if mcp_rows:
+        failed_mcp = clear_mcp_tokens(org, mcp_rows)
+        deleted["mcp_token_rows"] = [r["Id"] for r in mcp_rows if r["Id"] not in failed_mcp]
+        failed.extend(f"mcp row {i}" for i in failed_mcp)
+
+    # Step 8: optional MessagingChannel delete (explicit opt-in only).
+    channel_outcome: Optional[str] = None
+    if opt_channel:
+        log_phase("Step 8: Deleting MessagingChannel (opt-in)")
+        channel_outcome = delete_messaging_channel(org, opt_channel)
+        if channel_outcome == "deleted":
+            deleted["messaging_channel"] = opt_channel.get("DeveloperName")
+        elif channel_outcome == "deactivated":
+            failed.append(
+                f"channel {opt_channel.get('DeveloperName')}: Salesforce blocked API delete "
+                "(deactivated instead; remove manually in Setup > Messaging Settings if needed)"
+            )
+        else:
+            failed.append(f"channel {opt_channel.get('DeveloperName')}")
+
+    # Step 9: unpackaged credential definitions (after all Panel callouts).
+    if cred_defs["delete"]:
+        log_phase("Step 9: Deleting unpackaged credential definitions")
+        def_failed = delete_credential_definitions(org, cred_defs["delete"], cred_defs["repair_assignments"])
+        deleted["credential_definitions"] = [
+            f"{m}:{n}" for m, n in cred_defs["delete"] if f"{m}:{n}" not in def_failed
+        ]
+        failed.extend(def_failed)
+
+    # Step 10: blind re-verification of ground truth.
+    log_phase("Step 10: Verifying bare state")
+    verify_failed: List[str] = []
+    if list_api_channel_records(org, args.channel):
+        verify_failed.append("channel config records remain")
+    else:
+        log_success("Verified: no channel config records remain.")
+    if list_api_perm_assignments(org, user_ids):
+        verify_failed.append("API permission assignments remain")
+    else:
+        log_success("Verified: no API permission assignments remain for de-setup users.")
+    if deleted["ecas"] and eca_names is not None:
+        after = list_tubot_ecas(org)
+        after_names = [(a.get("developerName") or "") for a in after] if after is not None else []
+        missing = [n for n in deleted["ecas"] if n in after_names]
+        if missing:
+            verify_failed.append(f"ECAs still registered: {', '.join(missing)}")
+        else:
+            log_success("Verified: deleted ECAs left the OAuth registry.")
+    if list_panel_credential_rows(org):
+        verify_failed.append("Panel credential rows remain")
+    else:
+        log_success("Verified: no Panel login credential rows remain.")
+    if list_mcp_token_rows(org):
+        verify_failed.append("MCP legacy tokens remain")
+    else:
+        log_success("Verified: no legacy MCP tokens remain.")
+    after_defs = list_credential_definitions(org)
+    if after_defs["delete"]:
+        verify_failed.append(
+            "credential definitions remain: " + ", ".join(f"{m}:{n}" for m, n in after_defs["delete"])
+        )
+    else:
+        log_success("Verified: unpackaged credential definitions are gone.")
+    if revoke_targets and not args.skip_panel:
+        if not panel_connected:
+            log_info("Panel state unverifiable: org was not logged into Panel.")
+        else:
+            _still_connected, still_channels = list_panel_channels(org)
+            leftover = [c.get("channelId") for c in still_channels if c.get("channelId") in revoke_targets]
+            if leftover:
+                verify_failed.append(f"Panel still lists channels: {', '.join(leftover)}")
+            else:
+                log_success("Verified: Panel no longer lists revoked channels.")
+    if args.delete_channel:
+        current = resolve_messaging_channel(org, args.delete_channel)
+        if current is None:
+            log_success("Verified: MessagingChannel is gone.")
+        elif channel_outcome == "deactivated" and not current.get("IsActive", True):
+            log_info("Verified: MessagingChannel is inactive (manual delete noted above).")
+        else:
+            verify_failed.append(f"channel {args.delete_channel} remains")
+
+    failed.extend(verify_failed)
+    ok = not failed
+    if ok:
+        log_success("De-setup complete: org is bare (package kept).")
+    else:
+        log_warn(f"De-setup finished with {len(failed)} unresolved item(s); see summary.")
+
+    result = {"success": ok, "teardown_version": TEARDOWN_VERSION, "org": org,
+              "inventory": inventory, "deleted": deleted, "failed": failed}
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"\n  Deleted: Panel channels={len(deleted['panel_channels_revoked'])} "
+              f"records={len(deleted['channel_config_records'])} "
+              f"assignments={len(deleted['api_permission_assignments'])} "
+              f"ecas={deleted['ecas']} credRows={len(deleted['panel_credential_rows'])} "
+              f"mcpRows={len(deleted['mcp_token_rows'])} credDefs={deleted['credential_definitions']} "
+              f"channel={deleted['messaging_channel']}")
+        if failed:
+            print("  Unresolved:")
+            for f in failed:
+                print(f"    - {f}")
+        print("  Kept: TuBot package (incl. packaged credential definitions), admin permission sets, queues, MCP config row.")
+        if cred_defs["kept"]:
+            print(f"  Packaged definitions kept: {', '.join(cred_defs['kept'])}")
+    if not ok:
+        sys.exit(1)
+    return result
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.version:
+        print(TEARDOWN_VERSION)
+        return
+    run_teardown(args)
+
+
+if __name__ == "__main__":
+    main()

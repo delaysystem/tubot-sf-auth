@@ -1,0 +1,7407 @@
+{
+ "runDir": "tubot-sf-auth/tubot-sf-package/",
+ "violationCounts": {
+  "total": 308,
+  "sev1": 0,
+  "sev2": 0,
+  "sev3": 2,
+  "sev4": 298,
+  "sev5": 8
+ },
+ "versions": {
+  "code-analyzer": "0.52.0",
+  "retire-js": "0.38.0",
+  "regex": "0.39.0",
+  "eslint": "0.46.0",
+  "pmd": "0.45.0",
+  "cpd": "0.45.0"
+ },
+ "violations": [
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupCaptureService.cls",
+     "startLine": 143,
+     "startColumn": 1,
+     "endLine": 144,
+     "endColumn": 1
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 3,
+     "startColumn": 3,
+     "endLine": 3,
+     "endColumn": 4
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 12,
+     "startColumn": 3,
+     "endLine": 12,
+     "endColumn": 4
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 174,
+     "startColumn": 1,
+     "endLine": 175,
+     "endColumn": 1
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandlerTest.cls",
+     "startLine": 35,
+     "startColumn": 55,
+     "endLine": 35,
+     "endColumn": 56
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 5,
+     "startColumn": 1,
+     "endLine": 6,
+     "endColumn": 1
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "NoTrailingWhitespace",
+   "engine": "regex",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 30,
+     "startColumn": 1,
+     "endLine": 31,
+     "endColumn": 1
+    }
+   ],
+   "message": "Found trailing whitespace at the end of a line of code.",
+   "resources": []
+  },
+  {
+   "rule": "@lwc/lwc/no-async-operation",
+   "engine": "eslint",
+   "severity": 3,
+   "tags": [
+    "Recommended",
+    "LWC",
+    "BestPractices",
+    "JavaScript"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/lwc/panelLoginSettings/panelLoginSettings.js",
+     "startLine": 432,
+     "startColumn": 30,
+     "endLine": 459,
+     "endColumn": 17
+    }
+   ],
+   "message": "Restricted async operation \"setInterval\"",
+   "resources": [
+    "https://github.com/salesforce/eslint-plugin-lwc/blob/v3.5.0/docs/rules/no-async-operation.md"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/AppExchangeReleaseCoverageTest.cls",
+     "startLine": 4,
+     "startColumn": 12,
+     "endLine": 14,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/AppExchangeReleaseCoverageTest.cls",
+     "startLine": 17,
+     "startColumn": 12,
+     "endLine": 27,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/AppExchangeReleaseCoverageTest.cls",
+     "startLine": 30,
+     "startColumn": 12,
+     "endLine": 41,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/AppExchangeReleaseCoverageTest.cls",
+     "startLine": 44,
+     "startColumn": 12,
+     "endLine": 52,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/Data360MarketingAgentVerificationTest.cls",
+     "startLine": 5,
+     "startColumn": 12,
+     "endLine": 13,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/Data360MarketingAgentVerificationTest.cls",
+     "startLine": 16,
+     "startColumn": 12,
+     "endLine": 25,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/EmbeddedDeploymentFlowActivationService.cls",
+     "startLine": 9,
+     "startColumn": 19,
+     "endLine": 21,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/EmbeddedDeploymentFlowActivationService.cls",
+     "startLine": 23,
+     "startColumn": 19,
+     "endLine": 43,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/HeaderCustomController.cls",
+     "startLine": 10,
+     "startColumn": 19,
+     "endLine": 18,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupCaptureService.cls",
+     "startLine": 17,
+     "startColumn": 19,
+     "endLine": 33,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupController.cls",
+     "startLine": 4,
+     "startColumn": 19,
+     "endLine": 7,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupController.cls",
+     "startLine": 10,
+     "startColumn": 19,
+     "endLine": 15,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupController.cls",
+     "startLine": 18,
+     "startColumn": 19,
+     "endLine": 21,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupController.cls",
+     "startLine": 24,
+     "startColumn": 19,
+     "endLine": 27,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupController.cls",
+     "startLine": 30,
+     "startColumn": 19,
+     "endLine": 36,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupDeploymentCaptureService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 9,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupFieldCaptureService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 12,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupOmniCaptureService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 30,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupOmniCaptureService.cls",
+     "startLine": 32,
+     "startColumn": 19,
+     "endLine": 91,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupOmniCaptureService.cls",
+     "startLine": 93,
+     "startColumn": 19,
+     "endLine": 147,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupOmniCaptureService.cls",
+     "startLine": 156,
+     "startColumn": 19,
+     "endLine": 200,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRecordService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 16,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreFlowService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 7,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingService.cls",
+     "startLine": 25,
+     "startColumn": 19,
+     "endLine": 31,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingService.cls",
+     "startLine": 104,
+     "startColumn": 19,
+     "endLine": 116,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingServiceTest.cls",
+     "startLine": 14,
+     "startColumn": 16,
+     "endLine": 16,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingServiceTest.cls",
+     "startLine": 18,
+     "startColumn": 16,
+     "endLine": 31,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingServiceTest.cls",
+     "startLine": 81,
+     "startColumn": 12,
+     "endLine": 102,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingServiceTest.cls",
+     "startLine": 105,
+     "startColumn": 12,
+     "endLine": 123,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingServiceTest.cls",
+     "startLine": 126,
+     "startColumn": 12,
+     "endLine": 145,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreRoutingServiceTest.cls",
+     "startLine": 148,
+     "startColumn": 12,
+     "endLine": 152,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreService.cls",
+     "startLine": 13,
+     "startColumn": 19,
+     "endLine": 30,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreSettingsService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 22,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreSettingsService.cls",
+     "startLine": 48,
+     "startColumn": 19,
+     "endLine": 65,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreSettingsService.cls",
+     "startLine": 67,
+     "startColumn": 19,
+     "endLine": 77,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreToolingService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 7,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupRestoreToolingService.cls",
+     "startLine": 69,
+     "startColumn": 19,
+     "endLine": 83,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 27,
+     "startColumn": 19,
+     "endLine": 29,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 27,
+     "startColumn": 19,
+     "endLine": 29,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 31,
+     "startColumn": 19,
+     "endLine": 35,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 37,
+     "startColumn": 19,
+     "endLine": 46,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 52,
+     "startColumn": 19,
+     "endLine": 92,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 89,
+     "startColumn": 13,
+     "endLine": 89,
+     "endColumn": 68
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 89,
+     "startColumn": 13,
+     "endLine": 89,
+     "endColumn": 68
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 98,
+     "startColumn": 19,
+     "endLine": 134,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 98,
+     "startColumn": 19,
+     "endLine": 134,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 140,
+     "startColumn": 19,
+     "endLine": 142,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 140,
+     "startColumn": 19,
+     "endLine": 142,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupService.cls",
+     "startLine": 144,
+     "startColumn": 19,
+     "endLine": 162,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 1,
+     "startColumn": 1,
+     "endLine": 1,
+     "endColumn": 8
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 6,
+     "startColumn": 16,
+     "endLine": 12,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 16,
+     "startColumn": 16,
+     "endLine": 23,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 79,
+     "startColumn": 5,
+     "endLine": 79,
+     "endColumn": 15
+    }
+   ],
+   "message": "The annotation @testSetup should be in PascalCase: @TestSetup",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 102,
+     "startColumn": 5,
+     "endLine": 102,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 147,
+     "startColumn": 5,
+     "endLine": 147,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 148,
+     "startColumn": 12,
+     "endLine": 181,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 183,
+     "startColumn": 5,
+     "endLine": 183,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 211,
+     "startColumn": 5,
+     "endLine": 211,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 227,
+     "startColumn": 5,
+     "endLine": 227,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 249,
+     "startColumn": 5,
+     "endLine": 249,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 275,
+     "startColumn": 5,
+     "endLine": 275,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 306,
+     "startColumn": 5,
+     "endLine": 306,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupServiceTest.cls",
+     "startLine": 325,
+     "startColumn": 5,
+     "endLine": 325,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingBackupSettingsCaptureService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 34,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryService.cls",
+     "startLine": 23,
+     "startColumn": 19,
+     "endLine": 26,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidNonRestrictiveQueries",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryService.cls",
+     "startLine": 35,
+     "startColumn": 28,
+     "endLine": 39,
+     "endColumn": 10
+    }
+   ],
+   "message": "Avoid SOQL queries without a where or limit statement",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoidnonrestrictivequeries"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryService.cls",
+     "startLine": 77,
+     "startColumn": 13,
+     "endLine": 77,
+     "endColumn": 86
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryService.cls",
+     "startLine": 77,
+     "startColumn": 13,
+     "endLine": 77,
+     "endColumn": 86
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryService.cls",
+     "startLine": 99,
+     "startColumn": 13,
+     "endLine": 99,
+     "endColumn": 85
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryService.cls",
+     "startLine": 99,
+     "startColumn": 13,
+     "endLine": 99,
+     "endColumn": 85
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryServiceTest.cls",
+     "startLine": 19,
+     "startColumn": 12,
+     "endLine": 57,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingChannelDiscoveryServiceTest.cls",
+     "startLine": 60,
+     "startColumn": 12,
+     "endLine": 66,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 4,
+     "startColumn": 19,
+     "endLine": 7,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 10,
+     "startColumn": 19,
+     "endLine": 13,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 16,
+     "startColumn": 19,
+     "endLine": 19,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 22,
+     "startColumn": 19,
+     "endLine": 25,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 28,
+     "startColumn": 19,
+     "endLine": 31,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 34,
+     "startColumn": 19,
+     "endLine": 37,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/MessagingConfigurationController.cls",
+     "startLine": 40,
+     "startColumn": 19,
+     "endLine": 43,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackageAdminPermissionAssignmentService.cls",
+     "startLine": 7,
+     "startColumn": 5,
+     "endLine": 7,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @future should be in PascalCase: @Future",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AvoidFutureAnnotation",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackageAdminPermissionAssignmentService.cls",
+     "startLine": 7,
+     "startColumn": 5,
+     "endLine": 7,
+     "endColumn": 12
+    }
+   ],
+   "message": "Usage of @Future annotation should be limited. Consider implementing the Queueable interface instead.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#avoidfutureannotation"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackageAdminPermissionAssignmentService.cls",
+     "startLine": 8,
+     "startColumn": 19,
+     "endLine": 37,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallDefaultsService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 13,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 11,
+     "startColumn": 12,
+     "endLine": 18,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 43,
+     "startColumn": 17,
+     "endLine": 43,
+     "endColumn": 125
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 43,
+     "startColumn": 17,
+     "endLine": 43,
+     "endColumn": 125
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 46,
+     "startColumn": 13,
+     "endLine": 46,
+     "endColumn": 112
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 46,
+     "startColumn": 13,
+     "endLine": 46,
+     "endColumn": 112
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 65,
+     "startColumn": 9,
+     "endLine": 65,
+     "endColumn": 115
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 65,
+     "startColumn": 9,
+     "endLine": 65,
+     "endColumn": 115
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandler.cls",
+     "startLine": 72,
+     "startColumn": 20,
+     "endLine": 75,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandlerTest.cls",
+     "startLine": 1,
+     "startColumn": 1,
+     "endLine": 1,
+     "endColumn": 8
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandlerTest.cls",
+     "startLine": 4,
+     "startColumn": 5,
+     "endLine": 4,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandlerTest.cls",
+     "startLine": 5,
+     "startColumn": 12,
+     "endLine": 20,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandlerTest.cls",
+     "startLine": 22,
+     "startColumn": 5,
+     "endLine": 22,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PackagePostInstallHandlerTest.cls",
+     "startLine": 23,
+     "startColumn": 12,
+     "endLine": 40,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAccountController.cls",
+     "startLine": 4,
+     "startColumn": 19,
+     "endLine": 10,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAccountController.cls",
+     "startLine": 13,
+     "startColumn": 19,
+     "endLine": 19,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentQueueable.cls",
+     "startLine": 5,
+     "startColumn": 12,
+     "endLine": 15,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentQueueable.cls",
+     "startLine": 10,
+     "startColumn": 16,
+     "endLine": 14,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentQueueable.cls",
+     "startLine": 28,
+     "startColumn": 12,
+     "endLine": 30,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentQueueable.cls",
+     "startLine": 32,
+     "startColumn": 12,
+     "endLine": 40,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "QueueableWithoutFinalizer",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentQueueable.cls",
+     "startLine": 32,
+     "startColumn": 12,
+     "endLine": 40,
+     "endColumn": 6
+    }
+   ],
+   "message": "This Queueable doesnt attach a Finalizer",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#queueablewithoutfinalizer"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentRecordQueueable.cls",
+     "startLine": 13,
+     "startColumn": 12,
+     "endLine": 15,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentRecordQueueable.cls",
+     "startLine": 17,
+     "startColumn": 12,
+     "endLine": 21,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "QueueableWithoutFinalizer",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelApiAssignmentRecordQueueable.cls",
+     "startLine": 17,
+     "startColumn": 12,
+     "endLine": 21,
+     "endColumn": 6
+    }
+   ],
+   "message": "This Queueable doesnt attach a Finalizer",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#queueablewithoutfinalizer"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 11,
+     "startColumn": 19,
+     "endLine": 35,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 45,
+     "startColumn": 20,
+     "endLine": 53,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 59,
+     "startColumn": 20,
+     "endLine": 72,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 59,
+     "startColumn": 20,
+     "endLine": 72,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 76,
+     "startColumn": 19,
+     "endLine": 79,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 76,
+     "startColumn": 19,
+     "endLine": 79,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 85,
+     "startColumn": 19,
+     "endLine": 112,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 109,
+     "startColumn": 13,
+     "endLine": 109,
+     "endColumn": 114
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 109,
+     "startColumn": 13,
+     "endLine": 109,
+     "endColumn": 114
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 119,
+     "startColumn": 19,
+     "endLine": 143,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 119,
+     "startColumn": 19,
+     "endLine": 143,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 140,
+     "startColumn": 13,
+     "endLine": 140,
+     "endColumn": 93
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthController.cls",
+     "startLine": 140,
+     "startColumn": 13,
+     "endLine": 140,
+     "endColumn": 93
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 1,
+     "startColumn": 1,
+     "endLine": 1,
+     "endColumn": 8
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 5,
+     "startColumn": 16,
+     "endLine": 13,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 105,
+     "startColumn": 5,
+     "endLine": 105,
+     "endColumn": 15
+    }
+   ],
+   "message": "The annotation @testSetup should be in PascalCase: @TestSetup",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 142,
+     "startColumn": 5,
+     "endLine": 142,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 166,
+     "startColumn": 5,
+     "endLine": 166,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 167,
+     "startColumn": 12,
+     "endLine": 177,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 179,
+     "startColumn": 5,
+     "endLine": 179,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 196,
+     "startColumn": 5,
+     "endLine": 196,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 197,
+     "startColumn": 12,
+     "endLine": 205,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 207,
+     "startColumn": 5,
+     "endLine": 207,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 234,
+     "startColumn": 5,
+     "endLine": 234,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 253,
+     "startColumn": 5,
+     "endLine": 253,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 270,
+     "startColumn": 5,
+     "endLine": 270,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 290,
+     "startColumn": 5,
+     "endLine": 290,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 291,
+     "startColumn": 12,
+     "endLine": 299,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 301,
+     "startColumn": 5,
+     "endLine": 301,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 302,
+     "startColumn": 12,
+     "endLine": 308,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 310,
+     "startColumn": 5,
+     "endLine": 310,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 325,
+     "startColumn": 5,
+     "endLine": 325,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 344,
+     "startColumn": 5,
+     "endLine": 344,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 345,
+     "startColumn": 12,
+     "endLine": 357,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 359,
+     "startColumn": 5,
+     "endLine": 359,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthControllerTest.cls",
+     "startLine": 360,
+     "startColumn": 12,
+     "endLine": 368,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 16,
+     "startColumn": 19,
+     "endLine": 22,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 24,
+     "startColumn": 19,
+     "endLine": 27,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 29,
+     "startColumn": 19,
+     "endLine": 32,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 34,
+     "startColumn": 19,
+     "endLine": 38,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 40,
+     "startColumn": 19,
+     "endLine": 44,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 46,
+     "startColumn": 19,
+     "endLine": 48,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "CyclomaticComplexity",
+   "engine": "pmd",
+   "severity": 3,
+   "tags": [
+    "Recommended",
+    "Design",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 50,
+     "startColumn": 20,
+     "endLine": 87,
+     "endColumn": 6
+    }
+   ],
+   "message": "The method 'executePanelCallout(Map<String, Object>)' has a cyclomatic complexity of 14.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_design.html#cyclomaticcomplexity"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 89,
+     "startColumn": 19,
+     "endLine": 96,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportService.cls",
+     "startLine": 98,
+     "startColumn": 19,
+     "endLine": 102,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportServiceTest.cls",
+     "startLine": 1,
+     "startColumn": 1,
+     "endLine": 1,
+     "endColumn": 8
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportServiceTest.cls",
+     "startLine": 4,
+     "startColumn": 5,
+     "endLine": 4,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelAuthSupportServiceTest.cls",
+     "startLine": 5,
+     "startColumn": 12,
+     "endLine": 11,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelBaseUrlResolver.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 9,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelExternalCredentialTokenService.cls",
+     "startLine": 5,
+     "startColumn": 19,
+     "endLine": 40,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelExternalCredentialTokenService.cls",
+     "startLine": 32,
+     "startColumn": 21,
+     "endLine": 32,
+     "endColumn": 152
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelExternalCredentialTokenService.cls",
+     "startLine": 32,
+     "startColumn": 21,
+     "endLine": 32,
+     "endColumn": 152
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelExternalCredentialTokenService.cls",
+     "startLine": 42,
+     "startColumn": 19,
+     "endLine": 44,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelOAuthBearerSecurityTest.cls",
+     "startLine": 1,
+     "startColumn": 1,
+     "endLine": 1,
+     "endColumn": 8
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelOAuthBearerSecurityTest.cls",
+     "startLine": 7,
+     "startColumn": 16,
+     "endLine": 25,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelOAuthBearerSecurityTest.cls",
+     "startLine": 36,
+     "startColumn": 5,
+     "endLine": 36,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelOAuthExchangeService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 20,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelOAuthTokenExchangeService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 25,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelCleanupService.cls",
+     "startLine": 8,
+     "startColumn": 19,
+     "endLine": 20,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelCleanupService.cls",
+     "startLine": 22,
+     "startColumn": 19,
+     "endLine": 32,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelCleanupService.cls",
+     "startLine": 34,
+     "startColumn": 19,
+     "endLine": 39,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelConnectService.cls",
+     "startLine": 13,
+     "startColumn": 19,
+     "endLine": 19,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelPreparationService.cls",
+     "startLine": 16,
+     "startColumn": 19,
+     "endLine": 22,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelQueryService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 15,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelQueryService.cls",
+     "startLine": 17,
+     "startColumn": 19,
+     "endLine": 31,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 7,
+     "startColumn": 19,
+     "endLine": 9,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 12,
+     "startColumn": 19,
+     "endLine": 14,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 17,
+     "startColumn": 19,
+     "endLine": 19,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 22,
+     "startColumn": 19,
+     "endLine": 31,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 34,
+     "startColumn": 19,
+     "endLine": 36,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 39,
+     "startColumn": 19,
+     "endLine": 41,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 44,
+     "startColumn": 19,
+     "endLine": 46,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 49,
+     "startColumn": 19,
+     "endLine": 51,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelService.cls",
+     "startLine": 53,
+     "startColumn": 19,
+     "endLine": 55,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelServiceTest.cls",
+     "startLine": 8,
+     "startColumn": 16,
+     "endLine": 11,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelServiceTest.cls",
+     "startLine": 13,
+     "startColumn": 16,
+     "endLine": 20,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelServiceTest.cls",
+     "startLine": 64,
+     "startColumn": 12,
+     "endLine": 75,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelServiceTest.cls",
+     "startLine": 78,
+     "startColumn": 12,
+     "endLine": 86,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 6,
+     "startColumn": 12,
+     "endLine": 6,
+     "endColumn": 62
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 8,
+     "startColumn": 19,
+     "endLine": 17,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 30,
+     "startColumn": 19,
+     "endLine": 44,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 46,
+     "startColumn": 19,
+     "endLine": 52,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 54,
+     "startColumn": 19,
+     "endLine": 57,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 59,
+     "startColumn": 19,
+     "endLine": 65,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 67,
+     "startColumn": 19,
+     "endLine": 69,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelSupportService.cls",
+     "startLine": 71,
+     "startColumn": 19,
+     "endLine": 87,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceExecutionUserService.cls",
+     "startLine": 12,
+     "startColumn": 19,
+     "endLine": 17,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceExecutionUserService.cls",
+     "startLine": 19,
+     "startColumn": 19,
+     "endLine": 26,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSelfOrgResponseParser.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 11,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSelfOrgResponseParser.cls",
+     "startLine": 13,
+     "startColumn": 19,
+     "endLine": 17,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSelfOrgResponseParser.cls",
+     "startLine": 19,
+     "startColumn": 19,
+     "endLine": 29,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSelfOrgResponseParserTest.cls",
+     "startLine": 4,
+     "startColumn": 12,
+     "endLine": 10,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSelfOrgResponseParserTest.cls",
+     "startLine": 13,
+     "startColumn": 12,
+     "endLine": 25,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSelfOrgResponseParserTest.cls",
+     "startLine": 28,
+     "startColumn": 12,
+     "endLine": 48,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelTestPermissionHelper.cls",
+     "startLine": 11,
+     "startColumn": 19,
+     "endLine": 25,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelTestPermissionHelper.cls",
+     "startLine": 27,
+     "startColumn": 19,
+     "endLine": 38,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldAccessVerifier.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 18,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldMetadataProvisioner.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 11,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldPermissionPlanBuilder.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 17,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldPermissionProvisioner.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 16,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldPermissionRestService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 6,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldProvisioningPipelineService.cls",
+     "startLine": 3,
+     "startColumn": 19,
+     "endLine": 15,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 37,
+     "startColumn": 12,
+     "endLine": 59,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 48,
+     "startColumn": 16,
+     "endLine": 58,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 61,
+     "startColumn": 19,
+     "endLine": 98,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 103,
+     "startColumn": 19,
+     "endLine": 109,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 114,
+     "startColumn": 19,
+     "endLine": 132,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 114,
+     "startColumn": 19,
+     "endLine": 132,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 137,
+     "startColumn": 19,
+     "endLine": 155,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 137,
+     "startColumn": 19,
+     "endLine": 155,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 160,
+     "startColumn": 19,
+     "endLine": 163,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 160,
+     "startColumn": 19,
+     "endLine": 163,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 168,
+     "startColumn": 19,
+     "endLine": 175,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 168,
+     "startColumn": 19,
+     "endLine": 175,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 180,
+     "startColumn": 19,
+     "endLine": 183,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 180,
+     "startColumn": 19,
+     "endLine": 183,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 189,
+     "startColumn": 19,
+     "endLine": 192,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 189,
+     "startColumn": 19,
+     "endLine": 192,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 197,
+     "startColumn": 19,
+     "endLine": 200,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 197,
+     "startColumn": 19,
+     "endLine": 200,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 208,
+     "startColumn": 19,
+     "endLine": 211,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 208,
+     "startColumn": 19,
+     "endLine": 211,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 215,
+     "startColumn": 19,
+     "endLine": 218,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 215,
+     "startColumn": 19,
+     "endLine": 218,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 225,
+     "startColumn": 19,
+     "endLine": 228,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 236,
+     "startColumn": 19,
+     "endLine": 239,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 236,
+     "startColumn": 19,
+     "endLine": 239,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 245,
+     "startColumn": 16,
+     "endLine": 256,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 247,
+     "startColumn": 17,
+     "endLine": 247,
+     "endColumn": 89
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 247,
+     "startColumn": 17,
+     "endLine": 247,
+     "endColumn": 89
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 249,
+     "startColumn": 17,
+     "endLine": 249,
+     "endColumn": 139
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 249,
+     "startColumn": 17,
+     "endLine": 249,
+     "endColumn": 139
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 252,
+     "startColumn": 25,
+     "endLine": 252,
+     "endColumn": 73
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 252,
+     "startColumn": 25,
+     "endLine": 252,
+     "endColumn": 73
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 263,
+     "startColumn": 19,
+     "endLine": 266,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 272,
+     "startColumn": 19,
+     "endLine": 275,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 272,
+     "startColumn": 19,
+     "endLine": 275,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 280,
+     "startColumn": 19,
+     "endLine": 283,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 280,
+     "startColumn": 19,
+     "endLine": 283,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 288,
+     "startColumn": 19,
+     "endLine": 294,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningService.cls",
+     "startLine": 288,
+     "startColumn": 19,
+     "endLine": 294,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 1,
+     "startColumn": 1,
+     "endLine": 1,
+     "endColumn": 8
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 5,
+     "startColumn": 16,
+     "endLine": 41,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 44,
+     "startColumn": 5,
+     "endLine": 44,
+     "endColumn": 15
+    }
+   ],
+   "message": "The annotation @testSetup should be in PascalCase: @TestSetup",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 83,
+     "startColumn": 5,
+     "endLine": 83,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 84,
+     "startColumn": 12,
+     "endLine": 101,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 103,
+     "startColumn": 5,
+     "endLine": 103,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 104,
+     "startColumn": 12,
+     "endLine": 109,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 111,
+     "startColumn": 5,
+     "endLine": 111,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 112,
+     "startColumn": 12,
+     "endLine": 117,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 119,
+     "startColumn": 5,
+     "endLine": 119,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 120,
+     "startColumn": 12,
+     "endLine": 125,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 127,
+     "startColumn": 5,
+     "endLine": 127,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 128,
+     "startColumn": 12,
+     "endLine": 133,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 135,
+     "startColumn": 5,
+     "endLine": 135,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 136,
+     "startColumn": 12,
+     "endLine": 141,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 143,
+     "startColumn": 5,
+     "endLine": 143,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 144,
+     "startColumn": 12,
+     "endLine": 149,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 151,
+     "startColumn": 5,
+     "endLine": 151,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 152,
+     "startColumn": 12,
+     "endLine": 157,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 159,
+     "startColumn": 5,
+     "endLine": 159,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 160,
+     "startColumn": 12,
+     "endLine": 165,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 167,
+     "startColumn": 5,
+     "endLine": 167,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 182,
+     "startColumn": 5,
+     "endLine": 182,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 183,
+     "startColumn": 12,
+     "endLine": 188,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "AnnotationsNamingConventions",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "CodeStyle",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 190,
+     "startColumn": 5,
+     "endLine": 190,
+     "endColumn": 12
+    }
+   ],
+   "message": "The annotation @isTest should be in PascalCase: @IsTest",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_codestyle.html#annotationsnamingconventions"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 191,
+     "startColumn": 12,
+     "endLine": 196,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexUnitTestClassShouldHaveRunAs",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/SessionFieldsProvisioningServiceTest.cls",
+     "startLine": 199,
+     "startColumn": 12,
+     "endLine": 216,
+     "endColumn": 6
+    }
+   ],
+   "message": "Apex unit test classes should have at least one System.runAs() call",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#apexunittestclassshouldhaverunas"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgApiCallout.cls",
+     "startLine": 9,
+     "startColumn": 19,
+     "endLine": 25,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionController.cls",
+     "startLine": 1,
+     "startColumn": 21,
+     "endLine": 147,
+     "endColumn": 2
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionController.cls",
+     "startLine": 23,
+     "startColumn": 19,
+     "endLine": 51,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionController.cls",
+     "startLine": 54,
+     "startColumn": 19,
+     "endLine": 64,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionController.cls",
+     "startLine": 100,
+     "startColumn": 19,
+     "endLine": 108,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionController.cls",
+     "startLine": 110,
+     "startColumn": 19,
+     "endLine": 145,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionControllerTest.cls",
+     "startLine": 10,
+     "startColumn": 16,
+     "endLine": 13,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TuBotSelfOrgConnectionControllerTest.cls",
+     "startLine": 15,
+     "startColumn": 16,
+     "endLine": 24,
+     "endColumn": 10
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotPackageFeatureGate.cls",
+     "startLine": 5,
+     "startColumn": 19,
+     "endLine": 7,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSettingsMetadataService.cls",
+     "startLine": 17,
+     "startColumn": 19,
+     "endLine": 31,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSettingsMetadataService.cls",
+     "startLine": 33,
+     "startColumn": 19,
+     "endLine": 62,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidDebugStatements",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSettingsMetadataService.cls",
+     "startLine": 141,
+     "startColumn": 13,
+     "endLine": 141,
+     "endColumn": 91
+    }
+   ],
+   "message": "Avoid debug statements since they impact on performance",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoiddebugstatements"
+   ]
+  },
+  {
+   "rule": "DebugsShouldUseLoggingLevel",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "BestPractices",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSettingsMetadataService.cls",
+     "startLine": 141,
+     "startColumn": 13,
+     "endLine": 141,
+     "endColumn": 91
+    }
+   ],
+   "message": "Calls to System.debug should specify a logging level.",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_bestpractices.html#debugsshoulduselogginglevel"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSettingsSchemaResolver.cls",
+     "startLine": 10,
+     "startColumn": 19,
+     "endLine": 24,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSettingsSchemaResolver.cls",
+     "startLine": 26,
+     "startColumn": 19,
+     "endLine": 32,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc comment",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 17,
+     "startColumn": 19,
+     "endLine": 81,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "AvoidNonRestrictiveQueries",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Performance",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 64,
+     "startColumn": 32,
+     "endLine": 64,
+     "endColumn": 89
+    }
+   ],
+   "message": "Avoid SOQL queries without a where or limit statement",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_performance.html#avoidnonrestrictivequeries"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 88,
+     "startColumn": 19,
+     "endLine": 128,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 134,
+     "startColumn": 19,
+     "endLine": 168,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 134,
+     "startColumn": 19,
+     "endLine": 168,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 174,
+     "startColumn": 19,
+     "endLine": 185,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 191,
+     "startColumn": 19,
+     "endLine": 198,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 191,
+     "startColumn": 19,
+     "endLine": 198,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 204,
+     "startColumn": 19,
+     "endLine": 209,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing ApexDoc @return",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "ApexDoc",
+   "engine": "pmd",
+   "severity": 4,
+   "tags": [
+    "Recommended",
+    "Documentation",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/TubotSetupWizardController.cls",
+     "startLine": 204,
+     "startColumn": 19,
+     "endLine": 209,
+     "endColumn": 6
+    }
+   ],
+   "message": "Missing or mismatched ApexDoc @param",
+   "resources": [
+    "https://docs.pmd-code.org/pmd-doc-7.26.0/pmd_rules_apex_documentation.html#apexdoc"
+   ]
+  },
+  {
+   "rule": "DetectCopyPasteForApex",
+   "engine": "cpd",
+   "severity": 5,
+   "tags": [
+    "Recommended",
+    "Design",
+    "Apex"
+   ],
+   "primaryLocationIndex": 0,
+   "locations": [
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelConnectService.cls",
+     "startLine": 59,
+     "startColumn": 69,
+     "endLine": 69,
+     "endColumn": 17
+    },
+    {
+     "file": "force-app/main/default/classes/PanelSalesforceChannelPreparationService.cls",
+     "startLine": 42,
+     "startColumn": 66,
+     "endLine": 52,
+     "endColumn": 17
+    }
+   ],
+   "message": "Duplicate code detected for language 'apex'. Found 2 code locations containing the same block of code consisting of 104 tokens across 11 lines.",
+   "resources": [
+    "https://docs.pmd-code.org/latest/pmd_userdocs_cpd.html#refactoring-duplicates"
+   ]
+  }
+ ]
+}

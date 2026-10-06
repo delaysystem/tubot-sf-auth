@@ -1,0 +1,23 @@
+{
+  // Local-dev config: `wrangler dev -c wrangler.dev.jsonc --port <port>`.
+  // Local D1 (seed with scripts/seed-local-credential.ts); Salesforce calls
+  // go live via the LOCAL_STATIC_SF_TOKEN bypass (temporary local patch, see
+  // token() in src/index.ts — NEVER commit or deploy with it). Service
+  // bindings omitted: the probe path never touches RETRIEVE64/NEW_PANEL.
+  // NEVER deploy with this config.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tubot-sf-auth-staging",
+  "main": "src/dev-entry.ts",
+  "compatibility_date": "2026-09-21",
+  "workers_dev": false,
+  "preview_urls": false,
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "agent-dashboard-db-staging",
+    "database_id": "8f100c42-cb9a-44aa-b995-391f942edf10",
+    "migrations_dir": "migrations",
+    "migrations_table": "tubot_sf_auth_migrations"
+  }],
+  "observability": { "enabled": true },
+  "upload_source_maps": true
+}

@@ -1,0 +1,62 @@
+{
+  "generatedAt": "2026-09-30T19:43:32.170Z",
+  "scope": "sf-auth only: local actual handler with instrumented storage; no live mutations or network calls",
+  "results": [
+    {
+      "service": "tubot-sf-auth",
+      "name": "anonymous tenant cache read",
+      "status": 401,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"tenant_scope_required\",\"message\":\"tenant_scope_required\",\"retryable\":false,\"requestId\":\"9804dae6-2a31-496c-af79-eaee14fca705\"}"
+    },
+    {
+      "service": "tubot-sf-auth",
+      "name": "anonymous Data360 cached read",
+      "status": 401,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"tenant_scope_required\",\"message\":\"tenant_scope_required\",\"retryable\":false,\"requestId\":\"781ca7b0-ecb6-453d-a16f-a7fa0bc3f565\"}"
+    },
+    {
+      "service": "tubot-sf-auth",
+      "name": "anonymous cache overwrite",
+      "status": 401,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"tenant_scope_required\",\"message\":\"tenant_scope_required\",\"retryable\":false,\"requestId\":\"37e456ef-d2df-4d7d-8793-6898cc22449a\"}"
+    },
+    {
+      "service": "tubot-sf-auth",
+      "name": "oversize body without Content-Length",
+      "status": 413,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"body_too_large\",\"message\":\"body_too_large\",\"retryable\":false,\"requestId\":\"8db013a2-bda2-49c7-a5e5-321e9a6f66e6\"}"
+    },
+    {
+      "service": "tubot-sf-auth",
+      "name": "missing OAuth service signature",
+      "status": 401,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"invalid_internal_signature\",\"message\":\"A valid Panel service signature is required.\",\"retryable\":false,\"requestId\":\"47fa119f-f414-4475-8310-23d86f31b05d\"}"
+    },
+    {
+      "service": "tubot-sf-auth",
+      "name": "forged OAuth service signature",
+      "status": 401,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"invalid_internal_signature\",\"message\":\"A valid Panel service signature is required.\",\"retryable\":false,\"requestId\":\"b7bfe55d-7b6a-4568-89f6-3a956f3eb2fb\"}"
+    },
+    {
+      "service": "tubot-sf-auth",
+      "name": "missing channel fields rejected before storage",
+      "status": 400,
+      "pass": true,
+      "storageCalls": [],
+      "response": "{\"error\":\"invalid_request\",\"message\":\"A valid JSON request with team, org, and channel IDs is required.\",\"retryable\":false,\"requestId\":\"242cfe67-0a0e-4a3e-b369-7211ba02dc01\"}"
+    }
+  ]
+}

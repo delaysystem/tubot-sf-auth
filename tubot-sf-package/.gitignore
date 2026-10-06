@@ -1,0 +1,14 @@
+/*
+!/force-app/
+!/sfdx-project.json
+!/deploy_package.sh
+!/setup_salesforce_channel_auth.sh
+!/setup_agentforce_channel.sh
+!/README.md
+!/SALESFORCE_CHANNEL_AUTH.md
+!/scripts/
+!/security-review/
+!/.forceignore
+!/.gitignore
+!/tests/
+!/archive/
