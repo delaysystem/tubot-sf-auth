@@ -713,6 +713,7 @@ export function skippedStandardDiscoveries(
       return [
         { key: "messageTemplateId", queryId: ["SELECT Id FROM EmailTemplate LIMIT 1"] },
         { key: "messageTemplate", queryValue: ["SELECT DeveloperName FROM EmailTemplate LIMIT 1"], field: "DeveloperName" },
+        { key: "liveMessageTemplate", queryValue: ["SELECT DeveloperName FROM MessagingTemplate LIMIT 1"], field: "DeveloperName" },
         { key: "messageChannel", queryValue: ["SELECT DeveloperName FROM MessagingChannel LIMIT 1"], field: "DeveloperName" },
         { key: "notificationChannel", queryValue: [
           "SELECT DeveloperName FROM MessagingChannel WHERE IsActive = true AND MessageType IN ('WhatsApp','Facebook','Line','Phone','Text') LIMIT 1",

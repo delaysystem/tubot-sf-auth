@@ -684,7 +684,11 @@ test('notification binds channel, template, and owned recipient end user', () =>
 });
 
 test('notification prefers notification-capable channels and mints an owned end user', () => {
-  const channel = skippedStandardDiscoveries('notification', 'liveMessageNotification').find((entry) => entry.key === 'notificationChannel');
+  const discoveries = skippedStandardDiscoveries('notification', 'liveMessageNotification');
+  // Every discovered key the notification bindings reference must resolve;
+  // a binding without its discovery entry misses with no failure note.
+  expect(discoveries.find((entry) => entry.key === 'liveMessageTemplate')).toMatchObject({ field: 'DeveloperName' });
+  const channel = discoveries.find((entry) => entry.key === 'notificationChannel');
   expect(channel).toMatchObject({ field: 'DeveloperName' });
   const queries = (channel as { queryValue: string[] }).queryValue;
   expect(queries).toHaveLength(3);
