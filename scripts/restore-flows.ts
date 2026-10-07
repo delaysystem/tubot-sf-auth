@@ -8,7 +8,8 @@
  *
  * Usage:
  *   bun scripts/restore-flows.ts --target-org <alias> [--check-only]
- *       [--verify-only] [--with-routing-deps] [--namespace <ns>]
+ *       [--verify-only] [--with-routing-deps] [--with-session-metadata]
+ *       [--namespace <ns>]
  *
  * Notes:
  * - t2.flow references QueueRoutingConfig Holding_Routing_Config. Without
@@ -20,7 +21,15 @@
  * - Uses real `sf` CLI auth; no mocks, no synthetic backends.
  */
 import { $ } from "bun";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 const ROOT = dirname(import.meta.dir); // tubot-sf-auth/
@@ -36,16 +45,19 @@ const DEP_ROUTING = ["Chat_Routing_Config", "Holding_Routing_Config"];
 const NAMESPACED_TOKENS = [
   "Tubot_Setting__mdt",
   "Fallback_Queue_Api_Name__c",
+  "AI_Routing__c",
+  "Queues_and_Skills__c",
   "Escalate_To_Human__c",
   "varRouting__c",
   "varSkillLevel__c",
   "varTargetQueueName__c",
   "varTargetSkillName__c",
+  "varFlowHuman__c",
 ];
 
 function usage(exit = 1): never {
   console.error(
-    "Usage: bun scripts/restore-flows.ts --target-org <alias> [--check-only] [--verify-only] [--with-routing-deps] [--namespace <ns>]",
+    "Usage: bun scripts/restore-flows.ts --target-org <alias> [--check-only] [--verify-only] [--with-routing-deps] [--with-session-metadata] [--namespace <ns>]",
   );
   process.exit(exit);
 }
@@ -60,6 +72,7 @@ if (!targetOrg) usage();
 const checkOnly = args.includes("--check-only");
 const verifyOnly = args.includes("--verify-only");
 const withDeps = args.includes("--with-routing-deps");
+const withSessionMeta = args.includes("--with-session-metadata");
 let namespace = flagValue("--namespace");
 
 function stage(subdir: string, names: string[], ext: string) {
@@ -164,16 +177,82 @@ async function verify() {
   console.log("\nverification PASSED");
 }
 
+const NS_RE = new RegExp(`(?<!\\w)(${NAMESPACED_TOKENS.join("|")})`, "g");
+
 function applyNamespace(ns: string) {
   const dir = join(STAGING, "force-app/main/default/flows");
-  const re = new RegExp(`(?<!\\w)(${NAMESPACED_TOKENS.join("|")})`, "g");
   for (const f of FLOWS) {
     const p = join(dir, `${f}.flow-meta.xml`);
     const src = readFileSync(p, "utf8");
-    const out = src.replace(re, `${ns}__$1`);
+    const out = src.replace(NS_RE, `${ns}__$1`);
     if (out !== src) {
       writeFileSync(p, out);
       console.log(`namespaced ${f}.flow-meta.xml -> ${ns}__*`);
+    }
+  }
+  // MDT record follows the type: subscriber record on a packaged type.
+  const mdDir = join(STAGING, "force-app/main/default/customMetadata");
+  const plain = join(mdDir, "Tubot_Setting.Default.md-meta.xml");
+  try {
+    const src = readFileSync(plain, "utf8");
+    writeFileSync(join(mdDir, `${ns}__Tubot_Setting.Default.md-meta.xml`), src.replace(NS_RE, `${ns}__$1`));
+    rmSync(plain);
+    console.log(`namespaced Tubot_Setting.Default record -> ${ns}__*`);
+  } catch {
+    /* not staged */
+  }
+}
+
+/** Copy a metadata dir tree from package source into staging. */
+function stagePkgDir(srcRel: string, destSub: string) {
+  const dest = join(STAGING, "force-app/main/default", destSub);
+  mkdirSync(dest, { recursive: true });
+  cpSync(join(ROOT, "tubot-sf-package/force-app/main/default", srcRel), dest, {
+    recursive: true,
+  });
+  console.log(`staged ${destSub}/ from package source (${srcRel})`);
+}
+
+function stageSessionMetadata() {
+  if (namespace) {
+    // Packaged fields own the schema; only the MDT record is missing.
+    console.log("namespace active: skipping unpackaged session fields (package provides them)");
+  } else {
+    stagePkgDir("objects/MessagingSession/fields", "objects/MessagingSession/fields");
+    stagePkgDir("objects/Tubot_Setting__mdt", "objects/Tubot_Setting__mdt");
+  }
+  stage("customMetadata", ["Tubot_Setting.Default"], "md-meta.xml");
+}
+
+async function verifyDeps(prefix: string) {
+  if (withDeps) {
+    const cfgs = await query(
+      `SELECT DeveloperName FROM QueueRoutingConfig WHERE DeveloperName IN (${DEP_ROUTING.map((q) => `'${q}'`).join(",")})`,
+    );
+    console.log(
+      `  routing configs: ${cfgs.length}/${DEP_ROUTING.length} present`,
+    );
+    const queues = await query(
+      `SELECT DeveloperName FROM Group WHERE Type = 'Queue' AND DeveloperName IN (${DEP_QUEUES.map((q) => `'${q}'`).join(",")})`,
+    );
+    console.log(`  queues: ${queues.length}/${DEP_QUEUES.length} present`);
+    if (cfgs.length !== DEP_ROUTING.length || queues.length !== DEP_QUEUES.length) {
+      console.error("\nverification FAILED (routing deps)");
+      process.exit(1);
+    }
+  }
+  if (withSessionMeta) {
+    const recs = await query(
+      `SELECT DeveloperName FROM ${prefix}Tubot_Setting__mdt WHERE DeveloperName = 'Default'`,
+    );
+    console.log(`  MDT ${prefix}Tubot_Setting.Default record: ${recs.length ? "PRESENT" : "MISSING"}`);
+    const fields = await query(
+      `SELECT QualifiedApiName FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = 'MessagingSession' AND QualifiedApiName LIKE '${prefix}%__c'`,
+    );
+    console.log(`  MessagingSession ${prefix || "(unpackaged) "}custom fields: ${fields.length}`);
+    if (!recs.length || !fields.length) {
+      console.error("\nverification FAILED (session metadata)");
+      process.exit(1);
     }
   }
 }
@@ -196,7 +275,18 @@ if (!namespace && !verifyOnly) {
     console.log("auto-detected installed tubot package; applying namespace rewrite");
   }
 }
+// --verify-only still needs the prefix for MDT/field checks.
+if (!namespace && verifyOnly) {
+  const pkgs = await query(
+    "SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName = 'tubot__Tubot_Setting__mdt'",
+  );
+  if (pkgs.length) namespace = "tubot";
+}
+if (withSessionMeta && !verifyOnly) stageSessionMetadata();
 if (namespace && !verifyOnly) applyNamespace(namespace);
 
 if (!verifyOnly) await deploy();
-if (!checkOnly) await verify();
+if (!checkOnly) {
+  await verify();
+  await verifyDeps(namespace ? `${namespace}__` : "");
+}
