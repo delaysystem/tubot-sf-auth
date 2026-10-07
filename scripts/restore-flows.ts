@@ -9,7 +9,7 @@
  * Usage:
  *   bun scripts/restore-flows.ts --target-org <alias> [--check-only]
  *       [--verify-only] [--with-routing-deps] [--with-session-metadata]
- *       [--namespace <ns>]
+ *       [--namespace <ns>] [--t2-subflow <flowApiName>]
  *
  * Notes:
  * - t2.flow references QueueRoutingConfig Holding_Routing_Config. Without
@@ -57,7 +57,7 @@ const NAMESPACED_TOKENS = [
 
 function usage(exit = 1): never {
   console.error(
-    "Usage: bun scripts/restore-flows.ts --target-org <alias> [--check-only] [--verify-only] [--with-routing-deps] [--with-session-metadata] [--namespace <ns>]",
+    "Usage: bun scripts/restore-flows.ts --target-org <alias> [--check-only] [--verify-only] [--with-routing-deps] [--with-session-metadata] [--namespace <ns>] [--t2-subflow <flowApiName>]",
   );
   process.exit(exit);
 }
@@ -73,6 +73,7 @@ const checkOnly = args.includes("--check-only");
 const verifyOnly = args.includes("--verify-only");
 const withDeps = args.includes("--with-routing-deps");
 const withSessionMeta = args.includes("--with-session-metadata");
+const t2Subflow = flagValue("--t2-subflow");
 let namespace = flagValue("--namespace");
 
 function stage(subdir: string, names: string[], ext: string) {
@@ -284,6 +285,32 @@ if (!namespace && verifyOnly) {
 }
 if (withSessionMeta && !verifyOnly) stageSessionMetadata();
 if (namespace && !verifyOnly) applyNamespace(namespace);
+
+if (t2Subflow && !verifyOnly) {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(t2Subflow)) {
+    console.error(`invalid flow name: ${t2Subflow}`);
+    process.exit(1);
+  }
+  // System-side resolution: target must exist in the org or in this deploy.
+  if (!FLOWS.includes(t2Subflow)) {
+    const found = await query(
+      `SELECT DeveloperName FROM FlowDefinition WHERE DeveloperName = '${t2Subflow}'`,
+      true,
+    );
+    if (!found.length) {
+      console.error(`subflow target ${t2Subflow} not found in ${targetOrg}; aborting`);
+      process.exit(1);
+    }
+  }
+  const p = join(STAGING, "force-app/main/default/flows/t2.flow-meta.xml");
+  const src = readFileSync(p, "utf8");
+  if (!src.includes("<flowName>defaultFlowTuBot</flowName>")) {
+    console.error("t2 staged flow has no defaultFlowTuBot subflow element; aborting");
+    process.exit(1);
+  }
+  writeFileSync(p, src.replace("<flowName>defaultFlowTuBot</flowName>", `<flowName>${t2Subflow}</flowName>`));
+  console.log(`t2 subflow element -> ${t2Subflow}`);
+}
 
 if (!verifyOnly) await deploy();
 if (!checkOnly) {
