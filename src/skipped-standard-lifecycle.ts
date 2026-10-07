@@ -65,8 +65,11 @@ const CUSTOM_ROUTE =
  * and recipientRecordId (owned end user) plus a fictional recipientPhone.
  * 144: discovery-query denials record a grant (input_unresolved heals
  * through provisioning instead of parking on unreadable substrate).
+ * 145: required inputs missed through empty discovery propose the
+ * backing object for a read grant (hidden-gap heal attempt), and
+ * discovery failures carry their upstream codes.
  */
-export const SKIPPED_STANDARD_BUILDER_VERSION = 144;
+export const SKIPPED_STANDARD_BUILDER_VERSION = 145;
 
 /** Families this engine executes: wave-2 remainder plus wave-1 owned fall-throughs. */
 export const SKIPPED_STANDARD_ENGINE_FAMILIES = [
@@ -1025,8 +1028,16 @@ const DISCOVERY_FROM_OBJECT = /\bFROM\s+([A-Za-z][A-Za-z0-9_]{1,127})/i;
  * setup defects. The object comes from our own fixed SOQL (validated
  * identifier), never from upstream text.
  */
+function firstUpstreamCode(body: unknown): string | null {
+  const first = Array.isArray(body) ? body[0] : record(body) ? body : null;
+  const code = first && typeof (first as { errorCode?: unknown }).errorCode === "string"
+    ? (first as { errorCode: string }).errorCode : null;
+  return code && /^[A-Za-z][A-Za-z0-9_]{1,40}$/.test(code) ? code : null;
+}
+
 function recordDiscoveryDenial(ctx: RunContext, key: string, soql: string, status: number, body: unknown): void {
-  if (ctx.discoveryFailures.length < 6) ctx.discoveryFailures.push(`${key}:${status}`);
+  const code = firstUpstreamCode(body);
+  if (ctx.discoveryFailures.length < 6) ctx.discoveryFailures.push(code ? `${key}:${status}:${code}` : `${key}:${status}`);
   if (ctx.discoveryDenial) return;
   const detected = denialGrantForRestOutcome(status, body);
   if (status !== 403 && detected?.family !== "object-crud") return;
@@ -1034,6 +1045,28 @@ function recordDiscoveryDenial(ctx: RunContext, key: string, soql: string, statu
   if (!from) return;
   ctx.discoveryDenial = { family: "object-crud", objectName: from, retryable: true,
     requirement: `Grant the execution identity ${from} read access through the fixture permission set during org provisioning, then retry.` };
+}
+
+/**
+ * Object backing a required input missed through discovery: input name to
+ * discovered key (first binding whose matcher hits) to the key's first
+ * query FROM. All inputs are our own static config (validated identifier
+ * out); null when the input is not discovery-backed. Pure.
+ */
+function discoveryObjectForMissingInput(
+  bindings: SkippedStandardInputBinding[],
+  discoveries: SkippedStandardDiscovery[],
+  inputName: string,
+): string | null {
+  const use = bindings.find(b => b.match.test(inputName))?.use;
+  const key = use && "discovered" in use ? use.discovered : undefined;
+  if (!key) return null;
+  const entry = discoveries.find(d => d.key === key);
+  const soql = entry && ("queryId" in entry ? entry.queryId[0]
+    : "queryValue" in entry ? entry.queryValue[0]
+    : "queryIdList" in entry ? entry.queryIdList[0] : undefined);
+  if (!soql) return null;
+  return DISCOVERY_FROM_OBJECT.exec(soql)?.[1] ?? null;
 }
 
 async function runDiscoveries(ctx: RunContext): Promise<void> {
@@ -1404,6 +1437,16 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
   }, ctx.builtSObjects);
   if ("missing" in planned) {
     const failures = ctx.discoveryFailures.length ? ` Discovery failures: [${ctx.discoveryFailures.join(",")}].` : "";
+    // Empty-but-required discovery may hide a read gap (some setup queries
+    // return zero rows instead of 403 for underprivileged identities), so
+    // propose the backing object for grant self-heal when no true denial
+    // was recorded. Genuinely empty substrate re-fails honestly after the
+    // single heal attempt; non-discovery inputs propose nothing.
+    if (!ctx.discoveryDenial) {
+      const hidden = discoveryObjectForMissingInput(spec.bindings, skippedStandardDiscoveries(ctx.family, ctx.action), planned.missing);
+      if (hidden) ctx.discoveryDenial = { family: "object-crud", objectName: hidden, retryable: true,
+        requirement: `Grant the execution identity ${hidden} read access through the fixture permission set during org provisioning, then retry.` };
+    }
     return {
       outcome: fail(code("input_unresolved"), `No discovered live value for required input ${planned.missing}.${failures}`, {
         setupRequirement: setupRequirementFor(ctx.family, planned.missing),
