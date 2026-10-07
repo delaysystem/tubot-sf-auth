@@ -1,4 +1,6 @@
 import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
+import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
+import { sameSalesforceId } from "./salesforce-id";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -7,9 +9,16 @@ type Result = { status: number; ok: boolean; body: any };
  * below the shared-contract floor and could never reselect rows): 125
  * seeds required fixture references (Case.BusinessHoursId) from live
  * lookups so routeWork/skillsBasedRouting re-probe past
- * OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED.
+ * OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED. 126: fixture-grant
+ * self-provisioning heals delete-access cleanup failures (stale
+ * DUPLICATE_VALUE and cleanup verdicts reselect). 127: drift-aware
+ * anchor retry (automation-owned targets report the drift vocabulary
+ * so the caller advances instead of failing the sweep). 128:
+ * pre-invoke automation sweep (SkillsBased rows on the fresh anchor
+ * are removed before invoke so skillsBasedRouting never duplicates;
+ * QueueBased rows are platform-undeletable and drift the target).
  */
-export const ROUTING_CONTEXT_BUILDER_VERSION = 125;
+export const ROUTING_CONTEXT_BUILDER_VERSION = 128;
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
 export const ROUTING_CONTEXT_ACTIONS = ['skillsBasedRouting', 'routeWork'];
 export const ROUTING_CONTEXT_OBJECTS = ['ServiceChannel', 'QueueRoutingConfig', 'PendingServiceRouting'];
@@ -19,7 +28,7 @@ export const routingTargets = (fields: Value[]) => {
   return names.includes('Case') ? ['Case', ...names.filter(n => n !== 'Case')] : names;
 };
 export async function invokeRoutingContext(input: {
-  root: string; route: string; target: string; verificationWindowMs?: number;
+  root: string; route: string; target: string; verificationWindowMs?: number; userId?: string;
   request: (path: string, method?: string, body?: any) => Promise<Result>;
   build: (name: string, marker: string, values: Value) => Promise<{ values: Value } | { failure: Result }>;
 }): Promise<{ status: number; body: any; contextSchema?: Value; cleanupError?: string }> {
@@ -44,6 +53,7 @@ export async function invokeRoutingContext(input: {
   const owned: Array<{ objectName: string; id: string }> = [];
   const cleanupResults: Array<{ objectName: string; deleteStatus: number; errorCode?: string; absent?: boolean }> = [];
   let anchorRecordId: string | undefined, channel: Value | undefined, configId: string | undefined, verified = false, cleanupError: string | undefined;
+  let automationSweepFailed = false;
   let outcome = fail('ROUTING_CONTEXT_UNAVAILABLE', 'The owned routing context could not be prepared.');
   const create = async (name: string, values: Value) => {
     const r = await request(`${root}/sobjects/${name}`, 'POST', values);
@@ -54,7 +64,7 @@ export async function invokeRoutingContext(input: {
     return actual.body as Value;
   };
   const children = async () => {
-    const r = await request(`${root}/query?q=${encodeURIComponent(`SELECT Id,WorkItemId,ServiceChannelId FROM PendingServiceRouting WHERE WorkItemId='${anchorRecordId}' LIMIT 20`)}`);
+    const r = await request(`${root}/query?q=${encodeURIComponent(`SELECT Id,WorkItemId,ServiceChannelId,RoutingType FROM PendingServiceRouting WHERE WorkItemId='${anchorRecordId}' LIMIT 20`)}`);
     if (!r.ok || !Array.isArray(r.body?.records)) throw Error('Owned pending-routing readback failed.');
     for (const v of r.body.records) if (id(v.Id) && v.WorkItemId === anchorRecordId && !owned.some(o => o.id === v.Id)) owned.push({ objectName: 'PendingServiceRouting', id: v.Id });
     return r.body.records as Value[];
@@ -84,6 +94,36 @@ export async function invokeRoutingContext(input: {
       owned.push({ objectName: target, id: anchorRecordId! });
       const actual = await request(`${root}/sobjects/${target}/${anchorRecordId}`);
       if (!actual.ok || actual.body?.[markerField.name] !== marker) return fail('ROUTING_ANCHOR_UNVERIFIED', 'The actual work item ownership marker did not match.');
+      // Org automation (SDO auto-routing) may route the fresh anchor before
+      // the invoke lands; skillsBasedRouting INSERTs and duplicates against
+      // that automation-owned PSR while routeWork tolerates it. Sweep
+      // pre-existing PSRs on the owned anchor first so both actions invoke
+      // against deterministic clean state on every org. children() already
+      // tracks swept rows in owned, so the finally block confirms absence.
+      // QueueBased rows are platform-undeletable (INVALID_OPERATION for any
+      // identity), so they drift the target immediately without a futile
+      // delete attempt; only SkillsBased rows are sweepable.
+      for (const row of await children()) {
+        if (!id(row.Id)) continue;
+        if (row.RoutingType === 'QueueBased') {
+          automationSweepFailed = true;
+          return { status: 422, ok: false, body: { errorCode: 'ROUTING_AUTOMATION_SWEEP_FAILED',
+            message: `Org automation owns a queue-based pending-routing record on the owned work item and queue-based rows cannot be deleted; exclude probe markers from auto-routing flows, then retry. Drifted fixture target: ${target}.` } };
+        }
+        const swept = await request(`${root}/sobjects/PendingServiceRouting/${row.Id}`, 'DELETE');
+        if (!swept.ok) {
+          const sweepCode = Array.isArray(swept.body) ? swept.body[0]?.errorCode : swept.body?.errorCode;
+          // Permission gaps self-heal through the grant vocabulary (the
+          // caller provisions and re-probes); rows Salesforce will not
+          // release are automation drift (the caller advances targets).
+          if (swept.status === 403 || sweepCode === 'INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY' || sweepCode === 'INSUFFICIENT_ACCESS_OR_READONLY') {
+            return fail('ROUTING_SWEEP_PERMISSIONS_REQUIRED', `Live PendingServiceRouting create/read/delete access for the execution user is required to clear automation-owned routing before invoke (delete status ${swept.status}); automatically run setup:context-permissions --auto-routing during org provisioning, then retry.`);
+          }
+          automationSweepFailed = true;
+          return { status: 422, ok: false, body: { errorCode: 'ROUTING_AUTOMATION_SWEEP_FAILED',
+            message: `Org automation owns a pending-routing record on the owned work item and it could not be removed (delete status ${swept.status}${typeof sweepCode === 'string' ? `, ${sweepCode}` : ''}); exclude probe markers from auto-routing flows, then retry. Drifted fixture target: ${target}.` } };
+        }
+      }
       const args = action === 'skillsBasedRouting' ? { recordId: anchorRecordId, routingConfigId: configId } : {
         recordId: anchorRecordId, recordsToRouteType: 'single', serviceChannelId: channel.Id,
         serviceChannelLabel: channel.MasterLabel, serviceChannelDevName: channel.DeveloperName,
@@ -101,7 +141,18 @@ export async function invokeRoutingContext(input: {
   } finally {
     const errors: string[] = [];
     if (anchorRecordId) try { await children(); } catch { errors.push('Pending-routing cleanup discovery failed.'); }
+    const driftedTargets = new Set<string>();
     for (const item of [...owned].reverse()) {
+      // Org automation may have drifted the fixture (reassignment);
+      // reclaim first so the DELETE below is judged on its own merit.
+      if (typeof input.userId === 'string') {
+        try {
+          const outcome = await reclaimFixtureOwnerForDelete({ root, objectName: item.objectName, id: item.id, ownerId: input.userId, request });
+          if (!outcome.reclaimed && typeof outcome.ownerBefore === 'string' && !sameSalesforceId(outcome.ownerBefore, input.userId)) {
+            driftedTargets.add(item.objectName);
+          }
+        } catch { /* reclaim best-effort; DELETE proves the outcome */ }
+      }
       const deleted = await request(`${root}/sobjects/${item.objectName}/${item.id}`, 'DELETE');
       // Active routing can reject direct PSR deletion; deleting its owned work item
       // removes it through Salesforce cascade. Assert final absence after all cleanup.
@@ -112,8 +163,16 @@ export async function invokeRoutingContext(input: {
       const gone = await request(`${root}/sobjects/${item.objectName}/${item.id}`);
       const proof = cleanupResults.find(v => v.objectName === item.objectName);
       if (proof) proof.absent = gone.status === 404;
-      if (gone.status !== 404) errors.push(`Owned ${item.objectName} cleanup was not verified.`);
+      if (gone.status !== 404) {
+        errors.push(`Owned ${item.objectName} cleanup was not verified.`);
+        // An unreclaimable owner mismatch is drift, not a permission gap:
+        // fixed vocabulary so the caller retries the next routable target.
+        if (driftedTargets.has(item.objectName)) errors.push(`Drifted fixture target: ${item.objectName}.`);
+      }
     }
+    // Unsweepable automation rows are drift, not a sweep bug: fixed
+    // vocabulary so the caller retries the next routable target.
+    if (automationSweepFailed && anchorRecordId) errors.push(`Drifted fixture target: ${target}.`);
     if (errors.length) cleanupError = [...new Set(errors)].join(' ');
   }
   return { status: outcome.status, body: outcome.body, ...(cleanupError ? { cleanupError } : {}), contextSchema: {
@@ -121,6 +180,6 @@ export async function invokeRoutingContext(input: {
     markerField: markerField.name, serviceChannelId: channel?.Id, routingConfigId: configId, ownedRecords: owned, cleanupResults,
     verified, verificationRecordIds: verified ? owned.filter(v => v.objectName === 'PendingServiceRouting').map(v => v.id) : [],
     objects: Object.entries(schemas).map(([name, schema]) => ({ name, fields: schema.fields })), mutationKind: 'create',
-    automaticSteps: ['Discover live routing and work-item schemas', 'Resolve or create a live service channel for the supported object', 'Create and read back an owned routing configuration and work item', 'Invoke with actual channel names and identities', 'Verify pending routing against the owned work item', 'Delete only owned pending routing, work item and configuration/channel and verify absence'],
+    automaticSteps: ['Discover live routing and work-item schemas', 'Resolve or create a live service channel for the supported object', 'Create and read back an owned routing configuration and work item', 'Remove automation-owned pending routing on the owned work item', 'Invoke with actual channel names and identities', 'Verify pending routing against the owned work item', 'Delete only owned pending routing, work item and configuration/channel and verify absence'],
   } };
 }

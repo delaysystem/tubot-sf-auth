@@ -23,6 +23,7 @@ import { invokeLeadAssignmentContext } from "./lead-assignment-context";
 import { invokeOwnedFlowCreation } from "./owned-flow-creation-context";
 import { invokeCustomFieldActionContext, xmlText } from './custom-field-action-context';
 import { invokeRoutingContext } from "./routing-action-context";
+import { selfProvisionFixtureGrants as provisionFixtureGrants } from "./fixture-self-provision";
 import { APPROVAL_ADVANCED_ACTIONS, APPROVAL_SUBMIT_ACTION, approvalActionName, invokeApprovalActionWithContext } from "./approval-owned-context";
 import { invokeProcSimpleApprovalWithContext, procSimpleApprovalActionName } from "./approval-flow-lifecycle";
 import { invokePricebookContext } from "./pricebook-action-context";
@@ -167,6 +168,7 @@ class AuthFailure extends Error {
 }
 
 const tokenCache = new Map<string, Token>();
+const tokenInflight = new Map<string, Promise<Token>>();
 const selfTokenCache = new Map<string, SelfAccessToken>();
 const encoder = new TextEncoder();
 const API_VERSION = "v65.0";
@@ -800,6 +802,21 @@ export async function token(env: AuthEnv, row: Credential): Promise<Token> {
   const id = cacheKey(row);
   const cached = tokenCache.get(id);
   if (cached && cached.expiresAt > Date.now() + 30_000) return cached;
+  // Single-flight: parallel waves share one cold-cache token POST per
+  // credential instead of stampeding the OAuth endpoint (a stampede
+  // bursts invalid_grant noise that poisons action verdicts downstream).
+  // Failures are never cached: the waiter rethrows and the next caller
+  // retries with a fresh POST.
+  const inflight = tokenInflight.get(id);
+  if (inflight) return inflight;
+  const pending = fetchToken(env, row, id).finally(() => {
+    if (tokenInflight.get(id) === pending) tokenInflight.delete(id);
+  });
+  tokenInflight.set(id, pending);
+  return pending;
+}
+
+async function fetchToken(env: AuthEnv, row: Credential, id: string): Promise<Token> {
   const form = new URLSearchParams({
     grant_type: "client_credentials", client_id: row.client_id,
     client_secret: await decrypt(env, row),
@@ -871,6 +888,19 @@ export async function token(env: AuthEnv, row: Credential): Promise<Token> {
 async function sfGet(env: AuthEnv, row: Credential, path: string, requestId: string): Promise<Response> {
   return sfRequest(env, row, path, "GET", undefined, requestId);
 }
+
+const FIXTURE_CREATE_PATH = /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/[A-Za-z][A-Za-z0-9_]+$/;
+/**
+ * Owned-fixture creates must stay owned by the execution identity: active
+ * assignment rules would reassign them (queue drift) and break cleanup.
+ * The platform skips assignment-rule evaluation on creates carrying
+ * Sforce-Auto-Assign: FALSE. Shape-gated to exact POST-to-sobjects
+ * creates and applied only inside probe owned-context transports; action
+ * invokes, reads, Tooling, and panel runtime traffic never match.
+ */
+function fixtureCreateHeaders(method: string, path: string): Record<string, string> | undefined {
+  return method === "POST" && FIXTURE_CREATE_PATH.test(path) ? { "Sforce-Auto-Assign": "FALSE" } : undefined;
+}
 async function sfRequest(
   env: AuthEnv,
   row: Credential,
@@ -880,6 +910,7 @@ async function sfRequest(
   requestId: string,
   preserveResponseHeaders = false,
   signal?: AbortSignal,
+  extraHeaders?: Record<string, string>,
 ): Promise<Response> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const auth = await token(env, row);
@@ -891,6 +922,7 @@ async function sfRequest(
           Authorization: "Bearer " + auth.accessToken,
           Accept: "application/json",
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(extraHeaders ?? {}),
         },
         ...(body === undefined ? {} : { body }),
         ...(signal ? { signal } : {}),
@@ -3786,14 +3818,14 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = input.route.split("/actions/")[0];
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "FLOW_CREATION_UPSTREAM_UNAVAILABLE", message: "Salesforce execution or readback failed; owned cleanup will still run." } }; }
     };
     if (plan.source === "salesforce_live_flow_scalar_creation_contract") return invokeFlowScalarCreationContract({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, request,
       build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
-    if (plan.source === "salesforce_live_flow_record_contract" || plan.source === "salesforce_live_flow_update_contract") return (plan.source === "salesforce_live_flow_update_contract" ? invokeFlowUpdateContract : invokeFlowRecordContract)({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, request,
+    if (plan.source === "salesforce_live_flow_record_contract" || plan.source === "salesforce_live_flow_update_contract") return (plan.source === "salesforce_live_flow_update_contract" ? invokeFlowUpdateContract : invokeFlowRecordContract)({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, userId: row.integration_user_id, request,
       build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
     return invokeOwnedFlowCreation({ root, route: input.route, plan, verificationWindowMs: input.verificationWindowMs, request,
@@ -3816,7 +3848,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = `/services/data/${match[1]}`;
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "REMAINDER_BOOKING_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };
@@ -3838,12 +3870,38 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = `/services/data/${match[1]}`;
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "FLOW_SOBJECT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; the native call was not verified." } }; }
     };
     const result = await invokeFlowLiveSObject({ root, route: input.route, actionName: match[2], request });
     return { status: result.status, body: result.body, contextSchema: result.contextSchema };
+  }
+
+  /**
+   * Denial-driven fixture permission-set self-provisioning: applies the
+   * auto-appliable object-crud grants in-worker through the execution
+   * credential, so current and future orgs heal without the workstation
+   * setup script. Attempt-driven: Tooling denials surface as
+   * capabilityDenied and the caller keeps its honest setup verdict.
+   */
+  async selfProvisionFixtureGrants(ref: Key, input: { apiVersion: string; objects: string[] }):
+    Promise<{ granted: string[]; failed: Array<{ object: string; status: number }>; assigned: boolean; capabilityDenied: boolean }> {
+    if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
+      !Array.isArray(input.objects) || !input.objects.length || input.objects.length > 12 ||
+      input.objects.some(name => typeof name !== "string" || name.length > 128)) {
+      throw authFailure(400, "invalid_provision_request", "A bounded API version and object list are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "PROVISION_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed during fixture provisioning." } }; }
+    };
+    return provisionFixtureGrants({ root, userId: row.integration_user_id, objects: input.objects, request });
   }
 
   async invokeRecordActionWithContext(ref: Key, input: { route: string; objectApiName: string; verificationWindowMs?: number; attendeePayloadFields?: string[]; invitationPrefixField?: string; fixtureIdInput?: string; contextArgs?: Record<string, unknown> }):
@@ -3860,7 +3918,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = `/services/data/${match[1]}`, target = input.objectApiName, update = match[2] === "updateRecord";
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "RECORD_ACTION_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };
@@ -3937,7 +3995,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     if (match[2] === 'invocableApplyLeadAssignmentRules') return invokeLeadAssignmentContext({ root, route: input.route, verificationWindowMs: input.verificationWindowMs, request,
       build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
         return 'failure' in result ? { failure: { ...result.failure, ok: false } } : result; } });
-    if (["skillsBasedRouting", "routeWork"].includes(match[2])) return invokeRoutingContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, request,
+    if (["skillsBasedRouting", "routeWork"].includes(match[2])) return invokeRoutingContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, userId: row.integration_user_id, request,
       build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
     if (match[2] === "choosePricebook") return invokePricebookContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, request,
@@ -4131,9 +4189,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const env = this.env as AuthEnv;
     const row = await credentialForEntrypoint(env, ref);
     const root = `/services/data/${match[1]}`;
-    const request = async (path: string, method = "GET", body?: unknown) => {
+    const request = async (path: string, method = "GET", body?: unknown, extraHeaders?: Record<string, string>) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), extraHeaders);
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "EMAIL_ALERT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };
@@ -4299,7 +4357,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = `/services/data/${info.apiVersion}`;
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "SKIPPED_STANDARD_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };

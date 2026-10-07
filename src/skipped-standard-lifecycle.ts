@@ -52,9 +52,19 @@ const CUSTOM_ROUTE =
  * swarm-channel, integration-plan, industries-async, notification, and
  * visualization families re-probe past
  * OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED. OwnerId resolves to the
- * verified execution identity, never a borrowed user.
+ * verified execution identity, never a borrowed user. 138 adds the r7
+ * skip-exempt wave (apex owned-shape + scalar-pure + external-callout
+ * families, context-dynamic twins, batch-submit, social-publish,
+ * appointment-save, routing-verify): above every taken version (global
+ * max 137) so r7 rows reselect exactly once. 141: createTask vocabulary
+ * (assignee/type/due/priority/status/subject), optional picklists bind
+ * descriptor choices (campaign status), absent fixture objects report
+ * package_required, service-campaign binds the ASA prompt. 142:
+ * notification templateDeveloperName binds a MessagingTemplate name.
+ * 143: notification binds channelDeveloperName (capable channels first)
+ * and recipientRecordId (owned end user) plus a fictional recipientPhone.
  */
-export const SKIPPED_STANDARD_BUILDER_VERSION = 126;
+export const SKIPPED_STANDARD_BUILDER_VERSION = 143;
 
 /** Families this engine executes: wave-2 remainder plus wave-1 owned fall-throughs. */
 export const SKIPPED_STANDARD_ENGINE_FAMILIES = [
@@ -434,7 +444,34 @@ export function skippedStandardBindingSpec(
     case "industries-async":
     case "visualization":
     case "enablement":
+      return {
+        bindings: [
+          // liveMessageNotification's templateDeveloperName is a Messaging
+          // Template name (EmailTemplate names never validate); sibling
+          // families keep the shared EmailTemplate binding.
+          { match: /^templatedevelopername$/i, use: { discovered: "liveMessageTemplate" } },
+          ...sharedRecordBindings(family, lowerAction),
+        ],
+      };
     case "notification":
+      return {
+        bindings: [
+          { match: /^templatedevelopername$/i, use: { discovered: "liveMessageTemplate" } },
+          // Notification-capable channel first (capable MessageTypes win
+          // the discovery order); an org with only In-App/Web channels
+          // still resolves and fails honest at the Salesforce boundary.
+          { match: /^channeldevelopername$/i, use: { discovered: "notificationChannel" } },
+          // Recipient Record Id satisfies the conditional requirement
+          // (recipientPhone XOR recipientRecordId) with an owned fixture
+          // end user, so no real number is ever messaged.
+          { match: /^recipientrecordid$/i, use: { fixture: "MessagingEndUser" } },
+          // Fictional 555-01XX range (never a real subscriber): satisfies
+          // the recipientPhone XOR recipientRecordId requirement alongside
+          // the owned end user; live probes accept both bound at once.
+          { match: /^recipientphone$/i, use: { fixed: "+15555550100" } },
+          ...sharedRecordBindings(family, lowerAction),
+        ],
+      };
     case "goals":
       return { bindings: sharedRecordBindings(family, lowerAction) };
     case "inventory-slot":
@@ -671,6 +708,11 @@ export function skippedStandardDiscoveries(
         { key: "messageTemplateId", queryId: ["SELECT Id FROM EmailTemplate LIMIT 1"] },
         { key: "messageTemplate", queryValue: ["SELECT DeveloperName FROM EmailTemplate LIMIT 1"], field: "DeveloperName" },
         { key: "messageChannel", queryValue: ["SELECT DeveloperName FROM MessagingChannel LIMIT 1"], field: "DeveloperName" },
+        { key: "notificationChannel", queryValue: [
+          "SELECT DeveloperName FROM MessagingChannel WHERE IsActive = true AND MessageType IN ('WhatsApp','Facebook','Line','Phone','Text') LIMIT 1",
+          "SELECT DeveloperName FROM MessagingChannel WHERE IsActive = true LIMIT 1",
+          "SELECT DeveloperName FROM MessagingChannel LIMIT 1",
+        ], field: "DeveloperName" },
         { key: "engagementChannel", queryValue: ["SELECT DeveloperName FROM MessagingChannel LIMIT 1"], field: "DeveloperName" },
         { key: "channelId", queryId: ["SELECT Id FROM MessagingChannel LIMIT 1"] },
         { key: "messageDefinition", queryValue: ["SELECT DeveloperName FROM MessagingDefinition LIMIT 1"], field: "DeveloperName" },
@@ -762,6 +804,15 @@ export function skippedStandardFixtures(
         return [
           { objects: ["Contact"] },
           { objects: ["Case"] },
+          { objects: ["MessagingEndUser"], parents: { ContactId: { fixture: "Contact" }, MessagingChannelId: { discovered: "channelId" } } },
+        ];
+      }
+      // liveMessageNotification binds recipientRecordId to an owned
+      // MessagingEndUser (recipientPhone XOR recipientRecordId): mint it
+      // with an owned Contact parent so no real number is ever messaged.
+      if (family === "notification" && /^livemessage/i.test(action)) {
+        return [
+          { objects: ["Contact"] },
           { objects: ["MessagingEndUser"], parents: { ContactId: { fixture: "Contact" }, MessagingChannelId: { discovered: "channelId" } } },
         ];
       }

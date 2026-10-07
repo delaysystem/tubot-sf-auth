@@ -35,7 +35,11 @@
  *   is arbitrary tenant logic, so borrowed customer identities must never
  *   ride its inputs. Mint plans still apply (owned parents), and anything
  *   else fails honest; borrowing stays allowed only for provably
- *   read-only shapes.
+ *   read-only shapes. Mint plans still apply (owned parents). Two narrow
+ *   legs still apply under opt-out: org-default setup rows
+ *   (`IsDefault=true`) bind (setup metadata, never customer identity),
+ *   and polymorphic fields yield a mint plan for the first mintable
+ *   target (owned parent, platform-validated). Anything else fails honest.
  *
  * No org id, alias, username, object name, or URL appears here; every
  * tenant value is caller-supplied or read live.
@@ -55,6 +59,12 @@ export type FixtureReferenceSeed = {
   overrides: Record<string, string>;
   /** Required reference fields left unresolved (caller fails honest). */
   unresolved: string[];
+  /**
+   * Reference targets whose id lookup was access-denied (not merely
+   * rowless): granting the execution identity read access unblocks the
+   * seed on retry. Powers denial-driven self-provisioning.
+   */
+  readDenied: string[];
   /**
    * Single-target fields with no live row whose target is mintable. The
    * caller mints with its own marker/cleanup; `fields` is the live target
@@ -148,13 +158,15 @@ export async function seedCommercialAccountLink(
 
 export type FixtureReferenceSeedOptions = {
   /**
-   * When false, no live row is read for binding: every required field is
-   * treated as rowless, single-target mintable fields yield mint plans,
-   * and anything else stays unresolved. Defaults to true (the
-   * owned-lifecycle standard-action precedent: routing, email alerts,
-   * quick actions). Flow probing passes false unless the flow is provably
-   * read-only, so live customer identities never ride a mutating (or
-   * unknown) flow's inputs; owned fixtures or refusal only.
+   * When false, no customer row is read for binding: plain LIMIT 1
+   * lookups are skipped, org-default setup rows (IsDefault=true) still
+   * bind, single-target mintable fields yield mint plans, polymorphic
+   * fields yield a mint plan for the first mintable target, and anything
+   * else stays unresolved. Defaults to true (the owned-lifecycle
+   * standard-action precedent: routing, email alerts, quick actions).
+   * Flow probing passes false unless the flow is provably read-only, so
+   * live customer identities never ride a mutating (or unknown) flow's
+   * inputs; owned fixtures, setup defaults, or refusal only.
    */
   allowLiveBorrow?: boolean;
 };
@@ -174,8 +186,19 @@ export async function seedRequiredReferenceValues(
   fields: unknown,
   options?: FixtureReferenceSeedOptions,
 ): Promise<FixtureReferenceSeed> {
-  const seed: FixtureReferenceSeed = { overrides: {}, unresolved: [], mintPlans: [] };
+  const seed: FixtureReferenceSeed = { overrides: {}, unresolved: [], readDenied: [], mintPlans: [] };
   const borrow = options?.allowLiveBorrow !== false;
+  const markDenied = (objectName: string, lookup: Result): void => {
+    if (lookup.ok || seed.readDenied.includes(objectName)) return;
+    // 403 is always a read denial; a 400 is one only with an access code
+    // (a malformed default-filter on objects without IsDefault is not).
+    if (lookup.status === 403) { seed.readDenied.push(objectName); return; }
+    if (lookup.status !== 400) return;
+    const items = Array.isArray(lookup.body) ? lookup.body : [lookup.body];
+    const denied = items.some((item) => record(item) &&
+      (item.errorCode === "INSUFFICIENT_ACCESS_OR_READONLY" || item.errorCode === "INSUFFICIENT_ACCESS"));
+    if (denied) seed.readDenied.push(objectName);
+  };
   const liveIds = new Map<string, string | null>();
   const liveId = async (objectName: string): Promise<string | null> => {
     if (!borrow) return null;
@@ -185,7 +208,21 @@ export async function seedRequiredReferenceValues(
     const first = record(lookup.body) && Array.isArray(lookup.body.records)
       ? lookup.body.records.filter(record).find((row) => identity(row.Id)) : undefined;
     if (lookup.ok && first && identity(first.Id)) found = first.Id;
+    else markDenied(objectName, lookup);
     liveIds.set(objectName, found);
+    return found;
+  };
+  const defaultIds = new Map<string, string | null>();
+  const defaultId = async (objectName: string): Promise<string | null> => {
+    if (borrow) return null;
+    if (defaultIds.has(objectName)) return defaultIds.get(objectName) ?? null;
+    let found: string | null = null;
+    const lookup = await request(`${root}/query?q=${encodeURIComponent(`SELECT Id FROM ${objectName} WHERE IsDefault=true LIMIT 1`)}`);
+    const first = record(lookup.body) && Array.isArray(lookup.body.records)
+      ? lookup.body.records.filter(record).find((row) => identity(row.Id)) : undefined;
+    if (lookup.ok && first && identity(first.Id)) found = first.Id;
+    else markDenied(objectName, lookup);
+    defaultIds.set(objectName, found);
     return found;
   };
   for (const field of requiredReferenceFields(fields)) {
@@ -194,22 +231,32 @@ export async function seedRequiredReferenceValues(
       const id = await liveId(target);
       if (id !== null) { bound = id; break; }
     }
+    if (!borrow && bound === null) {
+      for (const target of field.targets) {
+        const id = await defaultId(target);
+        if (id !== null) { bound = id; break; }
+      }
+    }
     if (bound !== null) {
       seed.overrides[field.name] = bound;
       continue;
     }
-    // No live row in any target: a single mintable target yields a mint
-    // plan; anything else stays unresolved (fail honest downstream).
-    if (field.targets.length === 1) {
-      const described = await request(`${root}/sobjects/${field.targets[0]}/describe`);
+    // No live row in any target: under opt-out every target is a mint
+    // candidate (first mintable wins); with borrow only single-target
+    // fields yield mint plans; anything else stays unresolved (fail
+    // honest downstream).
+    const mintTargets = borrow ? (field.targets.length === 1 ? field.targets : []) : field.targets;
+    for (const target of mintTargets) {
+      const described = await request(`${root}/sobjects/${target}/describe`);
       const targetFields = record(described.body) && Array.isArray(described.body.fields)
         ? described.body.fields.filter(record) : null;
       if (described.ok && record(described.body) && described.body.createable === true &&
           described.body.queryable === true && described.body.deletable === true && targetFields) {
-        seed.mintPlans.push({ field: field.name, objectName: field.targets[0], fields: targetFields });
-        continue;
+        seed.mintPlans.push({ field: field.name, objectName: target, fields: targetFields });
+        break;
       }
     }
+    if (mintTargets.length && seed.mintPlans.some((plan) => plan.field === field.name)) continue;
     seed.unresolved.push(field.name);
   }
   return seed;

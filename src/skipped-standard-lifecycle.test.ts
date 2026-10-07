@@ -672,3 +672,26 @@ test('non-denial failures attach no grant family', async () => {
   expect(outcome.denialGrant).toBeUndefined();
   expect(outcome.contextSchema).not.toHaveProperty('denialGrant');
 });
+
+test('notification binds channel, template, and owned recipient end user', () => {
+  const planned = planSkippedStandardArgs(skippedStandardBindingSpec('notification', 'liveMessageNotification'), [
+    { name: 'templateDeveloperName', type: 'STRING', required: true },
+    { name: 'channelDeveloperName', type: 'STRING', required: true },
+    { name: 'recipientRecordId', type: 'ID', required: false },
+    { name: 'recipientPhone', type: 'PHONE', required: false },
+  ], { marker: 'AS probe m', fixtures: { MessagingEndUser: '0dn000000000001AAA' }, discovered: { liveMessageTemplate: 'T', notificationChannel: 'C' } });
+  expect(planned).toEqual({ args: { templateDeveloperName: 'T', channelDeveloperName: 'C', recipientRecordId: '0dn000000000001AAA', recipientPhone: '+15555550100' } });
+});
+
+test('notification prefers notification-capable channels and mints an owned end user', () => {
+  const channel = skippedStandardDiscoveries('notification', 'liveMessageNotification').find((entry) => entry.key === 'notificationChannel');
+  expect(channel).toMatchObject({ field: 'DeveloperName' });
+  const queries = (channel as { queryValue: string[] }).queryValue;
+  expect(queries).toHaveLength(3);
+  expect(queries[0]).toContain('MessageType IN (');
+  expect(queries[0]).toContain('IsActive = true');
+  expect(skippedStandardFixtures('notification', 'liveMessageNotification')).toEqual([
+    { objects: ['Contact'] },
+    { objects: ['MessagingEndUser'], parents: { ContactId: { fixture: 'Contact' }, MessagingChannelId: { discovered: 'channelId' } } },
+  ]);
+});

@@ -1,5 +1,6 @@
 import { describeFlowUpdateContract } from './flow-update-contract';
 import { describeFlowScalarCreationContract } from './flow-scalar-creation-contract';
+import { reclaimFixtureOwnerForDelete } from './fixture-owner-reclaim';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -32,7 +33,7 @@ export async function describeFlowRecordContract(input: { root: string; descript
   return { status: 200, body: { discovered: true }, contextSchema: { source: 'salesforce_live_flow_record_contract', supportsStoredResolution: contracts.every(c => /\bretrieve\b/i.test(String(input.descriptor.inputs.find((v: Value) => v.name === c.inputName)?.description))), targets, targetObject: targets[0].objectName, markerField: targets[0].markerField,
     automaticSteps: ['Discover live typed creation inputs and identity outputs', 'Describe live target fields and fixture access', 'Supply owned synthetic record values', 'Invoke the existing Flow', 'Read back returned identities and independently query unique ownership markers', 'Delete only owned created records and verify absence'] } };
 }
-export async function invokeFlowRecordContract(input: { root: string; route: string; plan: Value; verificationWindowMs?: number;
+export async function invokeFlowRecordContract(input: { root: string; route: string; plan: Value; verificationWindowMs?: number; userId?: string;
   request: (path: string, method?: string, body?: any) => Promise<Result>;
   build: (name: string, marker: string, values: Value) => Promise<{ values: Value } | { failure: Result }>;
 }): Promise<{ status: number; body: any; contextSchema?: Value; cleanupError?: string }> {
@@ -61,7 +62,8 @@ export async function invokeFlowRecordContract(input: { root: string; route: str
           .slice(0, 4).map((f: Value) => [f.name, `probe-${crypto.randomUUID()}@example.invalid`])) : {};
         const built = await input.build(target.objectName, marker, { ...identityFields, [target.markerField]: marker });
         if ('failure' in built) return built.failure;
-        const nulls = Object.fromEntries((target.fields ?? []).filter((f: Value) => f.createable && f.nillable === true && !f.defaultedOnCreate && !f.calculated && !f.autoNumber).map((f: Value) => [f.name, null]));
+        // Explicit-null RecordTypeId faults interviews (verified A/B); the platform defaults the record type when omitted.
+        const nulls = Object.fromEntries((target.fields ?? []).filter((f: Value) => f.createable && f.nillable === true && !f.defaultedOnCreate && !f.calculated && !f.autoNumber && f.name !== 'RecordTypeId').map((f: Value) => [f.name, null]));
         args[target.inputName] = { ...nulls, ...built.values, attributes: { type: target.objectName } };
         markers[target.objectName] = target.markerField;
       }
@@ -113,6 +115,9 @@ export async function invokeFlowRecordContract(input: { root: string; route: str
     const errors: string[] = [];
     for (const target of targets) try { await discover(target); } catch { errors.push('Owned Flow cleanup discovery failed.'); }
     for (const item of [...owned].reverse()) {
+      if (typeof input.userId === 'string') {
+        await reclaimFixtureOwnerForDelete({ root, objectName: item.objectName, id: item.id, ownerId: input.userId, request }).catch(() => null);
+      }
       const removed = await request(`${root}/sobjects/${item.objectName}/${item.id}`, 'DELETE');
       if (!removed.ok && removed.status !== 404) errors.push(`Owned ${item.objectName} deletion failed.`);
     }

@@ -316,3 +316,16 @@ export function grantFamilyForCleanupDenial(
     objectName,
   };
 }
+
+/** Record-access note for unreclaimable drifted-owner deletes. An object grant does not fix drift. */
+export function grantFamilyForCleanupDrift(objectName: unknown): DenialGrant | null {
+  if (!validName(objectName)) return null;
+  return {
+    family: "record-access",
+    requirement:
+      `The owned ${objectName} fixture was reassigned away from the execution identity by org automation (assignment rules, flows, or queue routing) ` +
+      "and ownership could not be reclaimed before deletion. Exclude owned-fixture markers from reassignment automation through fixture provisioning, then retry.",
+    retryable: true,
+    objectName,
+  };
+}

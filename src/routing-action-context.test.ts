@@ -116,3 +116,56 @@ test('remaining routing record after cleanup is an explicit failure', async () =
   const result = await invokeRoutingContext({ ...h, request, route: h.root + '/actions/standard/routeWork', target: 'Case', build: async (_, __, values) => ({ values }) });
   expect(result.cleanupError).toContain('Owned PendingServiceRouting cleanup was not verified');
 });
+test('skillsBasedRouting sweeps automation-owned pending routing before invoke', async () => {
+  const h = harness();
+  const automationPsr = '0JR000000000009AAA';
+  h.data.set('PendingServiceRouting/' + automationPsr, { Id: automationPsr, WorkItemId: '500000000000000AAA', ServiceChannelId: '0N9000000000000EAA', RoutingType: 'SkillsBased' });
+  const ops: string[] = [];
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if (method === 'DELETE' && path.endsWith('/' + automationPsr)) ops.push('sweep');
+    if (method === 'POST' && path.includes('/actions/')) ops.push('invoke');
+    return h.request(path, method, body);
+  };
+  const result = await invokeRoutingContext({ ...h, request, route: h.root + '/actions/standard/skillsBasedRouting', target: 'Case', build: async (_, __, values) => ({ values }) });
+  expect(result.status).toBe(200);
+  expect(result.contextSchema?.verified).toBe(true);
+  expect(ops[0]).toBe('sweep');
+  expect(ops).toContain('invoke');
+  expect(h.deleted).toContain('PendingServiceRouting/' + automationPsr);
+  expect(h.data.size).toBe(0);
+});
+test('routing reports sweep failure when automation-owned routing cannot be removed', async () => {
+  const h = harness();
+  h.data.set('PendingServiceRouting/0JR000000000009AAA', { Id: '0JR000000000009AAA', WorkItemId: '500000000000000AAA', ServiceChannelId: '0N9000000000000EAA', RoutingType: 'SkillsBased' });
+  const request = async (path: string, method = 'GET', body?: any) => method === 'DELETE' && path.includes('/PendingServiceRouting/')
+    ? { status: 400, ok: false, body: [{ errorCode: 'DELETE_FAILED' }] } : h.request(path, method, body);
+  const result = await invokeRoutingContext({ ...h, request, route: h.root + '/actions/standard/skillsBasedRouting', target: 'Case', build: async (_, __, values) => ({ values }) });
+  expect(result.status).toBe(422);
+  expect(result.body.errorCode).toBe('ROUTING_AUTOMATION_SWEEP_FAILED');
+  expect(result.cleanupError).toContain('Drifted fixture target: Case.');
+});
+test('routing sweep denial carries the grant vocabulary for self-heal', async () => {
+  const h = harness();
+  h.data.set('PendingServiceRouting/0JR000000000009AAA', { Id: '0JR000000000009AAA', WorkItemId: '500000000000000AAA', ServiceChannelId: '0N9000000000000EAA', RoutingType: 'SkillsBased' });
+  const request = async (path: string, method = 'GET', body?: any) => method === 'DELETE' && path.includes('/PendingServiceRouting/')
+    ? { status: 403, ok: false, body: [{ errorCode: 'INSUFFICIENT_ACCESS_OR_READONLY' }] } : h.request(path, method, body);
+  const result = await invokeRoutingContext({ ...h, request, route: h.root + '/actions/standard/skillsBasedRouting', target: 'Case', build: async (_, __, values) => ({ values }) });
+  expect(result.status).toBe(422);
+  expect(result.body.errorCode).toBe('ROUTING_SWEEP_PERMISSIONS_REQUIRED');
+  expect(result.body.message).toContain('PendingServiceRouting create/read/delete access for the execution user');
+});
+test('queue-based automation rows drift the target without a sweep delete attempt', async () => {
+  const h = harness();
+  // Harness mints channel(1)/config(2)/anchor(3): the anchor id below lets
+  // children() track the seeded row in owned like the live SOQL filter.
+  h.data.set('PendingServiceRouting/0JR000000000009AAA', { Id: '0JR000000000009AAA', WorkItemId: '001000000000003AAA', ServiceChannelId: '0N9000000000000EAA', RoutingType: 'QueueBased' });
+  const result = await invokeRoutingContext({ ...h, route: h.root + '/actions/standard/skillsBasedRouting', target: 'Case', build: async (_, __, values) => ({ values }) });
+  expect(result.status).toBe(422);
+  expect(result.body.errorCode).toBe('ROUTING_AUTOMATION_SWEEP_FAILED');
+  expect(result.body.message).toContain('queue-based rows cannot be deleted');
+  expect(result.cleanupError).toContain('Drifted fixture target: Case.');
+  expect(h.posted).toHaveLength(0);
+  // Exactly one delete (the finally-block absence pass): the pre-invoke
+  // sweep must never attempt the platform-refused queue-based delete.
+  expect(h.deleted.filter(entry => entry.endsWith('0JR000000000009AAA'))).toHaveLength(1);
+});

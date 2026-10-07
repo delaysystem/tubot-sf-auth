@@ -49,11 +49,30 @@
  * Creator/owner compares now use the auth token-path 15-char-prefix
  * semantics; genuinely foreign creators still refuse, and refused sends
  * that evidence a denial attach the planner-only grant family.
+ *
+ * Platform-managed-object fix (CLI-verified 2026-10-07 on the sweep org):
+ * the OrderSummary alert 400ed INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE on
+ * the fixture POST. Bisection proved the fault structural, not a grant
+ * gap: even the org admin faults identically on a minimal {OrderNumber}
+ * insert and on the full engine-payload replica, with zero rows created.
+ * The live describe shows OriginalOrderId (reference -> Order) and
+ * OrderLifeCycleType required (nillable=false, not defaulted) yet
+ * neither createable nor updateable, so no API caller can ever set them
+ * and the platform populates them only through its managed order
+ * lifecycle — never on direct sobject insert. The fixture builder
+ * assumes such fields are platform-computed and omits them, which
+ * guarantees the native 400 here. The lifecycle now refuses before any
+ * side effect when the live describe carries required-but-unsettable
+ * fields (EMAIL_ALERT_FIXTURE_UNBUILDABLE); no permission grant can
+ * enable direct insert on such objects. The predicate fires on none of
+ * the other alert fixture objects (Case, WebCart, et4ae5 definitions),
+ * so working alerts are unaffected.
  */
 
 import { commercialAccountLinkField, seedCommercialAccountLink, seedRequiredReferenceValues } from "./fixture-reference-seeding";
 import { denialGrantForRestOutcome, type DenialGrant } from "./permission-denial-grants";
 import { sameSalesforceId } from "./salesforce-id";
+import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -64,8 +83,8 @@ const OBJECT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
 export const EMAIL_ALERT_ACTION_TYPE = "custom/emailAlert";
-/** Family builder version: re-probe scheduled turns when this moves. */
-export const EMAIL_ALERT_BUILDER_VERSION = 1;
+/** Family builder version: re-probe scheduled turns when this moves. 2: cleanup-time owner reclaim to the verified creator before fixture deletes. */
+export const EMAIL_ALERT_BUILDER_VERSION = 2;
 /** Non-routable seed for every fixture email field (RFC 2606 `.invalid`). */
 export const EMAIL_ALERT_FIXTURE_EMAIL = "action-searcher@example.invalid";
 const EMAIL_DOMAIN = "@example.invalid";
@@ -77,6 +96,46 @@ const identity = (value: unknown): value is string => typeof value === "string" 
 const fail = (errorCode: string, message: string, extra?: Value): Result => ({
   status: 422, ok: false, body: { errorCode, message, ...extra },
 });
+
+/**
+ * Fixture-setup fault: the create was blocked by a trigger querying
+ * no-rows substrate (or a missing package object), not by the probe shape.
+ * Returns the setup token (trigger name or package) or null.
+ */
+export function emailAlertFixtureSetupFault(body: unknown): string | null {
+  const texts: string[] = [];
+  const visit = (node: unknown, depth: number): void => {
+    if (depth > 4) return;
+    if (typeof node === "string") { if (node.length > 0 && node.length <= 500) texts.push(node); return; }
+    if (Array.isArray(node)) { for (const item of node) visit(item, depth + 1); return; }
+    if (record(node)) { for (const entry of Object.values(node)) visit(entry, depth + 1); }
+  };
+  visit(body, 0);
+  const joined = texts.join("; ");
+  if (!/List has no rows for assignment to SObject|INVALID_TYPE|entity type .* does not exist/i.test(joined)) return null;
+  const trigger = joined.match(/([A-Za-z][A-Za-z0-9_]*): execution of/i)?.[1]
+    ?? joined.match(/trigger[: ]+([A-Za-z][A-Za-z0-9_]*)/i)?.[1];
+  if (trigger) return trigger;
+  const pkg = joined.match(/\b([a-z][a-z0-9]{1,15})__[A-Za-z]/)?.[1];
+  return pkg ? `package:${pkg}` : "fixture-setup";
+}
+
+/**
+ * Live executor identity from the OIDC userinfo endpoint (the token behind
+ * this request, not the stored credential row, which can name a different
+ * user). Null on any failure so callers fall back to the stored identity.
+ */
+export async function emailAlertLiveExecutorId(
+  request: (path: string, method?: string, body?: unknown) => Promise<{ status: number; ok: boolean; body: any }>,
+): Promise<string | null> {
+  try {
+    const info = await request("/services/oauth2/userinfo");
+    const id = record(info.body) ? info.body.user_id : undefined;
+    return identity(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Parse a live emailAlert route. Returns the object + alert names, or null
@@ -181,6 +240,28 @@ export function emailAlertMarkerField(describeFields: unknown): string | null {
     .sort((a, b) => rank(a) - rank(b));
   const winner = candidates.length > 0 ? candidates[0].name : null;
   return typeof winner === "string" ? winner : null;
+}
+
+/**
+ * Required-but-unsettable fields on the live describe: required
+ * (nillable=false, not defaulted, not calculated, not auto-number) yet
+ * neither createable nor updateable, so no API caller can ever set them.
+ * Mirrors the fixture builder's skip branch (`synthesizeRecordValues`
+ * omits exactly these assuming platform computation) — but on
+ * platform-managed-lifecycle objects (live evidence: OrderSummary's
+ * OriginalOrderId + OrderLifeCycleType) the platform populates them
+ * only through its managed lifecycle, never on direct sobject insert,
+ * so any direct fixture POST is guaranteed to 400. Non-empty means the
+ * alert must refuse before any side effect; no grant can fix it.
+ */
+export function emailAlertPlatformManagedRequiredFields(describeFields: unknown): string[] {
+  const fields = Array.isArray(describeFields) ? describeFields.filter(record) : [];
+  return fields.filter((field) =>
+    typeof field.name === "string" && FIELD_NAME.test(field.name) &&
+    field.nillable === false && field.defaultedOnCreate !== true &&
+    field.calculated !== true && field.autoNumber !== true &&
+    field.createable !== true && field.updateable !== true)
+    .map((field) => field.name as string);
 }
 
 /** Every email-typed field on the describe, seedable or not. */
@@ -352,9 +433,18 @@ export type EmailAlertLifecycleInput = {
   /** Live integration user id; creator/owner recipient shapes resolve to this user only. */
   selfUserId: string;
   verificationWindowMs?: number;
-  request: (path: string, method?: string, body?: any) => Promise<Result>;
+  request: (path: string, method?: string, body?: any, extraHeaders?: Record<string, string>) => Promise<Result>;
   build: (name: string, marker: string, values: Value) => Promise<{ values: Value } | { failure: Result }>;
 };
+
+/**
+ * Owned fixtures skip Case/Lead assignment rules at insert: routed fixtures
+ * land on queues the execution user cannot own, which DELETE cannot remove,
+ * so every routed row ends cleanup-unverified after a successful send. The
+ * header is a no-op on objects without assignment rules. Reclaim-after-
+ * insert stays as defense-in-depth (flow-owned fixtures, silent reverts).
+ */
+export const EMAIL_ALERT_FIXTURE_CREATE_HEADERS = { "Sforce-Auto-Assign": "FALSE" };
 
 export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInput): Promise<{
   status: number; body: any; cleanupError?: string; contextSchema?: Value; denialGrant?: DenialGrant;
@@ -387,6 +477,7 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
   }
   const marker = `EA probe ${crypto.randomUUID()}`;
   const owned: Array<{ objectName: string; id: string; markerField: string }> = [];
+  let fixtureCreatorId: string | undefined;
   let cleanupError: string | undefined;
   let outcome: Result = fail("EMAIL_ALERT_CONTEXT_UNAVAILABLE", "The owned emailAlert context could not be prepared.");
   let verified = false;
@@ -411,6 +502,12 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
         return fail("EMAIL_ALERT_FIXTURE_PERMISSIONS_REQUIRED",
           `Automatic emailAlert context requires live ${parts.objectName} create, read and delete access.`,
           { setupRequirement: `${parts.objectName} create/read/delete access for the execution user.` });
+      }
+      const unbuildable = emailAlertPlatformManagedRequiredFields(schema.body.fields);
+      if (unbuildable.length > 0) {
+        return fail("EMAIL_ALERT_FIXTURE_UNBUILDABLE",
+          `The ${parts.objectName} fixture cannot be built by direct insert: ${unbuildable.join(", ")} ${unbuildable.length === 1 ? "is" : "are"} required but no API caller can set ${unbuildable.length === 1 ? "it" : "them"}; rows on this object are created by platform automation.`,
+          { setupRequirement: `A platform-managed ${parts.objectName} creation path; no permission grant enables direct insert.`, unbuildableFields: unbuildable });
       }
       const markerOrNull = emailAlertMarkerField(schema.body.fields);
       if (!markerOrNull) {
@@ -493,9 +590,17 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
         buildMismatch = { mismatchedFields: tampered, builtFields: Object.keys(built.values) };
         return fail("EMAIL_ALERT_BUILD_UNSCOPED", "The fixture builder changed a planned ownership field.");
       }
-      const created = await request(`${root}/sobjects/${parts.objectName}`, "POST", built.values);
+      const created = await request(`${root}/sobjects/${parts.objectName}`, "POST", built.values, EMAIL_ALERT_FIXTURE_CREATE_HEADERS);
       const createdId: unknown = created.body?.id ?? created.body?.Id;
-      if (!created.ok || !identity(createdId)) return created;
+      if (!created.ok || !identity(createdId)) {
+        const setup = emailAlertFixtureSetupFault(created.body);
+        if (setup !== null) {
+          return fail("EMAIL_ALERT_FIXTURE_SETUP_REQUIRED",
+            `The owned fixture create was blocked by org setup (${setup}); the probe shape was not evaluated.`,
+            { setupRequirement: setup });
+        }
+        return created;
+      }
       ownedId = createdId;
       owned.push({ objectName: parts.objectName, id: createdId, markerField });
       const actual = await request(`${root}/sobjects/${parts.objectName}/${ownedId}`);
@@ -532,16 +637,45 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
       // the auth token path): the stored identity and the live readback
       // name the same user in different ID formats on some orgs, and a
       // strict compare falsely refuses those owned fixtures (R4: nine
-      // Case/SMS alerts refused with a matching integration user).
-      if (!sameSalesforceId(actual.body?.CreatedById, input.selfUserId)) {
+      // Case/SMS alerts refused with a matching integration user). When
+      // the stored identity mismatches, the live token identity decides:
+      // the credential row can name a different user than the executor,
+      // and a fixture the live executor just created (unique marker
+      // already matched above) is owned by construction.
+      let liveExecutor: string | null | undefined;
+      const liveExecutorId = async (): Promise<string | null> => {
+        if (liveExecutor === undefined) liveExecutor = await emailAlertLiveExecutorId(request);
+        return liveExecutor;
+      };
+      if (!sameSalesforceId(actual.body?.CreatedById, input.selfUserId) &&
+        !sameSalesforceId(actual.body?.CreatedById, await liveExecutorId())) {
         return fail("EMAIL_ALERT_RECIPIENT_UNSAFE",
           "The owned fixture creator is not the integration user; the send is refused.");
       }
       const ownerId = actual.body?.OwnerId;
       if (typeof ownerId === "string" && !sameSalesforceId(ownerId, input.selfUserId) &&
+        !sameSalesforceId(ownerId, await liveExecutorId()) &&
         recipientProof.some((entry) => entry === "owner")) {
         return fail("EMAIL_ALERT_RECIPIENT_UNSAFE",
           "The alert resolves to the record owner, who is not the integration user; the send is refused.");
+      }
+      // Queue-routed fixtures (Case assignment rules move the owned fixture
+      // to a queue on insert) are unowned for cleanup: DELETE faults
+      // INSUFFICIENT_ACCESS_OR_READONLY and the row ends cleanup-unverified
+      // after a successful send. Reclaim ownership to the verified creator
+      // (proven the integration user above) before the send, and prove the
+      // PATCH stuck on re-read: org automation can 204-accept a PATCH and
+      // silently revert it, which must refuse honestly instead of sending
+      // against a record cleanup cannot delete.
+      const creatorId = actual.body?.CreatedById;
+      if (typeof creatorId === "string") fixtureCreatorId = creatorId;
+      if (typeof ownerId === "string" && typeof creatorId === "string" && !sameSalesforceId(ownerId, creatorId)) {
+        const reclaim = await request(`${root}/sobjects/${parts.objectName}/${ownedId}`, "PATCH", { OwnerId: creatorId });
+        const reread = reclaim.ok ? await request(`${root}/sobjects/${parts.objectName}/${ownedId}`) : null;
+        if (!reclaim.ok || !reread?.ok || !record(reread.body) || !sameSalesforceId(reread.body.OwnerId, creatorId)) {
+          return fail("EMAIL_ALERT_RECLAIM_UNVERIFIED",
+            `The owned ${parts.objectName} fixture routed to an owner the integration user cannot reclaim (reclaim ${reclaim.status}); the send is refused so cleanup stays verifiable.`);
+        }
       }
       const invoked = await request(input.route, "POST", { inputs: [{ [rowIdField]: ownedId }] });
       verified = emailAlertSendAccepted(invoked.status, invoked.body);
@@ -556,6 +690,9 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
     verified = false;
   } finally {
     for (const entry of owned.slice().reverse()) {
+      if (typeof fixtureCreatorId === "string") {
+        await reclaimFixtureOwnerForDelete({ root, objectName: entry.objectName, id: entry.id, ownerId: fixtureCreatorId, request }).catch(() => null);
+      }
       await request(`${root}/sobjects/${entry.objectName}/${entry.id}`, "DELETE");
       const check = await request(`${root}/sobjects/${entry.objectName}/${entry.id}`);
       if (check.status !== 404) {

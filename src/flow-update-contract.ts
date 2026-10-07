@@ -1,3 +1,5 @@
+import { seedRequiredReferenceValues } from './fixture-reference-seeding';
+import { reclaimFixtureOwnerForDelete } from './fixture-owner-reclaim';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -45,18 +47,33 @@ export async function describeFlowUpdateContract(input: { root: string; route: s
     fixtures: [{ objectName, markerField: marker.name, fields, bindings, fixtureAccessReady: !!(described.body.createable && described.body.updateable && described.body.queryable && described.body.deletable) }], targets: [],
     automaticSteps: ['Discover typed update target and writable scalar assignments', 'Automatically run setup:context-permissions --auto-record-contracts during org provisioning, including retained-field read access', 'Discover live picklist choices', 'Create and read back an owned target', 'Invoke the existing Flow', 'Verify actual field changes', 'Delete the owned target and verify absence'] } };
 }
-export async function invokeFlowUpdateContract(input: { root: string; route: string; plan: Value; verificationWindowMs?: number;
+export async function invokeFlowUpdateContract(input: { root: string; route: string; plan: Value; verificationWindowMs?: number; userId?: string;
   request: (path: string, method?: string, body?: any) => Promise<Result>;
   build: (name: string, marker: string, values: Value) => Promise<{ values: Value } | { failure: Result }> }) {
   const { plan, request, root } = input;
   let ownedId: string | undefined, verified = false, cleanupError: string | undefined;
+  let denialGrant: Value | undefined;
   let creationAttempted = false;
   const expectedChanges: Value = {}, beforeValues: Value = {};
   let outcome: Result = { status: 422, ok: false, body: { errorCode: 'FLOW_UPDATE_CONTEXT_UNAVAILABLE', message: 'Owned update context is unavailable.' } };
   const marker = 'AS probe ' + crypto.randomUUID();
   try {
-    const built = await input.build(plan.targetObject, marker, { [plan.markerField]: marker });
-    if ('failure' in built) outcome = built.failure;
+    // Required references (Case.BusinessHoursId) seed from setup defaults; borrowed rows are never written.
+    const refSeed = await seedRequiredReferenceValues(request, root, plan.fields ?? [], { allowLiveBorrow: false });
+    const built = await input.build(plan.targetObject, marker, { ...refSeed.overrides, [plan.markerField]: marker });
+    if ('failure' in built) {
+      outcome = built.failure;
+      // Reference-target read denials (BusinessHours on a fresh org) are
+      // auto-provisionable: name the grant so denial-driven self-heal
+      // applies it and the retry seeds past the unresolved reference.
+      const unresolvedRefs = record(built.failure.body) &&
+        (built.failure.body as Value).errorCode === 'OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED';
+      if (unresolvedRefs && refSeed.readDenied.length) {
+        const target = refSeed.readDenied[0];
+        denialGrant = { family: 'object-crud', objectName: target, retryable: true,
+          requirement: `Grant the execution identity ${target} read access through the fixture permission set during org provisioning, then retry.` };
+      }
+    }
     else {
       const args: Value = Object.fromEntries(plan.omittedInputs.map((name: string) => [name, '']));
       for (const binding of plan.bindings) {
@@ -95,7 +112,13 @@ export async function invokeFlowUpdateContract(input: { root: string; route: str
         else ownedId = found.body.records[0].Id;
       }
     }
-    if (ownedId) { const path = root + '/sobjects/' + plan.targetObject + '/' + ownedId; await request(path, 'DELETE'); if ((await request(path)).status !== 404) cleanupError = 'Owned Flow update target cleanup could not be verified.'; }
+    if (ownedId) {
+      const path = root + '/sobjects/' + plan.targetObject + '/' + ownedId;
+      if (typeof input.userId === 'string') {
+        await reclaimFixtureOwnerForDelete({ root, objectName: plan.targetObject, id: ownedId, ownerId: input.userId, request }).catch(() => null);
+      }
+      await request(path, 'DELETE'); if ((await request(path)).status !== 404) cleanupError = 'Owned Flow update target cleanup could not be verified.';
+    }
   }
-  return { status: outcome.status, body: outcome.body, cleanupError, contextSchema: { ...plan, verified, mutationKind: 'update', expectedChanges, beforeValues, verificationRecordIds: ownedId ? [ownedId] : [], ownedRecords: ownedId ? [{ objectName: plan.targetObject, id: ownedId }] : [] } };
+  return { status: outcome.status, body: outcome.body, cleanupError, ...(denialGrant ? { denialGrant } : {}), contextSchema: { ...plan, verified, mutationKind: 'update', expectedChanges, beforeValues, verificationRecordIds: ownedId ? [ownedId] : [], ownedRecords: ownedId ? [{ objectName: plan.targetObject, id: ownedId }] : [], ...(denialGrant ? { denialGrant } : {}) } };
 }

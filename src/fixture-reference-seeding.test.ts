@@ -91,10 +91,17 @@ test('allowLiveBorrow:false reads no live row yet still mints single-target pare
   const targetFields = [{ name: 'Name', type: 'string', createable: true, nillable: false }];
   const request = async (path: string): Promise<any> => {
     queries.push(path);
-    // A live row exists, but the mutating-flow opt-out must never bind it.
-    if (path.includes('/query?q=')) return { status: 200, ok: true, body: { records: [{ Id: '001000000000001AAA' }] } };
+    if (path.includes('/query?q=')) {
+      const soql = decodeURIComponent(path);
+      // Org-default setup rows bind under opt-out; plain customer rows never do.
+      if (soql.includes('IsDefault=true')) return { status: 200, ok: true, body: { records: [] } };
+      return { status: 200, ok: true, body: { records: [{ Id: '001000000000001AAA' }] } };
+    }
     if (path === root + '/sobjects/Mintable__c/describe') {
       return { status: 200, ok: true, body: { createable: true, queryable: true, deletable: true, fields: targetFields } };
+    }
+    if (path === root + '/sobjects/GoneA__c/describe' || path === root + '/sobjects/GoneB__c/describe') {
+      return { status: 200, ok: true, body: { createable: false, queryable: true, deletable: true, fields: [] } };
     }
     throw Error('Unexpected request ' + path);
   };
@@ -105,8 +112,29 @@ test('allowLiveBorrow:false reads no live row yet still mints single-target pare
   expect(seed.overrides).toEqual({});
   expect(seed.mintPlans).toEqual([{ field: 'MintableId', objectName: 'Mintable__c', fields: targetFields }]);
   expect(seed.unresolved).toEqual(['PolyId']);
-  // Only the mint-target describe ran: no live row was read for binding.
-  expect(queries).toEqual([root + '/sobjects/Mintable__c/describe']);
+  // Setup-default lookups + mint-target describes only: no customer row bound.
+  expect(queries.filter((q) => q.includes('/query?q=')).every((q) => decodeURIComponent(q).includes('IsDefault=true'))).toBe(true);
+  expect(queries).toHaveLength(6);
+});
+
+test('names access-denied lookup targets for self-provisioning, never malformed filters', async () => {
+  const request = async (path: string): Promise<any> => {
+    const decoded = decodeURIComponent(path);
+    if (decoded.includes('FROM BusinessHours')) {
+      return { status: 403, ok: false, body: [{ errorCode: 'INSUFFICIENT_ACCESS_OR_READONLY' }] };
+    }
+    if (decoded.includes('FROM NoDefault__c')) {
+      return { status: 400, ok: false, body: [{ errorCode: 'INVALID_FIELD', message: 'No such column IsDefault' }] };
+    }
+    if (path.endsWith('/describe')) return { status: 200, ok: true, body: { createable: false, queryable: true, fields: [] } };
+    throw Error('Unexpected request ' + path);
+  };
+  const seed = await seedRequiredReferenceValues(request, root, [
+    ref('BusinessHoursId', ['BusinessHours']),
+    ref('OtherId', ['NoDefault__c']),
+  ], { allowLiveBorrow: false });
+  expect(seed.readDenied).toEqual(['BusinessHours']);
+  expect(seed.unresolved.sort()).toEqual(['BusinessHoursId', 'OtherId']);
 });
 
 test('runs no query without required references', async () => {
@@ -114,7 +142,7 @@ test('runs no query without required references', async () => {
   const seed = await seedRequiredReferenceValues(async () => { calls++; return { status: 200, ok: true, body: {} }; }, root, [
     { name: 'Name', type: 'string', createable: true, nillable: false },
   ]);
-  expect(seed).toEqual({ overrides: {}, unresolved: [], mintPlans: [] });
+  expect(seed).toEqual({ overrides: {}, unresolved: [], readDenied: [], mintPlans: [] });
   expect(calls).toBe(0);
 });
 

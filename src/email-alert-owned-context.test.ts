@@ -7,6 +7,7 @@ import {
   emailAlertSendAccepted,
   emailAlertExistenceRefused,
   emailAlertMarkerField,
+  emailAlertPlatformManagedRequiredFields,
   emailAlertSeedableEmailFields,
   emailAlertEmailTypedFields,
   emailAlertRecipientsAllowable,
@@ -200,18 +201,21 @@ type HarnessOptions = {
   routableEmail?: boolean; creatorMismatch?: boolean; recipientShape?: unknown;
   setLookup?: boolean; accountLink?: boolean; liveAccountId?: string;
   selfUserId?: string; creatorId?: string; sendDenial?: boolean;
+  executorId?: string | null; ownerId?: string; reclaimReverts?: boolean;
+  describeFields?: any[];
 };
 const PARENT_ID = '001000000000002AAA';
+const QUEUE_ID = '00G000000000001EAA';
 function harness(options: HarnessOptions = {}) {
   const objectName = options.customerShape ? 'sfcma__Customer__c' : OBJECT;
   const route = `${ROOT}/actions/custom/emailAlert/${objectName}/${options.customerShape ? 'sfcma__Mock_Email_Alert' : ALERT}`;
   let fixture: any = null;
   let parent: any = null;
-  const calls: Array<{ path: string; method: string; body?: any }> = [];
+  const calls: Array<{ path: string; method: string; body?: any; headers?: any }> = [];
   const posts: string[] = [];
   const result = (body: any, status = 200) => ({ body, status, ok: status < 400 });
-  const request = async (path: string, method = 'GET', body?: any) => {
-    calls.push({ path, method, body });
+  const request = async (path: string, method = 'GET', body?: any, headers?: any) => {
+    calls.push({ path, method, body, headers });
     if (method === 'GET' && path === route) {
       return result({ targetEntityName: objectName, inputs: [{ name: 'SObjectRowId', type: 'ID', required: true, maxOccurs: 1 }] });
     }
@@ -233,9 +237,9 @@ function harness(options: HarnessOptions = {}) {
       return parent ? result(parent) : result([], 404);
     }
     if (path === `${ROOT}/sobjects/${objectName}/describe`) {
-      const fields = options.customerShape
+      const fields = options.describeFields ?? (options.customerShape
         ? [{ name: 'Name', type: 'string', createable: true }]
-        : [{ name: 'Name', type: 'string', createable: true }, { name: 'sfcma__Email__c', type: 'email', createable: true }];
+        : [{ name: 'Name', type: 'string', createable: true }, { name: 'sfcma__Email__c', type: 'email', createable: true }]);
       if (options.accountLink) fields.push({ name: 'AccountId', type: 'reference', nillable: true, createable: true, referenceTo: ['Account'] });
       return result({ createable: true, deletable: true, queryable: true, fields });
     }
@@ -250,7 +254,7 @@ function harness(options: HarnessOptions = {}) {
       fixture = {
         ...body, Id: OWNED_ID,
         CreatedById: options.creatorId ?? (options.creatorMismatch ? '005000000000009AAA' : SELF),
-        OwnerId: options.creatorId ?? SELF,
+        OwnerId: options.ownerId ?? options.creatorId ?? SELF,
       };
       if (options.routableEmail) fixture.sfcma__Email__c = 'real@example.com';
       if (options.setLookup) fixture.ContactId = '003000000000001AAA';
@@ -259,6 +263,12 @@ function harness(options: HarnessOptions = {}) {
     if (path === `${ROOT}/sobjects/${objectName}/${OWNED_ID}`) {
       if (method === 'DELETE') {
         if (!options.deleteStuck) fixture = null;
+        return result(null, 204);
+      }
+      if (method === 'PATCH') {
+        // Org automation can 204-accept an ownership PATCH and silently
+        // revert it; the revert shape keeps the queue owner on re-read.
+        if (!options.reclaimReverts && fixture && typeof body?.OwnerId === 'string') fixture.OwnerId = body.OwnerId;
         return result(null, 204);
       }
       return fixture ? result(fixture) : result([], 404);
@@ -276,6 +286,10 @@ function harness(options: HarnessOptions = {}) {
         return result([{ message: 'insufficient access rights on cross reference id', errorCode: 'INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY' }], 400);
       }
       return result([{ isSuccess: true, errors: null }]);
+    }
+    if (path === '/services/oauth2/userinfo') {
+      if (options.executorId === null) return result({ error: 'forbidden' }, 403);
+      return result({ user_id: options.executorId ?? SELF });
     }
     throw new Error(`Unexpected request ${method} ${path}`);
   };
@@ -332,6 +346,37 @@ test('same user in 15- and 18-char formats passes the creator check', async () =
   expect(result.contextSchema?.verified).toBe(true);
   expect(h.posts()).toEqual(['fixture', 'send']);
   expect(h.state().fixture).toBeNull();
+});
+
+test('live executor identity decides when the stored identity mismatches', async () => {
+  // Stored row names the admin, live token runs as the creator: converts.
+  const h = harness({ selfUserId: '005000000000001AAA', creatorId: '005000000000009AAA', executorId: '005000000000009AAA' });
+  const result = await h.invoke();
+  expect(result.status).toBe(200);
+  expect(result.contextSchema?.verified).toBe(true);
+  expect(h.posts()).toEqual(['fixture', 'send']);
+  expect(h.calls().some((c) => c.path === '/services/oauth2/userinfo')).toBe(true);
+});
+
+test('foreign creators still refuse when userinfo disagrees or fails', async () => {
+  for (const options of [
+    { selfUserId: '005000000000001AAA', creatorId: '005000000000009AAA', executorId: '005000000000001AAA' },
+    { selfUserId: '005000000000001AAA', creatorId: '005000000000009AAA', executorId: null },
+  ]) {
+    const h = harness(options as HarnessOptions);
+    const result = await h.invoke();
+    expect(result.status).toBe(422);
+    expect(result.body.errorCode).toBe('EMAIL_ALERT_RECIPIENT_UNSAFE');
+    expect(h.posts()).toEqual(['fixture']);
+    expect(h.state().fixture).toBeNull();
+  }
+});
+
+test('matching stored identity skips the userinfo call', async () => {
+  const h = harness();
+  const result = await h.invoke();
+  expect(result.status).toBe(200);
+  expect(h.calls().some((c) => c.path === '/services/oauth2/userinfo')).toBe(false);
 });
 
 test('refused sends that evidence a denial attach the grant family', async () => {
@@ -480,7 +525,7 @@ test('no identity is ever fabricated', async () => {
 });
 
 test('builder version is pinned', () => {
-  expect(EMAIL_ALERT_BUILDER_VERSION).toBe(1);
+  expect(EMAIL_ALERT_BUILDER_VERSION).toBe(2);
 });
 
 const OWNER_RECIPIENTS = {
@@ -512,5 +557,78 @@ test('rowless orgs mint an owned Account parent for the send', async () => {
   const deletes = h.calls().filter((c) => c.method === 'DELETE').map((c) => c.path);
   expect(deletes).toContain(`${ROOT}/sobjects/${OBJECT}/${OWNED_ID}`);
   expect(deletes).toContain(`${ROOT}/sobjects/Account/${PARENT_ID}`);
+  expect(result.cleanupError).toBeUndefined();
+});
+
+test('queue-routed fixture is reclaimed to the creator before the send', async () => {
+  const h = harness({ ownerId: QUEUE_ID });
+  const result = await h.invoke();
+  expect(result.status).toBe(200);
+  expect(result.contextSchema?.verified).toBe(true);
+  const patch = h.calls().find((c) => c.method === 'PATCH');
+  expect(patch?.path).toBe(`${ROOT}/sobjects/${OBJECT}/${OWNED_ID}`);
+  expect(patch?.body).toEqual({ OwnerId: SELF });
+  expect(h.posts()).toEqual(['fixture', 'send']);
+  expect(result.cleanupError).toBeUndefined();
+});
+
+test('silently reverted reclaim refuses the send honestly', async () => {
+  const h = harness({ ownerId: QUEUE_ID, reclaimReverts: true });
+  const result = await h.invoke();
+  expect(result.status).toBe(422);
+  expect(result.body.errorCode).toBe('EMAIL_ALERT_RECLAIM_UNVERIFIED');
+  expect(h.posts()).toEqual(['fixture']);
+  expect(result.cleanupError).toBeUndefined();
+});
+
+test('fixture insert skips assignment rules so cleanup stays owned', async () => {
+  const h = harness();
+  const result = await h.invoke();
+  expect(result.status).toBe(200);
+  const created = h.calls().find((c) => c.method === 'POST' && c.path === `${ROOT}/sobjects/${OBJECT}`);
+  expect(created?.headers).toEqual({ 'Sforce-Auto-Assign': 'FALSE' });
+});
+
+test('platform-managed required fields name only required-but-unsettable fields', () => {
+  // Live OrderSummary shape (CLI-verified 2026-10-07): OriginalOrderId and
+  // OrderLifeCycleType are required yet neither createable nor updateable.
+  const orderSummary = [
+    { name: 'OrderNumber', type: 'string', createable: true, nillable: false, defaultedOnCreate: false, filterable: true, length: 255 },
+    { name: 'OriginalOrderId', type: 'reference', createable: false, updateable: false, nillable: false, defaultedOnCreate: false, referenceTo: ['Order'] },
+    { name: 'OrderLifeCycleType', type: 'picklist', createable: false, updateable: false, nillable: false, defaultedOnCreate: false },
+    { name: 'OwnerId', type: 'reference', createable: true, nillable: false, defaultedOnCreate: true, referenceTo: ['User'] },
+    { name: 'BillingEmailAddress', type: 'email', createable: true, nillable: true },
+  ];
+  expect(emailAlertPlatformManagedRequiredFields(orderSummary)).toEqual(['OriginalOrderId', 'OrderLifeCycleType']);
+  // Defaulted, calculated, auto-number, createable, and updateable-only
+  // fields never qualify; ordinary fixture objects come back empty.
+  const ordinary = [
+    { name: 'Name', type: 'string', createable: true, nillable: false, defaultedOnCreate: false },
+    { name: 'OwnerId', type: 'reference', createable: true, nillable: false, defaultedOnCreate: true, referenceTo: ['User'] },
+    { name: 'CaseNumber', type: 'string', createable: false, updateable: false, nillable: false, autoNumber: true },
+    { name: 'Derived__c', type: 'string', createable: false, updateable: false, nillable: false, calculated: true },
+    { name: 'SettableLater__c', type: 'reference', createable: false, updateable: true, nillable: false, referenceTo: ['Account'] },
+  ];
+  expect(emailAlertPlatformManagedRequiredFields(ordinary)).toEqual([]);
+  expect(emailAlertPlatformManagedRequiredFields(null)).toEqual([]);
+});
+
+test('platform-managed fixture object refuses before any side effect', async () => {
+  const h = harness({
+    describeFields: [
+      { name: 'OrderNumber', type: 'string', createable: true, nillable: false, defaultedOnCreate: false, filterable: true, length: 255, nameField: true },
+      { name: 'BillingEmailAddress', type: 'email', createable: true, nillable: true },
+      { name: 'OriginalOrderId', type: 'reference', createable: false, updateable: false, nillable: false, defaultedOnCreate: false, referenceTo: ['Order'] },
+      { name: 'OrderLifeCycleType', type: 'picklist', createable: false, updateable: false, nillable: false, defaultedOnCreate: false },
+    ],
+  });
+  const result = await h.invoke();
+  expect(result.status).toBe(422);
+  expect(result.body.errorCode).toBe('EMAIL_ALERT_FIXTURE_UNBUILDABLE');
+  expect(result.body.unbuildableFields).toEqual(['OriginalOrderId', 'OrderLifeCycleType']);
+  expect(result.body.setupRequirement).toMatch(/no permission grant enables direct insert/);
+  expect(h.posts()).toEqual([]);
+  expect(result.contextSchema?.verified).toBe(false);
+  expect(result.contextSchema?.ownedRecordId).toBeNull();
   expect(result.cleanupError).toBeUndefined();
 });

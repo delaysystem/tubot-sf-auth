@@ -1,4 +1,6 @@
-import { grantFamilyForCleanupDenial } from './permission-denial-grants';
+import { grantFamilyForCleanupDenial, grantFamilyForCleanupDrift } from './permission-denial-grants';
+import { reclaimFixtureOwnerForDelete } from './fixture-owner-reclaim';
+import { sameSalesforceId } from './salesforce-id';
 
 type RecordValue = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -20,6 +22,8 @@ export type CleanupDiagnosis = {
    * absence-unverified: DELETE was accepted but the record still reads
    * back after a bounded re-read (lag or residue). */
   kind: 'delete-denied' | 'absence-unverified';
+  /** Owner drifted and reclaim failed: record-access note, not object-crud grant. */
+  drifted?: boolean;
   /** Numeric platform status of the failing leg, when one was returned. */
   status?: number;
 };
@@ -34,6 +38,13 @@ export function cleanupDenialGrantNotes(diagnosis: unknown): string[] {
   for (const entry of diagnosis) {
     if (!recordEntry(entry) || entry.kind !== 'delete-denied' || typeof entry.objectName !== 'string') continue;
     if (seen.has(entry.objectName)) continue;
+    if (entry.drifted === true) {
+      const drift = grantFamilyForCleanupDrift(entry.objectName);
+      if (!drift) continue;
+      seen.add(entry.objectName);
+      notes.push(`Planner grant family ${drift.family} for ${entry.objectName}: ${drift.requirement}`);
+      continue;
+    }
     const grant = grantFamilyForCleanupDenial(entry.objectName);
     if (!grant) continue;
     seen.add(entry.objectName);
@@ -52,6 +63,8 @@ const key = (record: OwnedRecord) => `${record.objectName}:${record.id}`;
 export async function cleanupOwnedContext(input: {
   root: string; records: OwnedRecord[]; scopes: OwnershipScope[]; order: string[];
   request: (path: string, method?: string, body?: any) => Promise<Result>;
+  /** Execution identity for cleanup-time owner reclaim. */
+  reclaimOwnerId?: string;
 }): Promise<{ ownedRecords: OwnedRecord[]; cleanupError?: string; cleanupDiagnosis?: CleanupDiagnosis[] }> {
   const records = [...new Map(input.records.map(record => [key(record), record])).values()];
   const errors = new Set<string>(), actual = new Map<string, RecordValue>(), proven = new Set<string>();
@@ -94,6 +107,18 @@ export async function cleanupOwnedContext(input: {
   }
   for (const record of records) if (!proven.has(key(record)) && !absent.has(key(record))) errors.add(`Owned ${record.objectName} identity could not be proven; deletion was withheld.`);
   const ownedRecords = records.filter(record => proven.has(key(record)));
+  const drifted = new Set<string>();
+  if (typeof input.reclaimOwnerId === 'string' && identity(input.reclaimOwnerId)) {
+    for (const record of ownedRecords) {
+      const read = actual.get(key(record));
+      const owner = read?.OwnerId;
+      if (typeof owner !== 'string' || !identity(owner) || sameSalesforceId(owner, input.reclaimOwnerId)) continue;
+      try {
+        const outcome = await reclaimFixtureOwnerForDelete({ root: input.root, objectName: record.objectName, id: record.id, ownerId: input.reclaimOwnerId, request: input.request, currentOwnerId: owner });
+        if (!outcome.reclaimed) drifted.add(key(record));
+      } catch { drifted.add(key(record)); }
+    }
+  }
   const ordered = input.order.flatMap(name => ownedRecords.filter(record => record.objectName === name));
   const reread: OwnedRecord[] = [];
   for (let offset = 0; offset < ordered.length; offset += 12) {
@@ -112,7 +137,7 @@ export async function cleanupOwnedContext(input: {
       const absent = result.body.results[index * 2 + 1]?.statusCode;
       if (![204, 404].includes(deleted)) {
         errors.add(`Owned ${record.objectName} cleanup deletion returned ${statusText(deleted)}; absence was not verified.`);
-        diagnosis.push({ objectName: record.objectName, kind: 'delete-denied', ...(typeof deleted === 'number' ? { status: deleted } : {}) });
+        diagnosis.push({ objectName: record.objectName, kind: 'delete-denied', ...(drifted.has(key(record)) ? { drifted: true as const } : {}), ...(typeof deleted === 'number' ? { status: deleted } : {}) });
       } else if (absent !== 404) reread.push(record);
     });
   }
@@ -139,5 +164,13 @@ export async function cleanupOwnedContext(input: {
     diagnosis.push({ objectName: record.objectName, kind: 'absence-unverified', ...(typeof status === 'number' ? { status } : {}) });
   }
   for (const note of cleanupDenialGrantNotes(diagnosis)) errors.add(note);
+  // Drift vocabulary (fixed format): fixtures the org reassigned away
+  // from the execution identity can never clean up; callers retry the
+  // next candidate target on this signal instead of failing the sweep.
+  for (const item of diagnosis) {
+    if (item.kind === 'delete-denied' && item.drifted === true) {
+      errors.add(`Drifted fixture target: ${item.objectName}.`);
+    }
+  }
   return { ownedRecords, ...(errors.size ? { cleanupError: [...errors].join(' ') } : {}), ...(diagnosis.length ? { cleanupDiagnosis: diagnosis } : {}) };
 }

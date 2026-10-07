@@ -1,5 +1,7 @@
 import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
 import { quickActionFailurePlanners, quickActionRouteTerminal } from "./quick-action-owned-context";
+import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
+import { grantFamilyForCleanupDenial } from "./permission-denial-grants";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -9,9 +11,12 @@ type Result = { status: number; ok: boolean; body: any };
  * in-tree family version so stale searcher rows reselect): 126 seeds the
  * owned parent's required references (Case.BusinessHoursId) from live
  * lookups so chatterPost and markerless quick-action creation re-probe past
- * OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED.
+ * OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED. 127: searcher-side
+ * vocabulary-seed fallback (record actions reselect for target discovery).
+ * 128: searcher-side live-catalog top-up generalized to every record
+ * action (chatterPost reselects for target discovery).
  */
-export const REFERENCE_QUICK_ACTION_BUILDER_VERSION = 126;
+export const REFERENCE_QUICK_ACTION_BUILDER_VERSION = 128;
 const record = (v: any): v is Value => v !== null && typeof v === "object" && !Array.isArray(v);
 const safe = (v: any): v is string => typeof v === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(v);
 const id = (v: any): v is string => typeof v === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -139,9 +144,14 @@ export async function invokeReferenceQuickAction(input: {
     // Parent deletion may also delete children; verify every known owned identity independently.
     for (const item of [...owned].reverse()) {
       const path = `${root}/sobjects/${item.objectName}/${item.id}`;
+      await reclaimFixtureOwnerForDelete({ root, objectName: item.objectName, id: item.id, ownerId: input.integrationUserId, request }).catch(() => null);
       const removed = await request(path, "DELETE");
       const gone = await request(path);
-      if ((!removed.ok && removed.status !== 404) || gone.status !== 404) cleanupError = "Reference action fixture deletion could not be verified.";
+      if ((!removed.ok && removed.status !== 404) || gone.status !== 404) {
+        const grant = grantFamilyForCleanupDenial(item.objectName);
+        cleanupError = `Reference action fixture deletion could not be verified (${item.objectName}/${item.id}: delete ${removed.status}, readback ${gone.status}).` +
+          (grant ? ` Planner grant family ${grant.family} for ${item.objectName}: ${grant.requirement}` : "");
+      }
     }
   }
   const contextSchema = { source: input.source ?? "salesforce_live_quick_action_definition", ownershipKind: "parent_reference",
