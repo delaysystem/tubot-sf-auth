@@ -1054,20 +1054,25 @@ function recordDiscoveryDenial(ctx: RunContext, key: string, soql: string, statu
  * query FROM. All inputs are our own static config (validated identifier
  * out); null when the input is not discovery-backed. Pure.
  */
+function hiddenKeyForInput(bindings: SkippedStandardInputBinding[], inputName: string): string | null {
+  const use = bindings.find(b => b.match.test(inputName))?.use;
+  return use && "discovered" in use && typeof use.discovered === "string" ? use.discovered : null;
+}
+
 function discoveryObjectForMissingInput(
   bindings: SkippedStandardInputBinding[],
   discoveries: SkippedStandardDiscovery[],
   inputName: string,
-): string | null {
-  const use = bindings.find(b => b.match.test(inputName))?.use;
-  const key = use && "discovered" in use ? use.discovered : undefined;
+): { key: string; object: string } | null {
+  const key = hiddenKeyForInput(bindings, inputName);
   if (!key) return null;
   const entry = discoveries.find(d => d.key === key);
   const soql = entry && ("queryId" in entry ? entry.queryId[0]
     : "queryValue" in entry ? entry.queryValue[0]
     : "queryIdList" in entry ? entry.queryIdList[0] : undefined);
   if (!soql) return null;
-  return DISCOVERY_FROM_OBJECT.exec(soql)?.[1] ?? null;
+  const object = DISCOVERY_FROM_OBJECT.exec(soql)?.[1];
+  return object ? { key, object } : null;
 }
 
 async function runDiscoveries(ctx: RunContext): Promise<void> {
@@ -1445,8 +1450,10 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
     // single heal attempt; non-discovery inputs propose nothing.
     if (!ctx.discoveryDenial) {
       const hidden = discoveryObjectForMissingInput(spec.bindings, skippedStandardDiscoveries(ctx.family, ctx.action), planned.missing);
-      if (hidden) ctx.discoveryDenial = { family: "object-crud", objectName: hidden, retryable: true,
-        requirement: `Grant the execution identity ${hidden} read access through the fixture permission set during org provisioning, then retry.` };
+      const keyFailedAbsent = hidden !== null && ctx.discoveryFailures.some(note =>
+        note.split(":")[0] === hidden.key && note.includes(":INVALID_TYPE"));
+      if (hidden && !keyFailedAbsent) ctx.discoveryDenial = { family: "object-crud", objectName: hidden.object, retryable: true,
+        requirement: `Grant the execution identity ${hidden.object} read access through the fixture permission set during org provisioning, then retry.` };
     }
     return {
       outcome: fail(code("input_unresolved"), `No discovered live value for required input ${planned.missing}.${failures}`, {

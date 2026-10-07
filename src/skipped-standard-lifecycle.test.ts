@@ -735,6 +735,23 @@ test('rowless discovery on a required input proposes a read grant', async () => 
   expect(outcome.denialGrant).toMatchObject({ family: 'object-crud', objectName: 'Group' });
 });
 
+test('missing-object discovery proposes no grant', async () => {
+  const route = std('assignToQueue');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [{ name: 'queueId', type: 'STRING', required: true }] } }) },
+    { match: (method, path) => path.includes('/query?'),
+      respond: () => ({ status: 400, body: [{ errorCode: 'INVALID_TYPE', message: "sObject type 'Group' is not supported" }] }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'record-assignment', request: harness.request, build: harness.build,
+  });
+  expect(outcome.status).toBe(422);
+  expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_RECORD_ASSIGNMENT_INPUT_UNRESOLVED');
+  expect(outcome.body.message).toContain('Discovery failures: [queueId:400:INVALID_TYPE]');
+  expect(outcome.denialGrant).toBeUndefined();
+});
+
 test('non-discovery miss proposes no grant', async () => {
   const route = std('assignToQueue');
   const harness = scripted([
