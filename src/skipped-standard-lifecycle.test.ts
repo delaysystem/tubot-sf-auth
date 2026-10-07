@@ -695,3 +695,36 @@ test('notification prefers notification-capable channels and mints an owned end 
     { objects: ['MessagingEndUser'], parents: { ContactId: { fixture: 'Contact' }, MessagingChannelId: { discovered: 'channelId' } } },
   ]);
 });
+
+test('discovery-query denial attaches a grant on input_unresolved', async () => {
+  const route = std('assignToQueue');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [{ name: 'queueId', type: 'STRING', required: true }] } }) },
+    { match: (method, path) => path.includes('/query?'),
+      respond: () => ({ status: 403, body: [{ errorCode: 'INSUFFICIENT_ACCESS_OR_READONLY', message: 'insufficient access rights on object' }] }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'record-assignment', request: harness.request, build: harness.build,
+  });
+  expect(outcome.status).toBe(422);
+  expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_RECORD_ASSIGNMENT_INPUT_UNRESOLVED');
+  expect(outcome.denialGrant).toMatchObject({ family: 'object-crud', objectName: 'Group' });
+  expect(outcome.contextSchema).toMatchObject({ denialGrant: { family: 'object-crud', objectName: 'Group' } });
+});
+
+test('rowless discovery stays an honest miss without a grant', async () => {
+  const route = std('assignToQueue');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [{ name: 'queueId', type: 'STRING', required: true }] } }) },
+    { match: (method, path) => path.includes('/query?'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'record-assignment', request: harness.request, build: harness.build,
+  });
+  expect(outcome.status).toBe(422);
+  expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_RECORD_ASSIGNMENT_INPUT_UNRESOLVED');
+  expect(outcome.denialGrant).toBeUndefined();
+});

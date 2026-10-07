@@ -63,8 +63,10 @@ const CUSTOM_ROUTE =
  * notification templateDeveloperName binds a MessagingTemplate name.
  * 143: notification binds channelDeveloperName (capable channels first)
  * and recipientRecordId (owned end user) plus a fictional recipientPhone.
+ * 144: discovery-query denials record a grant (input_unresolved heals
+ * through provisioning instead of parking on unreadable substrate).
  */
-export const SKIPPED_STANDARD_BUILDER_VERSION = 143;
+export const SKIPPED_STANDARD_BUILDER_VERSION = 144;
 
 /** Families this engine executes: wave-2 remainder plus wave-1 owned fall-throughs. */
 export const SKIPPED_STANDARD_ENGINE_FAMILIES = [
@@ -674,6 +676,7 @@ function fallbackBindings(family: SkippedStandardEngineFamily): SkippedStandardI
 export type SkippedStandardDiscovery =
   | { key: string; queryId: string[] }
   | { key: string; queryValue: string[]; field: string }
+  | { key: string; queryIdList: string[]; limit: number }
   | { key: string; picklist: string[]; fieldMatch: RegExp; excludeValue?: string };
 
 export function skippedStandardDiscoveries(
@@ -979,6 +982,9 @@ type RunContext = {
   discovered: Record<string, string>;
   builtSObjects: Record<string, Value>;
   cleanup: Array<{ object: string; id: string; marker?: string; markerField?: string }>;
+  schedulingGrounded?: boolean;
+  /** First discovery-query denial (object-crud only); powers grant self-heal on input_unresolved. */
+  discoveryDenial?: DenialGrant;
 };
 
 function ctxCode(ctx: RunContext, reason: string): string {
@@ -1007,12 +1013,33 @@ async function describeCached(ctx: RunContext, object: string): Promise<TargetFi
   return fields;
 }
 
+const DISCOVERY_FROM_OBJECT = /\bFROM\s+([A-Za-z][A-Za-z0-9_]{1,127})/i;
+
+/**
+ * Records the first discovery-query denial so denial-driven self-heal can
+ * provision the object and re-probe. Only true denials (403 or a
+ * detector-confirmed object-crud refusal) record: empty results stay an
+ * honest miss (no substrate to grant) and missing objects/packages stay
+ * setup defects. The object comes from our own fixed SOQL (validated
+ * identifier), never from upstream text.
+ */
+function recordDiscoveryDenial(ctx: RunContext, soql: string, status: number, body: unknown): void {
+  if (ctx.discoveryDenial) return;
+  const detected = denialGrantForRestOutcome(status, body);
+  if (status !== 403 && detected?.family !== "object-crud") return;
+  const from = DISCOVERY_FROM_OBJECT.exec(soql)?.[1];
+  if (!from) return;
+  ctx.discoveryDenial = { family: "object-crud", objectName: from, retryable: true,
+    requirement: `Grant the execution identity ${from} read access through the fixture permission set during org provisioning, then retry.` };
+}
+
 async function runDiscoveries(ctx: RunContext): Promise<void> {
   for (const discovery of skippedStandardDiscoveries(ctx.family, ctx.action)) {
     if ("queryId" in discovery) {
       for (const soql of discovery.queryId) {
         const response = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(soql)}`);
-        const id = response.ok ? firstId(response.body) : null;
+        if (!response.ok) { recordDiscoveryDenial(ctx, soql, response.status, response.body); continue; }
+        const id = firstId(response.body);
         if (id) {
           ctx.discovered[discovery.key] = id;
           break;
@@ -1021,12 +1048,25 @@ async function runDiscoveries(ctx: RunContext): Promise<void> {
     } else if ("queryValue" in discovery) {
       for (const soql of discovery.queryValue) {
         const response = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(soql)}`);
-        if (!response.ok) continue;
+        if (!response.ok) { recordDiscoveryDenial(ctx, soql, response.status, response.body); continue; }
         const row = queryRows(response.body).find(
           (entry) => typeof entry[discovery.field] === "string" && (entry[discovery.field] as string).length > 0,
         );
         if (row) {
           ctx.discovered[discovery.key] = row[discovery.field] as string;
+          break;
+        }
+      }
+    } else if ("queryIdList" in discovery) {
+      for (const soql of discovery.queryIdList) {
+        const response = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(soql)}`);
+        if (!response.ok) { recordDiscoveryDenial(ctx, soql, response.status, response.body); continue; }
+        const ids = queryRows(response.body)
+          .map((entry) => entry.Id)
+          .filter((id): id is string => typeof id === "string" && SF_ID.test(id))
+          .slice(0, Math.max(1, discovery.limit));
+        if (ids.length) {
+          ctx.discovered[discovery.key] = ids.join(",");
           break;
         }
       }
@@ -2136,7 +2176,7 @@ export async function invokeSkippedStandardWithOwnedContext(
   // never applied here.
   const denialGrant = nativeActionSucceeded(outcome.status, outcome.body)
     ? null
-    : denialGrantForRestOutcome(outcome.status, outcome.body);
+    : (denialGrantForRestOutcome(outcome.status, outcome.body) ?? ctx.discoveryDenial ?? null);
   const finished = done(outcome, {
     verified: cleanupError ? false : verified,
     marker: ctx.marker,

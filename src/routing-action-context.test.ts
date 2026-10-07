@@ -169,3 +169,12 @@ test('queue-based automation rows drift the target without a sweep delete attemp
   // sweep must never attempt the platform-refused queue-based delete.
   expect(h.deleted.filter(entry => entry.endsWith('0JR000000000009AAA'))).toHaveLength(1);
 });
+test('routing prefers skills-capable targets after Case without filtering', () => {
+  const fields = [{ name: 'RelatedEntity', picklistValues: [
+    { value: 'Account', active: true }, { value: 'Contact', active: true },
+    { value: 'Case', active: true }, { value: 'Lead', active: true },
+    { value: 'Order', active: true }, { value: 'Route__c', active: true },
+  ] }];
+  expect(routingTargets(fields)).toEqual(['Case', 'Lead', 'Order', 'Route__c', 'Account', 'Contact']);
+  expect(routingTargets([])).toEqual([]);
+});

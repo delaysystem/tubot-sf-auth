@@ -16,16 +16,24 @@ type Result = { status: number; ok: boolean; body: any };
  * so the caller advances instead of failing the sweep). 128:
  * pre-invoke automation sweep (SkillsBased rows on the fresh anchor
  * are removed before invoke so skillsBasedRouting never duplicates;
- * QueueBased rows are platform-undeletable and drift the target).
+ * QueueBased rows are platform-undeletable and drift the target). 129:
+ * skills-capable targets (Lead/Order/custom) sort ahead of exotic
+ * channel targets so probes reach routable objects first.
  */
-export const ROUTING_CONTEXT_BUILDER_VERSION = 128;
+export const ROUTING_CONTEXT_BUILDER_VERSION = 129;
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
 export const ROUTING_CONTEXT_ACTIONS = ['skillsBasedRouting', 'routeWork'];
 export const ROUTING_CONTEXT_OBJECTS = ['ServiceChannel', 'QueueRoutingConfig', 'PendingServiceRouting'];
 export const routingTargets = (fields: Value[]) => {
   const options = fields.find(f => f.name === 'RelatedEntity')?.picklistValues;
   const names: string[] = Array.isArray(options) ? options.filter(v => v.active && /^[A-Za-z][A-Za-z0-9_]*$/.test(v.value)).map(v => v.value) : [];
-  return names.includes('Case') ? ['Case', ...names.filter(n => n !== 'Case')] : names;
+  // Skills-capable targets first (Case, then Lead/Order/custom): a pure
+  // preference, never a filter, so wider platform support still probes
+  // later tiers instead of verdicting early on exotic objects. Stable:
+  // picklist order survives inside each tier.
+  const tier = (name: string): number => name === 'Lead' ? 0 : name === 'Order' ? 1 : name.endsWith('__c') ? 2 : 3;
+  const rest = names.filter(n => n !== 'Case').sort((a, b) => tier(a) - tier(b));
+  return names.includes('Case') ? ['Case', ...rest] : rest;
 };
 export async function invokeRoutingContext(input: {
   root: string; route: string; target: string; verificationWindowMs?: number; userId?: string;
