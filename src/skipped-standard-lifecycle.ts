@@ -985,6 +985,8 @@ type RunContext = {
   schedulingGrounded?: boolean;
   /** First discovery-query denial (object-crud only); powers grant self-heal on input_unresolved. */
   discoveryDenial?: DenialGrant;
+  /** Per-key discovery-query failure notes (bounded); surfaced on input_unresolved. */
+  discoveryFailures: string[];
 };
 
 function ctxCode(ctx: RunContext, reason: string): string {
@@ -1023,7 +1025,8 @@ const DISCOVERY_FROM_OBJECT = /\bFROM\s+([A-Za-z][A-Za-z0-9_]{1,127})/i;
  * setup defects. The object comes from our own fixed SOQL (validated
  * identifier), never from upstream text.
  */
-function recordDiscoveryDenial(ctx: RunContext, soql: string, status: number, body: unknown): void {
+function recordDiscoveryDenial(ctx: RunContext, key: string, soql: string, status: number, body: unknown): void {
+  if (ctx.discoveryFailures.length < 6) ctx.discoveryFailures.push(`${key}:${status}`);
   if (ctx.discoveryDenial) return;
   const detected = denialGrantForRestOutcome(status, body);
   if (status !== 403 && detected?.family !== "object-crud") return;
@@ -1038,7 +1041,7 @@ async function runDiscoveries(ctx: RunContext): Promise<void> {
     if ("queryId" in discovery) {
       for (const soql of discovery.queryId) {
         const response = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(soql)}`);
-        if (!response.ok) { recordDiscoveryDenial(ctx, soql, response.status, response.body); continue; }
+        if (!response.ok) { recordDiscoveryDenial(ctx, discovery.key, soql, response.status, response.body); continue; }
         const id = firstId(response.body);
         if (id) {
           ctx.discovered[discovery.key] = id;
@@ -1048,7 +1051,7 @@ async function runDiscoveries(ctx: RunContext): Promise<void> {
     } else if ("queryValue" in discovery) {
       for (const soql of discovery.queryValue) {
         const response = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(soql)}`);
-        if (!response.ok) { recordDiscoveryDenial(ctx, soql, response.status, response.body); continue; }
+        if (!response.ok) { recordDiscoveryDenial(ctx, discovery.key, soql, response.status, response.body); continue; }
         const row = queryRows(response.body).find(
           (entry) => typeof entry[discovery.field] === "string" && (entry[discovery.field] as string).length > 0,
         );
@@ -1060,7 +1063,7 @@ async function runDiscoveries(ctx: RunContext): Promise<void> {
     } else if ("queryIdList" in discovery) {
       for (const soql of discovery.queryIdList) {
         const response = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(soql)}`);
-        if (!response.ok) { recordDiscoveryDenial(ctx, soql, response.status, response.body); continue; }
+        if (!response.ok) { recordDiscoveryDenial(ctx, discovery.key, soql, response.status, response.body); continue; }
         const ids = queryRows(response.body)
           .map((entry) => entry.Id)
           .filter((id): id is string => typeof id === "string" && SF_ID.test(id))
@@ -1400,8 +1403,9 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
     discovered: ctx.discovered,
   }, ctx.builtSObjects);
   if ("missing" in planned) {
+    const failures = ctx.discoveryFailures.length ? ` Discovery failures: [${ctx.discoveryFailures.join(",")}].` : "";
     return {
-      outcome: fail(code("input_unresolved"), `No discovered live value for required input ${planned.missing}.`, {
+      outcome: fail(code("input_unresolved"), `No discovered live value for required input ${planned.missing}.${failures}`, {
         setupRequirement: setupRequirementFor(ctx.family, planned.missing),
       }),
       verified: false,
@@ -2120,6 +2124,7 @@ export async function invokeSkippedStandardWithOwnedContext(
     discovered: {},
     builtSObjects: {},
     cleanup: [],
+    discoveryFailures: [],
   };
   let cleanupError: string | undefined;
   let outcome: Result = fail(skippedStandardCode(family, "context_unavailable"), "The owned skipped-standard context could not be prepared.");

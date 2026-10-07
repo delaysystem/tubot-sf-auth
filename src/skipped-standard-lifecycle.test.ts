@@ -709,6 +709,7 @@ test('discovery-query denial attaches a grant on input_unresolved', async () => 
   });
   expect(outcome.status).toBe(422);
   expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_RECORD_ASSIGNMENT_INPUT_UNRESOLVED');
+  expect(outcome.body.message).toContain('Discovery failures: [queueId:403]');
   expect(outcome.denialGrant).toMatchObject({ family: 'object-crud', objectName: 'Group' });
   expect(outcome.contextSchema).toMatchObject({ denialGrant: { family: 'object-crud', objectName: 'Group' } });
 });
