@@ -291,18 +291,19 @@ async function fetchBridgeCredentialUncached(
     throw new BridgeError("bridge_invalid_response", response.status);
   }
   const row = data as Record<string, unknown>;
-  const rowSecret = row.clientSecret == null ? null : row.clientSecret;
-  const rowUsername = row.integrationUsername == null ? null : row.integrationUsername;
-  const rowSandbox = row.isSandbox == null ? null : row.isSandbox;
+  const rowSecret = typeof row.clientSecret === "string" ? row.clientSecret : null;
+  const rowUsername = typeof row.integrationUsername === "string" ? row.integrationUsername : null;
+  const rowSandbox = typeof row.isSandbox === "boolean" ? row.isSandbox : null;
   if (
     !isValidInstanceUrl(row.instanceUrl) ||
     typeof row.clientId !== "string" ||
     row.clientId.length < 1 ||
     row.clientId.length > 255 ||
-    (rowSecret !== null && (typeof rowSecret !== "string" || rowSecret.length < 1 || rowSecret.length > 4096)) ||
+    (row.clientSecret != null && rowSecret === null) ||
+    (rowSecret !== null && (rowSecret.length < 1 || rowSecret.length > 4096)) ||
     !isValidBridgeSalesforceId(row.integrationUserId) ||
-    (rowSecret === null && (typeof rowUsername !== "string" || rowUsername.length < 1 || rowUsername.length > 254)) ||
-    (rowSecret === null && typeof rowSandbox !== "boolean")
+    (rowSecret === null && (rowUsername === null || rowUsername.length < 1 || rowUsername.length > 254)) ||
+    (rowSecret === null && rowSandbox === null)
   ) {
     throw new BridgeError("bridge_invalid_response", response.status);
   }

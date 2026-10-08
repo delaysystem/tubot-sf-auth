@@ -2311,24 +2311,28 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     // integrationUsername + isSandbox select the mint. Legacy registrations
     // keep the encrypted per-row client secret byte-for-byte.
     const jwtRegister = !str(body.clientSecret, 4096);
-    if (jwtRegister && (!str(body.integrationUsername, 254) || typeof body.isSandbox !== "boolean")) {
+    const regUsername = typeof body.integrationUsername === "string" ? body.integrationUsername : null;
+    const regSandbox = typeof body.isSandbox === "boolean" ? body.isSandbox : null;
+    const regClientId = typeof body.clientId === "string" ? body.clientId : null;
+    const regClientSecret = typeof body.clientSecret === "string" ? body.clientSecret : null;
+    if (jwtRegister && (!regUsername || regUsername.length < 1 || regUsername.length > 254 || regSandbox === null)) {
       return error(requestId, 400, "invalid_connection", "JWT registration requires the integration username and environment.");
     }
-    if (!jwtRegister && !str(body.clientId)) {
+    if (!jwtRegister && (!regClientId || regClientId.length > 512 || !regClientSecret || regClientSecret.length < 1 || regClientSecret.length > 4096)) {
       return error(requestId, 400, "invalid_connection", "The Salesforce connection details are incomplete or invalid.");
     }
-    const encrypted = jwtRegister ? null : await encrypt(env, body.clientSecret);
+    const encrypted = jwtRegister || !regClientSecret ? null : await encrypt(env, regClientSecret);
     const secretHash = await hash(body.channelSecret);
     const now = Math.floor(Date.now() / 1000);
     const candidate: Credential = {
       team_id: body.teamId, org_id: body.orgId, channel_id: body.channelId,
       instance_url: new URL(body.instanceUrl).origin,
-      client_id: jwtRegister ? TUBOT_CHANNEL_API_CLIENT_ID : body.clientId,
+      client_id: jwtRegister || !regClientId ? TUBOT_CHANNEL_API_CLIENT_ID : regClientId,
       client_secret_cipher: encrypted ? encrypted.cipher : null,
       client_secret_iv: encrypted ? encrypted.iv : null,
       integration_user_id: body.integrationUserId,
-      integration_username: jwtRegister ? body.integrationUsername : null,
-      is_sandbox: jwtRegister ? (body.isSandbox ? 1 : 0) : null,
+      integration_username: jwtRegister && regUsername ? regUsername : null,
+      is_sandbox: jwtRegister && regSandbox !== null ? (regSandbox ? 1 : 0) : null,
       channel_secret_hash: secretHash,
     };
     clearChannelTokens(body);
