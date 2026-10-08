@@ -3,40 +3,41 @@
 ==============================================================================
 TuBot Salesforce De-Setup (Teardown) Wizard (Zero-Mock Interactive CLI)
 ==============================================================================
-Reverses the post-install and returns the org to bare state, keeping ONLY the
-TuBot managed package installed. The wizard always lists authenticated orgs
-and requires the user to pick the target — it never auto-selects an org.
+Reverses the post-install and returns the org to bare state, removing the
+TuBot managed package itself and every related artifact. The wizard always
+lists authenticated orgs and requires the user to pick the target — it
+never auto-selects an org.
 
 Removes (with per-run confirmation):
   1. Panel-side channel + execution-user credentials (via Named Credential
      callout, before logout).
   2. tubot__Tubot_API_Channel__c records ("integration user config").
   3. Tubot_Salesforce_API_Read permission set assignments for those users.
-  4. External Client App (ECA) metadata (default Tubot_SF_Channel_API).
-     The integration API never had an ExternalCredential object: its auth
-     was this ECA plus Panel-held secrets, both removed here.
+  4. Legacy local External Client App metadata (default Tubot_SF_Channel_API).
+     Packaged ECAs are removed by the package uninstall instead.
   5. Panel login (UserExternalCredential rows plus legacy MCP token fields).
   6. Unpackaged credential definitions (repair-deployed Panel External /
      Named Credential, Panel remote site, repair permission set).
+  7. Tubot_JWT_PreAuth assignments (all users) and all unpackaged TuBot
+     permission sets.
+  8. Subscriber ECA pre-authorization policies for the packaged app.
+  9. The TuBot managed package itself (all versions found installed).
 
-Optional, explicitly opted in per run:
-  6. A MessagingChannel (--delete-channel <DeveloperName|Id>).
-
-Kept by design: the TuBot package itself (including packaged credential
-definitions, which subscriber code cannot delete), admin permission set
-assignments (needed to use Panel Settings / re-run setup), queues, and
-the MCP config row itself (tokens cleared, public config kept).
+Kept by design: MessagingChannels (and their queues) only. Everything else
+TuBot-related goes, including admin permission set assignments granted by
+setup (re-run setup to restore them).
 
 Every deletion is blind-verified by re-querying ground truth. Run with
 --inventory-only to preview without deleting anything.
 ==============================================================================
 """
 
-TEARDOWN_VERSION = "1.1.0"
+TEARDOWN_VERSION = "1.2.0"
 
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -315,24 +316,88 @@ System.debug('LIST_BODY=' + res.getBody());
         return True, []
 
 
-def resolve_messaging_channel(org: Dict[str, str], ref: str) -> Optional[Dict[str, Any]]:
-    """Resolve a MessagingChannel by Id, DeveloperName, or MasterLabel."""
-    res = run_sf([
-        "data", "query", "--query",
-        "SELECT Id, DeveloperName, MasterLabel, IsActive FROM MessagingChannel ORDER BY CreatedDate DESC",
-        "--target-org", org["target_flag"],
-    ])
-    if res["returncode"] != 0:
-        return None
-    for ch in res["data"].get("result", {}).get("records", []):
-        if ref in (ch.get("Id"), ch.get("DeveloperName"), ch.get("MasterLabel")):
-            return ch
-    return None
-
-
 # ==============================================================================
 # Deletes (each blind-verified)
 # ==============================================================================
+def list_installed_tubot_packages(org: Dict[str, str]) -> List[Dict[str, Any]]:
+    """List installed TuBot package versions (any version, beta or released)."""
+    res = run_sf(["package", "installed", "list", "--target-org", org["target_flag"]])
+    if res["returncode"] != 0:
+        log_error(f"Failed to list installed packages: {res['stderr'] or res['stdout']}")
+        sys.exit(1)
+    found = []
+    for row in res["data"].get("result", []) or []:
+        name = row.get("SubscriberPackageName") or ""
+        if "tubot" in name.lower():
+            found.append(row)
+    return found
+
+
+def list_unpackaged_tubot_permsets(org: Dict[str, str]) -> List[Dict[str, Any]]:
+    """List unpackaged (subscriber) TuBot permission sets by known names."""
+    names = ",".join(f"'{n}'" for n in UNPACKAGED_TUBOT_PERMSETS)
+    res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id, Name FROM PermissionSet WHERE Name IN ({names}) AND NamespacePrefix = null",
+        "--target-org", org["target_flag"],
+    ])
+    if res["returncode"] != 0:
+        log_error(f"Failed to query unpackaged permission sets: {res['stderr'] or res['stdout']}")
+        sys.exit(1)
+    return res["data"].get("result", {}).get("records", [])
+
+
+def list_jwt_preauth_assignments(org: Dict[str, str]) -> List[Dict[str, Any]]:
+    """List ALL Tubot_JWT_PreAuth assignments (any user)."""
+    res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id FROM PermissionSet WHERE Name = 'Tubot_JWT_PreAuth' AND NamespacePrefix = null LIMIT 1",
+        "--target-org", org["target_flag"],
+    ])
+    sets = res["data"].get("result", {}).get("records", []) if res["returncode"] == 0 else []
+    if not sets:
+        return []
+    assign_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id, AssigneeId FROM PermissionSetAssignment WHERE PermissionSetId = '{sets[0]['Id']}'",
+        "--target-org", org["target_flag"],
+    ])
+    return assign_res["data"].get("result", {}).get("records", []) if assign_res["returncode"] == 0 else []
+
+
+def find_subscriber_policies_name(org: Dict[str, str]) -> Optional[str]:
+    """Discover the subscriber ECA policies record for the packaged app.
+
+    Returns the metadata record name, or None when no subscriber policies
+    exist (already gone, e.g. removed by a package uninstall).
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with open(os.path.join(temp_dir, "sfdx-project.json"), "w") as f:
+            json.dump({
+                "packageDirectories": [{"path": "force-app", "default": True}],
+                "name": "tubot-teardown-policies", "namespace": "",
+                "sfdcLoginUrl": "https://login.salesforce.com", "sourceApiVersion": "67.0",
+            }, f)
+        os.makedirs(os.path.join(temp_dir, "force-app"), exist_ok=True)
+        res = run_sf([
+            "project", "retrieve", "start", "--metadata", "ExtlClntAppOauthConfigurablePolicies",
+            "--target-org", org["target_flag"],
+        ], cwd=temp_dir)
+        if res["returncode"] != 0:
+            return None
+        policies_dir = os.path.join(temp_dir, "force-app", "main", "default", "extlClntAppOauthPolicies")
+        if not os.path.isdir(policies_dir):
+            return None
+        for name in os.listdir(policies_dir):
+            if not name.endswith(".ecaOauthPlcy-meta.xml"):
+                continue
+            with open(os.path.join(policies_dir, name)) as f:
+                body = f.read()
+            if re.search(r"<externalClientApplication>(\w+__)?Tubot_Channel_API</externalClientApplication>", body):
+                return name[: -len(".ecaOauthPlcy-meta.xml")]
+    return None
+
+
 def _run_in_temp_project(sf_args: List[str], timeout: int = 600) -> Dict[str, Any]:
     """Run an sf project command from a minimal temp DX project directory.
 
@@ -441,7 +506,7 @@ def delete_api_channel_records(org: Dict[str, str], records: List[Dict[str, Any]
 
 
 def delete_perm_assignments(org: Dict[str, str], assignments: List[Dict[str, Any]]) -> List[str]:
-    """Delete API permission set assignments. Returns failed Ids."""
+    """Delete permission set assignments. Returns failed Ids."""
     failed: List[str] = []
     for a in assignments:
         res = run_sf([
@@ -449,7 +514,7 @@ def delete_perm_assignments(org: Dict[str, str], assignments: List[Dict[str, Any
             "--record-id", a["Id"], "--target-org", org["target_flag"],
         ])
         if res["returncode"] == 0:
-            log_success(f"Removed API permission from user {a.get('AssigneeId')}")
+            log_success(f"Removed permission from user {a.get('AssigneeId')}")
         else:
             log_warn(f"Could not remove assignment {a['Id']}: {res.get('error_msg') or res['stderr']}")
             failed.append(a["Id"])
@@ -558,37 +623,99 @@ def delete_credential_definitions(
     return failed
 
 
-def delete_messaging_channel(org: Dict[str, str], channel: Dict[str, Any]) -> str:
-    """Delete a MessagingChannel; fall back to deactivating it.
+def uninstall_package(org: Dict[str, str], version_id: str) -> bool:
+    """Uninstall one TuBot package version and verify it left the org.
 
-    Returns "deleted", "deactivated", or "failed". Salesforce often blocks
-    MessagingChannel API deletes (cross-reference protection); an inactive
-    channel is inert, so deactivation is an acceptable fallback.
+    Idempotent: already-gone counts as success. Uninstall is asynchronous
+    server-side, so completion is polled (up to ~10 minutes) rather than
+    trusted from a single response. Packaged assignments are stripped first
+    because Salesforce blocks uninstall while they exist.
     """
-    dev_name = channel.get("DeveloperName")
+    assign_res = run_sf([
+        "data", "query", "--query",
+        "SELECT Id FROM PermissionSetAssignment WHERE PermissionSet.NamespacePrefix = 'tubot'",
+        "--target-org", org["target_flag"],
+    ])
+    for assignment in assign_res["data"].get("result", {}).get("records", []):
+        run_sf([
+            "data", "delete", "record", "--sobject", "PermissionSetAssignment",
+            "--record-id", assignment["Id"], "--target-org", org["target_flag"],
+        ])
+    for req_attempt in range(3):
+        res = run_sf([
+            "package", "uninstall", "--package", version_id,
+            "--target-org", org["target_flag"], "--wait", "20",
+        ], timeout=1500)
+        blob = ((res.get("error_msg") or "") + "\n" + (res.get("stderr") or "") + "\n" + (res.get("stdout") or "")).lower()
+        if "not installed in this subscriber org" in blob:
+            log_success(f"Package version {version_id} is already gone (idempotent).")
+            return True
+        if res["returncode"] != 0:
+            log_warn(f"Package uninstall note: {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+        for poll in range(4):
+            time.sleep(30)
+            remaining = [p for p in list_installed_tubot_packages(org) if p.get("SubscriberPackageVersionId") == version_id]
+            if not remaining:
+                log_success(f"Package version {version_id} uninstalled and verified gone.")
+                return True
+        log_info(f"Uninstall request {req_attempt + 1} did not complete; retrying...")
+    log_error(f"Package version {version_id} is still installed after retries.")
+    return False
+
+
+def delete_unpackaged_permsets(org: Dict[str, str], permsets: List[Dict[str, Any]]) -> List[str]:
+    """Delete unpackaged TuBot permission sets. Returns failed names.
+
+    Refuses any namespaced (package-owned) set outright. All assignments
+    to each set are removed before the set itself is deleted.
+    """
+    failed: List[str] = []
+    for perm in permsets:
+        name = perm.get("Name") or ""
+        if "__" in name:
+            log_error(f"Refusing to delete possibly-packaged permission set '{name}'.")
+            failed.append(name)
+            continue
+        assign_res = run_sf([
+            "data", "query", "--query",
+            f"SELECT Id FROM PermissionSetAssignment WHERE PermissionSetId = '{perm['Id']}'",
+            "--target-org", org["target_flag"],
+        ])
+        for assignment in assign_res["data"].get("result", {}).get("records", []):
+            del_res = run_sf([
+                "data", "delete", "record", "--sobject", "PermissionSetAssignment",
+                "--record-id", assignment["Id"], "--target-org", org["target_flag"],
+            ])
+            if del_res["returncode"] != 0:
+                failed.append(f"assignment {assignment['Id']} ({name})")
+        res = _run_in_temp_project([
+            "project", "delete", "source",
+            "--metadata", f"PermissionSet:{name}",
+            "--target-org", org["target_flag"], "--no-prompt",
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Deleted unpackaged permission set '{name}'.")
+        else:
+            log_warn(f"Could not delete permission set '{name}': {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+            failed.append(name)
+    return failed
+
+
+def delete_subscriber_policies(org: Dict[str, str], policies_name: str) -> bool:
+    """Delete the subscriber ECA policies record for the packaged app."""
     res = _run_in_temp_project([
         "project", "delete", "source",
-        "--metadata", f"MessagingChannel:{dev_name}",
+        "--metadata", f"ExtlClntAppOauthConfigurablePolicies:{policies_name}",
         "--target-org", org["target_flag"], "--no-prompt",
     ])
     if res["returncode"] != 0:
-        log_warn(f"Channel delete note: {(res.get('error_msg') or res['stderr'] or 'unknown error')[-300:]}")
+        log_warn(f"Policies delete note: {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
     time.sleep(3)
-    if resolve_messaging_channel(org, dev_name) is None:
-        log_success(f"MessagingChannel '{dev_name}' deleted and verified gone.")
-        return "deleted"
-    log_warn(f"Salesforce blocked API delete of '{dev_name}'; deactivating instead...")
-    off = run_sf([
-        "data", "update", "record", "--sobject", "MessagingChannel",
-        "--record-id", channel["Id"], "--values", "IsActive=false",
-        "--target-org", org["target_flag"],
-    ])
-    current = resolve_messaging_channel(org, dev_name) or {}
-    if off["returncode"] == 0 and not current.get("IsActive", True):
-        log_success(f"MessagingChannel '{dev_name}' deactivated (inert).")
-        return "deactivated"
-    log_error(f"MessagingChannel '{dev_name}' is still active; remove it manually in Setup.")
-    return "failed"
+    if find_subscriber_policies_name(org) is None:
+        log_success(f"Subscriber ECA policies '{policies_name}' deleted and verified gone.")
+        return True
+    log_error(f"Subscriber ECA policies '{policies_name}' are still present.")
+    return False
 
 
 # ==============================================================================
@@ -602,13 +729,22 @@ def confirm_yes_no(text: str, default_no: bool = True) -> bool:
     return ans in ("y", "yes")
 
 
+UNPACKAGED_TUBOT_PERMSETS = [
+    "Tubot_JWT_PreAuth",
+    "Panel_Settings_Admin_Access",
+    "Panel_Messaging_Session_Admin_Access",
+    "Tubot_Channel_Connection_Admin_Access",
+    "Tubot_Salesforce_API_Read",
+]
+PACKAGED_ECA_NAMES = ["Tubot_Channel_API", "Tubot_Panel_Connection"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="TuBot Salesforce De-Setup Wizard: clean an org to bare state, keeping only the package"
+        description="TuBot Salesforce De-Setup Wizard: remove the package and all setup artifacts, keeping only MessagingChannels"
     )
     parser.add_argument("-c", "--channel", help="Limit teardown to one channel config (record Id or channel Id)")
-    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="ECA DeveloperName to remove (default: Tubot_SF_Channel_API)")
-    parser.add_argument("--delete-channel", dest="delete_channel", help="Also delete this MessagingChannel (DeveloperName, label, or Id)")
+    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="Legacy local ECA DeveloperName to remove (default: Tubot_SF_Channel_API)")
     parser.add_argument("--skip-panel", action="store_true", help="Skip Panel-side credential revocation (local cleanup only)")
     parser.add_argument("--inventory-only", action="store_true", help="List setup artifacts without deleting anything")
     parser.add_argument("--non-interactive", action="store_true", help="Skip confirmation prompts (requires --force; org selection stays interactive)")
@@ -652,10 +788,10 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
     eca_names = sorted((a.get("developerName") or "") for a in ecas) if ecas is not None else None
     target_eca_present = bool(eca_names is not None and args.app_name in eca_names)
     other_ecas = [n for n in (eca_names or []) if n != args.app_name]
-    opt_channel = resolve_messaging_channel(org, args.delete_channel) if args.delete_channel else None
-    if args.delete_channel and opt_channel is None:
-        log_error(f"Channel '{args.delete_channel}' not found; nothing deleted.")
-        sys.exit(1)
+    jwt_assignments = list_jwt_preauth_assignments(org)
+    unpackaged_permsets = list_unpackaged_tubot_permsets(org)
+    subscriber_policies = find_subscriber_policies_name(org)
+    installed_packages = list_installed_tubot_packages(org)
 
     inventory = {
         "channel_config_records": len(records),
@@ -670,7 +806,13 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         "target_eca_present": target_eca_present,
         "other_tubot_ecas": other_ecas,
         "eca_registry_known": eca_names is not None,
-        "channel_delete_target": (opt_channel or {}).get("DeveloperName") if opt_channel else None,
+        "jwt_preauth_assignments": len(jwt_assignments),
+        "unpackaged_permsets": [p.get("Name") for p in unpackaged_permsets],
+        "subscriber_policies": subscriber_policies,
+        "installed_packages": [
+            f"{p.get('SubscriberPackageName')} {p.get('SubscriberPackageVersionNumber')}"
+            for p in installed_packages
+        ],
     }
     if not args.json:
         print(f"  Channel config records (tubot__Tubot_API_Channel__c): {len(records)}")
@@ -690,8 +832,11 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         print(f"  ECA '{args.app_name}': {'present' if target_eca_present else 'absent' if eca_names is not None else 'unknown'}")
         if other_ecas:
             print(f"  Other Tubot ECAs found: {', '.join(other_ecas)}")
-        if opt_channel:
-            print(f"  MessagingChannel to delete: {opt_channel.get('MasterLabel')} ({opt_channel.get('DeveloperName')})")
+        print(f"  JWT pre-auth assignments: {len(jwt_assignments)}")
+        print(f"  Unpackaged TuBot permission sets: {', '.join(p.get('Name') for p in unpackaged_permsets) or 'none'}")
+        print(f"  Subscriber ECA policies: {subscriber_policies or 'none'}")
+        print(f"  Installed TuBot packages: {', '.join(inventory['installed_packages']) or 'none'}")
+        print("  MessagingChannels: always kept")
 
     if args.inventory_only:
         result = {"success": True, "teardown_version": TEARDOWN_VERSION, "org": org, "inventory": inventory, "deleted": {}, "failed": []}
@@ -701,11 +846,13 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
 
     nothing = (
         not records and not assignments and not cred_rows and not revoke_targets
-        and not target_eca_present and not other_ecas and opt_channel is None
+        and not target_eca_present and not other_ecas
         and not mcp_rows and not cred_defs["delete"]
+        and not jwt_assignments and not unpackaged_permsets
+        and subscriber_policies is None and not installed_packages
     )
     if nothing and eca_names is not None:
-        log_success("Org is already bare (package kept). Nothing to delete.")
+        log_success("Org is already bare (only MessagingChannels remain). Nothing to delete.")
         result = {"success": True, "teardown_version": TEARDOWN_VERSION, "org": org, "inventory": inventory, "deleted": {}, "failed": []}
         if args.json:
             print(json.dumps(result, indent=2))
@@ -720,7 +867,8 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
 
     deleted: Dict[str, Any] = {"panel_channels_revoked": [], "channel_config_records": [], "api_permission_assignments": [],
                                "ecas": [], "panel_credential_rows": [], "mcp_token_rows": [],
-                               "credential_definitions": [], "messaging_channel": None}
+                               "credential_definitions": [], "jwt_preauth_assignments": [],
+                               "unpackaged_permsets": [], "subscriber_policies": None, "packages": []}
     failed: List[str] = []
 
     # Step 3: Panel-side revocation first (needs the login still present).
@@ -751,10 +899,17 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         deleted["api_permission_assignments"] = [a["Id"] for a in assignments if a["Id"] not in failed_ids]
         failed.extend(f"assignment {i}" for i in failed_ids)
 
-    # Step 6: ECAs (target + optionally other Tubot ECAs found).
-    eca_targets = [args.app_name] if target_eca_present else []
+    # Step 6: legacy local ECAs (target + optionally other Tubot ECAs found).
+    # Packaged ECAs are skipped here: managed components cannot be metadata-
+    # deleted and are removed by the package uninstall in step 11.
+    eca_targets = [args.app_name] if target_eca_present and args.app_name not in PACKAGED_ECA_NAMES else []
+    if args.app_name in PACKAGED_ECA_NAMES and target_eca_present:
+        log_info(f"ECA '{args.app_name}' is packaged; it goes with the package uninstall.")
     if other_ecas and not args.non_interactive:
         for name in other_ecas:
+            if name in PACKAGED_ECA_NAMES:
+                log_info(f"ECA '{name}' is packaged; it goes with the package uninstall.")
+                continue
             if confirm_yes_no(f"Also delete Tubot ECA '{name}'?", default_no=True):
                 eca_targets.append(name)
     elif other_ecas:
@@ -779,20 +934,7 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         deleted["mcp_token_rows"] = [r["Id"] for r in mcp_rows if r["Id"] not in failed_mcp]
         failed.extend(f"mcp row {i}" for i in failed_mcp)
 
-    # Step 8: optional MessagingChannel delete (explicit opt-in only).
-    channel_outcome: Optional[str] = None
-    if opt_channel:
-        log_phase("Step 8: Deleting MessagingChannel (opt-in)")
-        channel_outcome = delete_messaging_channel(org, opt_channel)
-        if channel_outcome == "deleted":
-            deleted["messaging_channel"] = opt_channel.get("DeveloperName")
-        elif channel_outcome == "deactivated":
-            failed.append(
-                f"channel {opt_channel.get('DeveloperName')}: Salesforce blocked API delete "
-                "(deactivated instead; remove manually in Setup > Messaging Settings if needed)"
-            )
-        else:
-            failed.append(f"channel {opt_channel.get('DeveloperName')}")
+    # Step 8: MessagingChannels are always kept (no action).
 
     # Step 9: unpackaged credential definitions (after all Panel callouts).
     if cred_defs["delete"]:
@@ -803,8 +945,42 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         ]
         failed.extend(def_failed)
 
-    # Step 10: blind re-verification of ground truth.
-    log_phase("Step 10: Verifying bare state")
+    # Step 10: JWT pre-auth assignments, unpackaged permission sets, and
+    # subscriber ECA policies (before the uninstall so nothing subscriber-
+    # owned can block it).
+    if jwt_assignments:
+        log_phase("Step 10: Removing JWT pre-authorization assignments")
+        failed_ids = delete_perm_assignments(org, jwt_assignments)
+        deleted["jwt_preauth_assignments"] = [a["Id"] for a in jwt_assignments if a["Id"] not in failed_ids]
+        failed.extend(f"jwt assignment {i}" for i in failed_ids)
+    if unpackaged_permsets:
+        log_phase("Step 10: Deleting unpackaged TuBot permission sets")
+        perm_failed = delete_unpackaged_permsets(org, unpackaged_permsets)
+        deleted["unpackaged_permsets"] = [
+            p.get("Name") for p in unpackaged_permsets if p.get("Name") not in perm_failed
+        ]
+        failed.extend(perm_failed)
+    if subscriber_policies:
+        log_phase("Step 10: Deleting subscriber ECA policies")
+        if delete_subscriber_policies(org, subscriber_policies):
+            deleted["subscriber_policies"] = subscriber_policies
+        else:
+            failed.append(f"policies {subscriber_policies}")
+
+    # Step 11: uninstall the TuBot package itself.
+    if installed_packages:
+        log_phase("Step 11: Uninstalling the TuBot package")
+        for pkg in installed_packages:
+            version_id = pkg.get("SubscriberPackageVersionId")
+            if uninstall_package(org, version_id):
+                deleted["packages"].append(
+                    f"{pkg.get('SubscriberPackageName')} {pkg.get('SubscriberPackageVersionNumber')}"
+                )
+            else:
+                failed.append(f"package {version_id}")
+
+    # Step 12: blind re-verification of ground truth.
+    log_phase("Step 12: Verifying bare state")
     verify_failed: List[str] = []
     if list_api_channel_records(org, args.channel):
         verify_failed.append("channel config records remain")
@@ -847,19 +1023,41 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
                 verify_failed.append(f"Panel still lists channels: {', '.join(leftover)}")
             else:
                 log_success("Verified: Panel no longer lists revoked channels.")
-    if args.delete_channel:
-        current = resolve_messaging_channel(org, args.delete_channel)
-        if current is None:
-            log_success("Verified: MessagingChannel is gone.")
-        elif channel_outcome == "deactivated" and not current.get("IsActive", True):
-            log_info("Verified: MessagingChannel is inactive (manual delete noted above).")
-        else:
-            verify_failed.append(f"channel {args.delete_channel} remains")
+    if list_jwt_preauth_assignments(org):
+        verify_failed.append("JWT pre-auth assignments remain")
+    else:
+        log_success("Verified: no JWT pre-auth assignments remain.")
+    remaining_sets = list_unpackaged_tubot_permsets(org)
+    if remaining_sets:
+        verify_failed.append(
+            "unpackaged permission sets remain: " + ", ".join(p.get("Name") or "" for p in remaining_sets)
+        )
+    else:
+        log_success("Verified: no unpackaged TuBot permission sets remain.")
+    if find_subscriber_policies_name(org) is not None:
+        verify_failed.append("subscriber ECA policies remain")
+    else:
+        log_success("Verified: no subscriber ECA policies remain.")
+    remaining_pkgs = list_installed_tubot_packages(org)
+    if remaining_pkgs:
+        verify_failed.append(
+            "packages still installed: "
+            + ", ".join(p.get("SubscriberPackageVersionNumber") or "" for p in remaining_pkgs)
+        )
+    else:
+        log_success("Verified: no TuBot package installed.")
+    after_ecas = list_tubot_ecas(org)
+    after_names = [(a.get("developerName") or "") for a in after_ecas] if after_ecas is not None else []
+    leftover_ecas = [n for n in after_names if "tubot" in n.lower() or "panel_connection" in n.lower()]
+    if leftover_ecas:
+        verify_failed.append(f"TuBot ECAs still registered: {', '.join(sorted(set(leftover_ecas)))}")
+    else:
+        log_success("Verified: no TuBot ECAs remain registered.")
 
     failed.extend(verify_failed)
     ok = not failed
     if ok:
-        log_success("De-setup complete: org is bare (package kept).")
+        log_success("De-setup complete: org is bare (only MessagingChannels remain).")
     else:
         log_warn(f"De-setup finished with {len(failed)} unresolved item(s); see summary.")
 
@@ -873,14 +1071,17 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
               f"assignments={len(deleted['api_permission_assignments'])} "
               f"ecas={deleted['ecas']} credRows={len(deleted['panel_credential_rows'])} "
               f"mcpRows={len(deleted['mcp_token_rows'])} credDefs={deleted['credential_definitions']} "
-              f"channel={deleted['messaging_channel']}")
+              f"jwtAssignments={len(deleted['jwt_preauth_assignments'])} "
+              f"permsets={deleted['unpackaged_permsets']} "
+              f"policies={deleted['subscriber_policies']} "
+              f"packages={deleted['packages']}")
         if failed:
             print("  Unresolved:")
             for f in failed:
                 print(f"    - {f}")
-        print("  Kept: TuBot package (incl. packaged credential definitions), admin permission sets, queues, MCP config row.")
+        print("  Kept: MessagingChannels (+ queues) only.")
         if cred_defs["kept"]:
-            print(f"  Packaged definitions kept: {', '.join(cred_defs['kept'])}")
+            print(f"  Packaged definitions noted (removed with the package): {', '.join(cred_defs['kept'])}")
     if not ok:
         sys.exit(1)
     return result
