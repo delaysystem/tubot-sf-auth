@@ -75,10 +75,11 @@ the OAuth login/profile exchange via raw callouts allowlisted in the
 `Panel_Tubot` remote site. Subscriber orgs approve these third-party hosts
 at install time:
 
-- `panel.tubot.lat` — Panel API (active).
-- `api.axiom.co` — deprecated inactive remote site; no code references it.
-- `bt-servant-whatsapp-gateway.emalteaproductions.workers.dev` — CSP trusted
-  site for the WhatsApp gateway; no Apex callouts target it.
+- `panel.tubot.lat` — Panel API (active). This is the only third-party
+  host in the package: the deprecated Axiom remote site and the WhatsApp
+  gateway CSP trusted site were deleted from source in 1.4.0.6 (neither
+  ever shipped in a released version, so no removal entitlement was
+  needed) and verified absent from a live subscriber install.
 
 Active Panel tokens live only in External Credentials. The legacy
 `Panel_Access_Token__c`, `Panel_Refresh_Token__c`, and `Api_Token__c` fields
@@ -96,8 +97,11 @@ entitlement is granted:
   Axiom telemetry service, FLS initializer) + 3 empty test classes.
 - `HeaderCustomController` keeps its `global` REST surface, still returning
   HTTP 410 for every call.
-- `Axiom_API` remote site, inactive.
 - 3 legacy token fields, never read or written by packaged code.
+
+(Removed from this list in 1.4.0.6: the `Axiom_API` remote site and the
+WhatsApp gateway CSP trusted site — both deleted outright after confirming
+no released version contains them.)
 
 Each stub is documented in-source. File a Partner Community case for the
 removal entitlement, then delete them in a later version. The archived
