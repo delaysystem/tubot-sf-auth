@@ -117,13 +117,13 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     @track manualBackupNotes = '';
 
     @track isAuthorizingOAuth = false;
-    @track isCheckingOAuth = false;
     @track isPanelCredentialRepairNeeded = false;
-    @track manualCodeInput = '';
     activeOAuthState = '';
     authWindow = null;
     _messageListener = null;
     _pollInterval = null;
+    _pollInFlight = false;
+    _pollFailures = 0;
 
     codeVerifier = '';
 
@@ -433,19 +433,37 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     startOAuthPolling() {
         this.stopOAuthPolling();
         const startTime = Date.now();
-        const maxDurationMs = 180000;
-        this._pollInterval = setInterval(async () => {
+        const maxDurationMs = 600000;
+        this._pollFailures = 0;
+        const tick = async () => {
             if (!this.isAuthorizingOAuth || !this.activeOAuthState) {
                 this.stopOAuthPolling();
                 return;
             }
-            if (Date.now() - startTime > maxDurationMs) {
+            let popupClosed = false;
+            try {
+                popupClosed = Boolean(this.authWindow && this.authWindow.closed);
+            } catch {
+                popupClosed = false;
+            }
+            if (popupClosed) {
+                this.isAuthorizingOAuth = false;
                 this.stopOAuthPolling();
+                this.authWindow = null;
+                this.showToast('Popup closed', 'The Panel login popup was closed before approval. Click Connect with Panel to try again.', 'info');
                 return;
             }
-            if (this.isCheckingOAuth || this.isLoading) {
+            if (Date.now() - startTime > maxDurationMs) {
+                this.isAuthorizingOAuth = false;
+                this.stopOAuthPolling();
+                this.closeAuthWindow();
+                this.showToast('Authorization timed out', 'No approval arrived within 10 minutes. Click Connect with Panel to try again.', 'warning');
                 return;
             }
+            if (this._pollInFlight) {
+                return;
+            }
+            this._pollInFlight = true;
             try {
                 const result = await pollOAuthCode({
                     state: this.activeOAuthState,
@@ -457,11 +475,20 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                     this.closeAuthWindow();
                     this.showToast('OAuth Approved', 'Authorization code received. Connecting to Panel...', 'info');
                     await this.exchangeCode(result.code);
+                } else {
+                    this._pollFailures = 0;
                 }
             } catch {
-                // Silently continue polling while OAuth login is in progress
+                this._pollFailures += 1;
+                if (this._pollFailures === 5) {
+                    this.showToast('Still waiting for approval', 'Approve access in the popup. This page connects automatically once approved.', 'info');
+                }
+            } finally {
+                this._pollInFlight = false;
             }
-        }, 2000);
+        };
+        tick();
+        this._pollInterval = setInterval(tick, 2000);
     }
 
     stopOAuthPolling() {
@@ -471,50 +498,10 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         }
     }
 
-    async handleCheckOAuth() {
-        if (!this.isAuthorizingOAuth || !this.activeOAuthState || this.isCheckingOAuth) return;
-        this.isCheckingOAuth = true;
-        try {
-            const result = await pollOAuthCode({
-                state: this.activeOAuthState,
-                codeVerifier: this.codeVerifier
-            });
-            if (result?.success && result.code) {
-                this.isAuthorizingOAuth = false;
-                this.stopOAuthPolling();
-                this.closeAuthWindow();
-                this.showToast('OAuth Approved', 'Authorization code received. Connecting to Panel...', 'info');
-                await this.exchangeCode(result.code);
-            } else {
-                this.showToast('Authorization pending', 'Approve access in the popup, then check again.', 'info');
-            }
-        } catch (error) {
-            this.showToast('Authorization check failed', error.body?.message || error.message, 'error');
-        } finally {
-            this.isCheckingOAuth = false;
-        }
-    }
-
     handleCancelOAuth() {
         this.isAuthorizingOAuth = false;
         this.stopOAuthPolling();
         this.closeAuthWindow();
-    }
-
-    handleManualCodeChange(event) {
-        this.manualCodeInput = (event.target.value || '').trim();
-    }
-
-    async handleManualCodeSubmit() {
-        if (!this.manualCodeInput) {
-            this.showToast('Code Required', 'Please paste the authorization code from the popup.', 'warning');
-            return;
-        }
-        const code = this.manualCodeInput;
-        this.isAuthorizingOAuth = false;
-        this.stopOAuthPolling();
-        this.closeAuthWindow();
-        await this.exchangeCode(code);
     }
 
     async exchangeCode(code) {

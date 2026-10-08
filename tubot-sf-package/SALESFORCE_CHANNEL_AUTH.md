@@ -20,7 +20,7 @@ The JWT bearer flow pre-authorizes users through subscriber-side policy: the pol
 ## Connect Panel
 
 1. Open **Panel Settings** in Salesforce.
-2. Select **Connect with Panel (PKCE OAuth 2.0)** and complete authorization in the popup. Use the manual authorization-code fallback only if the popup does not return to Salesforce.
+2. Select **Connect with Panel (PKCE OAuth 2.0)** and complete authorization in the popup. The page polls Panel and connects automatically once approved — no further clicks needed. If the popup is closed or approval times out, simply connect again.
 3. Salesforce stores the Panel token through the package's External Credential. This login uses PKCE S256 and does not require a client secret.
 
 The package UI also includes the documented CLI/manual setup instructions for the separate PKCE Salesforce API connection used by package actions that run as the authorizing Salesforce user.

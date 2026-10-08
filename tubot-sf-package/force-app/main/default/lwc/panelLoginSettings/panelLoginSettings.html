@@ -640,7 +640,7 @@
                                         🛡️ Modern Salesforce External Credentials Framework
                                     </div>
                                     <p class="slds-text-body_small text-gray-600">
-                                        Panel login uses OAuth 2.0 PKCE (S256) with a Client ID and no client secret. Its token is secured in <code>{externalCredentialName}</code> and calls route via <code>callout:{namedCredentialName}</code>. Channel API setup uses a separate ECA consumer secret sent once to Panel.
+                                        Panel login uses OAuth 2.0 PKCE (S256) with a Client ID and no client secret. Its token is secured in <code>{externalCredentialName}</code> and calls route via <code>callout:{namedCredentialName}</code>. Channel API setup sends identity only — Panel mints short-lived JWT tokens with the packaged execution client and there is no secret to paste.
                                     </p>
                                 </div>
                                 <p class="slds-text-color_weak slds-m-bottom_small">
@@ -666,7 +666,7 @@
                                     </lightning-accordion>
                                 </template>
 
-                                <!-- Authorizing Progress & Manual Code Fallback -->
+                                <!-- Authorizing Progress (fully automatic) -->
                                 <template if:true={isAuthorizingOAuth}>
                                     <div class="slds-box slds-m-bottom_medium slds-p-around_medium text-left" style="border: 2px dashed #4f46e5; background: #eef2ff; border-radius: 8px;">
                                         <div class="slds-grid slds-grid_vertical-align-center slds-m-bottom_small">
@@ -678,19 +678,12 @@
                                                     Connecting to Panel OAuth...
                                                 </div>
                                                 <div class="slds-text-body_small text-indigo-700">
-                                                    Approve access in the popup. This page connects automatically when the popup returns; if it stays open, check authorization or enter the code below.
+                                                    Approve access in the popup. This page connects automatically once approved — no further clicks needed.
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="slds-grid slds-gutters slds-grid_vertical-align-center">
-                                            <div class="slds-col slds-size_8-of-12">
-                                                <lightning-input label="Manual Authorization Code Fallback" placeholder="Paste pnl_code_... here if needed" value={manualCodeInput} onchange={handleManualCodeChange} variant="label-hidden"></lightning-input>
-                                            </div>
-                                            <div class="slds-col slds-size_4-of-12 slds-grid slds-grid_align-end">
-                                                <lightning-button variant="neutral" label="Check Authorization" onclick={handleCheckOAuth} disabled={isCheckingOAuth} class="slds-m-right_xx-small" size="small"></lightning-button>
-                                                <lightning-button variant="brand" label="Submit Code" onclick={handleManualCodeSubmit} class="slds-m-right_xx-small" size="small"></lightning-button>
-                                                <lightning-button variant="neutral" label="Cancel" onclick={handleCancelOAuth} size="small"></lightning-button>
-                                            </div>
+                                        <div class="slds-grid slds-grid_align-end">
+                                            <lightning-button variant="neutral" label="Cancel" onclick={handleCancelOAuth} size="small"></lightning-button>
                                         </div>
                                     </div>
                                 </template>
