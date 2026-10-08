@@ -67,7 +67,7 @@ private class SimpleSetupControllerTest {
     @IsTest
     static void userStepAutoSelectsAndAssigns() {
         grantAdmin();
-        User candidate = createStandardUser('u1');
+        createStandardUser('u1');
         Test.startTest();
         Map<String, Object> result = SimpleSetupController.runStep(
             'user', new Map<String, Object>()
@@ -230,11 +230,15 @@ private class SimpleSetupControllerTest {
     @IsTest
     static void userStepRejectsStaleSelection() {
         grantAdmin();
+        // Stale selection: a real inserted user's ID with one body character
+        // flipped, so the format is valid but no candidate can match it.
+        String seedId = String.valueOf(createStandardUser('stale').Id);
+        String staleId = seedId.substring(0, 5) + 'X' + seedId.substring(6);
         Test.startTest();
         Map<String, Object> result = SimpleSetupController.runStep(
             'user',
             new Map<String, Object>{
-                'user' => new Map<String, Object>{ 'id' => '005000000000000AAA' }
+                'user' => new Map<String, Object>{ 'id' => staleId }
             }
         );
         Test.stopTest();
