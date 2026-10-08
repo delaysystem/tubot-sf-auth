@@ -28,7 +28,7 @@ The package UI also includes the documented CLI/manual setup instructions for th
 ## Connect a channel (Simple Setup)
 
 1. In **Panel Settings**, open Simple Setup and pick the Messaging Channel and the dedicated active integration user.
-2. Run the one policies command shown by the ECA step (once per org; it uses your own authenticated CLI session and applies the unpackaged pre-authorization). Re-run it after every package install or upgrade: reinstalling resets subscriber ECA policies to defaults.
+2. Run the one policies command shown by the ECA step (once per org; it uses your own authenticated CLI session and applies the unpackaged pre-authorization). Setup waits and continues by itself once detected — no re-run needed. Re-run the command after every package install or upgrade: reinstalling resets subscriber ECA policies to defaults. (Why a command at all: Salesforce exposes ECA OAuth policies as read-only everywhere except Metadata API deploy, which only an authenticated admin session can run — the package is not permitted to configure them.)
 3. Finish the wizard. Registration sends identity only (org, channel, instance URL, integration user). Panel mints a JWT token, verifies via userinfo that the grant resolves to exactly this org and user, and only then stores the mapping. Failures surface as `preauth_required` (assign `Tubot_JWT_PreAuth` and retry) or `identity_mismatch`.
 4. The wizard assigns `Tubot_Salesforce_API_Read` (API access only) to the integration user. Grant only additional object, field, and record access that the connected service requires.
 5. Use **View Tool Proxy Endpoints** to inspect the tools available for the selected channel. Disconnect a channel to revoke its registration.

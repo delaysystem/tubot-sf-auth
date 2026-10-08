@@ -81,8 +81,9 @@
                             </ul>
                             <template if:true={simpleSetupEcaGuidance}>
                                 <div class="slds-box slds-theme_shade slds-m-bottom_small">
-                                    <p class="slds-text-body_small"><strong>Pre-authorization for {simpleSetupEcaGuidance.appLabel}:</strong> run the policies command, then re-run Simple Setup:</p>
+                                    <p class="slds-text-body_small"><strong>Pre-authorization for {simpleSetupEcaGuidance.appLabel}:</strong> run the policies command — setup continues automatically once detected (Salesforce only allows this step from an authenticated admin session, so the package cannot run it for you):</p>
                                     <pre class="slds-box slds-theme_default slds-text-body_small slds-m-top_x-small"><lightning-formatted-text value={simpleSetupEcaGuidance.cliCommand}></lightning-formatted-text></pre>
+                                    <lightning-button variant="neutral" label="Copy command" icon-name="utility:copy" onclick={handleCopyPoliciesCommand} size="small" class="slds-m-top_x-small"></lightning-button>
                                 </div>
                             </template>
                             <template if:true={wizardUserOptions.length}>

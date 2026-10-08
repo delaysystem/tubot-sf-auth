@@ -124,6 +124,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     _pollInterval = null;
     _pollInFlight = false;
     _pollFailures = 0;
+    _setupWaitInterval = null;
 
     codeVerifier = '';
 
@@ -146,6 +147,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
 
     disconnectedCallback() {
         this.stopOAuthPolling();
+        this.stopSimpleSetupWait();
         if (this._messageListener) {
             window.removeEventListener('message', this._messageListener);
             this._messageListener = null;
@@ -933,7 +935,10 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             showSpinner: false
         }));
         // Server calls per display row. Every step is synchronous (the OAuth
-        // clients ship in the package, so nothing deploys or polls).
+        // clients ship in the package, so nothing deploys or polls) except
+        // the ECA step, which waits for the one policies command and then
+        // resumes automatically.
+        this.stopSimpleSetupWait();
         this.simpleSetupEcaGuidance = null;
         const chain = [
             { call: 'user', row: 'user' },
@@ -949,33 +954,31 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         if (this.selectedChannelId) {
             state.channel = { id: this.selectedChannelId };
         }
+        this.runSimpleSetupChain(chain, 0, state);
+    }
+
+    async runSimpleSetupChain(chain, startIndex, state) {
         try {
-            for (const link of chain) {
+            for (let index = startIndex; index < chain.length; index++) {
+                const link = chain[index];
                 this.setSimpleSetupStep(link.row, 'running', '');
                 const result = await runSimpleSetupStep({ step: link.call, state });
                 if (result.status === 'action-required') {
                     this.simpleSetupEcaGuidance = result.eca || null;
                     this.setSimpleSetupStep(link.row, 'action-required', result.message || '');
-                    this.simpleSetupError = result.message || 'Additional setup is required.';
-                    this.showToast('Action required', result.message || 'Run the policies command, then re-run Simple Setup.', 'warning');
+                    this.simpleSetupError = '';
+                    this.showToast('Action required', result.message || 'Run the policies command below — setup continues automatically.', 'warning');
+                    this.waitForSimpleSetupPolicies(chain, index, state);
                     return;
                 }
                 if (result.status !== 'done') {
                     throw new Error(result.message || 'Setup step failed.');
                 }
-                Object.assign(state, result.state || {});
-                if (result.user) {
-                    state.user = result.user;
-                }
-                if (result.channel) {
-                    state.channel = result.channel;
-                }
-                if (link.call === 'eca' && result.eca) {
-                    this.simpleSetupEcaGuidance = result.eca;
-                }
+                this.mergeSimpleSetupResult(state, link, result);
                 this.setSimpleSetupStep(link.row, 'done', result.message || '');
             }
             this.simpleSetupDone = true;
+            this.simpleSetupRunning = false;
             this.showToast('Simple Setup Complete', 'Channel registered and verified end to end.', 'success');
         } catch (err) {
             const message = err.body?.message || err.message || 'Simple Setup failed.';
@@ -985,8 +988,69 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                 this.setSimpleSetupStep(failedRow.key, 'failed', message);
             }
             this.showToast('Simple Setup Failed', message, 'error');
-        } finally {
             this.simpleSetupRunning = false;
+        }
+    }
+
+    mergeSimpleSetupResult(state, link, result) {
+        Object.assign(state, result.state || {});
+        if (result.user) {
+            state.user = result.user;
+        }
+        if (result.channel) {
+            state.channel = result.channel;
+        }
+        if (link.call === 'eca' && result.eca) {
+            this.simpleSetupEcaGuidance = result.eca;
+        }
+    }
+
+    waitForSimpleSetupPolicies(chain, ecaIndex, state) {
+        this.stopSimpleSetupWait();
+        this.setSimpleSetupStep(chain[ecaIndex].row, 'running', 'Waiting for the policies command…');
+        const startTime = Date.now();
+        const maxDurationMs = 600000;
+        this._setupWaitInterval = setInterval(async () => {
+            if (Date.now() - startTime > maxDurationMs) {
+                this.stopSimpleSetupWait();
+                this.simpleSetupRunning = false;
+                this.setSimpleSetupStep(chain[ecaIndex].row, 'action-required', 'Timed out waiting for the policies command.');
+                this.simpleSetupError = 'Timed out waiting for the policies command. Run it, then click Run Simple Setup to retry.';
+                this.showToast('Timed out', this.simpleSetupError, 'warning');
+                return;
+            }
+            try {
+                const result = await runSimpleSetupStep({ step: 'eca', state });
+                if (result.status === 'done') {
+                    this.stopSimpleSetupWait();
+                    this.mergeSimpleSetupResult(state, chain[ecaIndex], result);
+                    this.setSimpleSetupStep(chain[ecaIndex].row, 'done', result.message || '');
+                    this.showToast('Pre-authorization detected', 'Continuing setup automatically.', 'success');
+                    this.runSimpleSetupChain(chain, ecaIndex + 1, state);
+                }
+            } catch {
+                // Keep waiting; a failed recheck must not kill the run.
+            }
+        }, 5000);
+    }
+
+    stopSimpleSetupWait() {
+        if (this._setupWaitInterval) {
+            clearInterval(this._setupWaitInterval);
+            this._setupWaitInterval = null;
+        }
+    }
+
+    async handleCopyPoliciesCommand() {
+        const command = this.simpleSetupEcaGuidance?.cliCommand || '';
+        if (!command) {
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(command);
+            this.showToast('Copied', 'Policies command copied to clipboard.', 'success');
+        } catch {
+            this.showToast('Copy failed', 'Select the command text and copy it manually.', 'warning');
         }
     }
 

@@ -86,8 +86,8 @@ public with sharing class SimpleSetupStepRunner {
 
     // Step 3: confirm the packaged execution client is installed and the
     // subscriber pre-authorization exists (SOQL). When the pre-auth setup is
-    // missing, stop with the exact policies CLI command; re-running setup
-    // resumes after it (the user step then picks up the pre-auth assignment).
+    // missing, stop with the exact policies CLI command; the UI waits and
+    // resumes automatically once the command lands.
     public static Map<String, Object> runEcaStep(Map<String, Object> input) {
         if (!SimpleSetupEcaStep.ecaExists()) {
             return SimpleSetupInput.failed('The packaged execution client is missing. Reinstall or upgrade the TuBot package, then re-run Simple Setup.');
@@ -96,8 +96,8 @@ public with sharing class SimpleSetupStepRunner {
             return new Map<String, Object>{
                 'status' => 'action-required',
                 'message' => 'Subscriber pre-authorization is not configured yet. '
-                    + 'Run the policies command below (it uses your own authenticated session), '
-                    + 'then re-run Simple Setup.',
+                    + 'Run the policies command below (it uses your own authenticated session). '
+                    + 'Setup continues automatically once detected.',
                 'eca' => SimpleSetupEcaStep.getPoliciesGuidance()
             };
         }
