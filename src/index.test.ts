@@ -563,6 +563,70 @@ test("registration rejects a valid token issued for another org with safe diagno
   expect(writes).toBe(0);
 });
 
+test("JWT registration stores no secret and verifies via mint", async () => {
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const seenBinds: unknown[][] = [];
+  let postedGrant = "";
+  const fixtureEnv = await fixture();
+  fixtureEnv.DB.prepare = ((sql: string) => ({
+    bind: (...args: unknown[]) => ({
+      first: async () => null,
+      run: async () => {
+        if (sql.includes("INSERT INTO salesforce_auth_credential")) seenBinds.push(args);
+        return { success: true, meta: { changes: 1 } };
+      },
+    }),
+  })) as typeof fixtureEnv.DB.prepare;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith("/services/oauth2/token")) {
+      postedGrant = String(new URLSearchParams(String(init?.body)).get("grant_type"));
+      return Response.json({ access_token: "jwt-token", instance_url: "https://test.my.salesforce.com" });
+    }
+    return Response.json({ organization_id: orgId, user_id: userId });
+  }) as typeof fetch;
+  const response = await worker.fetch(await signedRequest("/internal/channels/register", {
+    instanceUrl: "https://test.my.salesforce.com",
+    integrationUserId: userId, integrationUsername: "integration@example.com", isSandbox: true,
+  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey, TUBOT_JWT_PRIVATE_KEY: privatePem } as never);
+  expect(response.status).toBe(201);
+  expect(postedGrant).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer");
+  expect(seenBinds.length).toBe(1);
+  // Bind order: team, org, channel, instance, clientId, cipher, iv, userId, username, sandbox, hash, created, updated.
+  expect(seenBinds[0][4]).toBe("3MVG97L7PWbPq6UwRxF9421lWKCBakiXaBrDfwFXOfEtvWSbrve3xGWTV18Ae_4tEtY92su8zyYWo9Fq3aczM");
+  expect(seenBinds[0][5]).toBeNull();
+  expect(seenBinds[0][6]).toBeNull();
+  expect(seenBinds[0][8]).toBe("integration@example.com");
+  expect(seenBinds[0][9]).toBe(1);
+});
+
+test("JWT registration rejects missing username or environment", async () => {
+  let writes = 0;
+  let fetches = 0;
+  const fixtureEnv = await fixture();
+  fixtureEnv.DB.prepare = ((sql: string) => ({
+    bind: (..._args: unknown[]) => ({
+      first: async () => null,
+      run: async () => {
+        if (!sql.includes("internal_nonce")) writes++;
+        return { success: true, meta: { changes: 1 } };
+      },
+    }),
+  })) as typeof fixtureEnv.DB.prepare;
+  globalThis.fetch = (async () => {
+    fetches++;
+    return Response.json({ access_token: "token" });
+  }) as typeof fetch;
+  const response = await worker.fetch(await signedRequest("/internal/channels/register", {
+    instanceUrl: "https://test.my.salesforce.com",
+    integrationUserId: userId,
+  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey } as never);
+  await expectStructuredError(response, { status: 400, error: "invalid_connection", retryable: false });
+  expect(writes).toBe(0);
+  expect(fetches).toBe(0);
+});
+
 test("channel registration requires an internal service signature", async () => {
   const fixtureEnv = await fixture();
   const response = await worker.fetch(request("/internal/channels/register", {

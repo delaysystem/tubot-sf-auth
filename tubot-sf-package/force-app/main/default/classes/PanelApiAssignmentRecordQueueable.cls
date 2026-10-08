@@ -17,6 +17,33 @@ public with sharing class PanelApiAssignmentRecordQueueable implements Queueable
     public void execute(QueueableContext queueableContext) {
         UpdateContext work = loadContext(requests);
         updateChannelReferences(work);
+        collectOrphanedAssignments(work);
+        if (work.orphanedAssignments.isEmpty()) {
+            return;
+        }
+        if (!work.channels.isEmpty()) {
+            // Mixed batch: channel updates (non-setup) already ran above, so
+            // the assignment deletes (setup) must run in their own
+            // transaction (mixed-DML rule) via a follow-up job. The follow-up
+            // finds no channels for orphan-only requests and deletes inline.
+            List<PanelApiAssignmentQueueable.Request> orphans =
+                new List<PanelApiAssignmentQueueable.Request>();
+            for (String userId : work.userIds) {
+                if (!work.usersWithChannels.contains(userId)) {
+                    orphans.add(new PanelApiAssignmentQueueable.Request(
+                        (Id) userId, 'RECORD', work.assignmentIds.get(userId)
+                    ));
+                }
+            }
+            // Never chain from tests: mixed-batch tests assert the deferred
+            // delete is pending (not flushed) and simulate the follow-up
+            // with a second direct execute, so the enqueue would only ever
+            // be unflushed litter. Production chaining is unaffected.
+            if (!Test.isRunningTest()) {
+                System.enqueueJob(new PanelApiAssignmentRecordQueueable(orphans));
+            }
+            return;
+        }
         deleteOrphanedAssignments(work);
     }
 
@@ -51,7 +78,6 @@ public with sharing class PanelApiAssignmentRecordQueueable implements Queueable
     }
 
     private static void deleteOrphanedAssignments(UpdateContext work) {
-        collectOrphanedAssignments(work);
         if (work.orphanedAssignments.isEmpty()) {
             return;
         }

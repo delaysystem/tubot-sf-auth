@@ -86,9 +86,10 @@ private class TubotSetupWizardControllerTest {
             Test.stopTest();
 
             System.assertNotEquals(null, guidance, 'Guidance should not be null.');
-            System.assertEquals('Tubot_SF_Channel_API', guidance.get('recommendedAppName'));
+            System.assertEquals('Tubot_Channel_API', guidance.get('recommendedAppName'));
             System.assert(((String) guidance.get('requiredScopes')).contains('Api'));
             System.assert(((String) guidance.get('setupUrl')).contains('ExternalClientApps'));
+            System.assert(((String) guidance.get('policiesCli')).contains('setup-eca-policies.mjs'));
         }
     }
 
@@ -133,5 +134,42 @@ private class TubotSetupWizardControllerTest {
             }
             System.assertEquals(true, exceptionThrown, 'Non-admin user should be denied access.');
         }
+    }
+
+    @IsTest
+    static void testAssignApiPermissionSetUsesOwnNamespaceCopy() {
+        // Dev orgs can hold both the packaged and unpackaged permission set.
+        // Assignment must target this code's own namespace copy: connect and
+        // prepare check the own-namespace copy, so any other pick deadlocks
+        // setup with "still being prepared".
+        User adminUser = setupAdminAccess();
+        Profile stdProfile = [SELECT Id FROM Profile WHERE Name = 'Standard User' LIMIT 1];
+        User target = new User(
+            Alias = 'nsusr', Email = 'ns-user@example.com',
+            EmailEncodingKey = 'UTF-8', LastName = 'NsUser',
+            LanguageLocaleKey = 'en_US', LocaleSidKey = 'en_US',
+            ProfileId = stdProfile.Id, TimeZoneSidKey = 'America/Los_Angeles',
+            Username = 'ns-user-' + Crypto.getRandomInteger() + '@example.com'
+        );
+        insert target;
+        System.runAs(adminUser) {
+            Test.startTest();
+            Map<String, Object> result =
+                TubotSetupWizardController.assignApiPermissionSet(target.Id);
+            Test.stopTest();
+            System.assertEquals(true, result.get('success'));
+        }
+        String here = TubotSetupWizardController.class.getName();
+        String wantNs = here.contains('.') ? here.substringBefore('.') : null;
+        List<PermissionSetAssignment> assignments = [
+            SELECT PermissionSet.NamespacePrefix FROM PermissionSetAssignment
+            WHERE AssigneeId = :target.Id
+            AND PermissionSet.Name = 'Tubot_Salesforce_API_Read'
+        ];
+        System.assertEquals(1, assignments.size(), 'Exactly one API-read copy should be assigned.');
+        System.assertEquals(
+            wantNs, assignments[0].PermissionSet.NamespacePrefix,
+            'Assignment must target this code\'s own namespace copy.'
+        );
     }
 }

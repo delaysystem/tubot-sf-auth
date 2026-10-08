@@ -81,9 +81,22 @@ public with sharing class PanelAuthSupportService {
             }
         }
         if (lastException != null) {
-            throw lastException;
+            throw mapCredentialAccessError(lastException);
         }
         return null;
+    }
+
+    // Platform credential-access failures mean the running user lacks the
+    // External Credential principal grant. Point at the in-app repair instead
+    // of surfacing only the raw platform text.
+    private static CalloutException mapCredentialAccessError(CalloutException e) {
+        String message = e.getMessage();
+        if (message != null && message.contains('couldn\'t access the credential')) {
+            return new CalloutException(
+                message + ' Open Panel Settings and run "Repair Panel credential access", then retry.'
+            );
+        }
+        return e;
     }
 
     public static Boolean checkManageTubotPermission() {

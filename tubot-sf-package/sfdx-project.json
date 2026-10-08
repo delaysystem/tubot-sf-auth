@@ -1,8 +1,8 @@
 {
   "packageDirectories": [
     {
-      "versionName": "Version 1.2",
-      "versionNumber": "1.2.0.NEXT",
+      "versionName": "Version 1.3",
+      "versionNumber": "1.4.0.NEXT",
       "ancestorVersion": "HIGHEST",
       "definitionFile": "config/project-scratch-def.json",
       "path": "force-app",
@@ -59,6 +59,12 @@
     "TuBot@1.1.0-3": "04tg5000000EzmnAAC",
     "TuBot@1.1.0-4": "04tg5000000F04XAAS",
     "TuBot@1.2.0-1": "04tg5000000F41hAAC",
-    "TuBot@1.2.0-2": "04tg5000000F489AAC"
+    "TuBot@1.2.0-2": "04tg5000000F489AAC",
+    "TuBot@1.3.0-1": "04tg5000000F8lFAAS",
+    "TuBot@1.4.0-1": "04tg5000000FBj7AAG",
+    "TuBot@1.4.0-2": "04tg5000000FBkjAAG",
+    "TuBot@1.4.0-3": "04tg5000000FBmLAAW",
+    "TuBot@1.4.0-4": "04tg5000000FCk1AAG",
+    "TuBot@1.4.0-5": "04tg5000000FCldAAG"
   }
 }

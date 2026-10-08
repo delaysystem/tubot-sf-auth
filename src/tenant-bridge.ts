@@ -5,7 +5,8 @@
  *   POST /internal/bridge/tenants    (header x-bridge-secret, body {})
  *     -> { tenants: [{ teamId, orgId, channelId }] }
  *   POST /internal/bridge/credential (header x-bridge-secret, body { teamId, orgId, channelId })
- *     -> { teamId, orgId, channelId, instanceUrl, clientId, clientSecret, integrationUserId }
+ *     -> { teamId, orgId, channelId, instanceUrl, clientId, clientSecret, integrationUserId,
+ *          integrationUsername, isSandbox } (JWT rows: clientSecret null, username/sandbox set)
  *     or 404 { error: "not_found" }
  *
  * All fetches go through the NEW_PANEL service binding. Fetched secrets are
@@ -94,8 +95,12 @@ export interface BridgeEnv {
 export interface BridgeCredentialPayload extends BridgeScope {
   instanceUrl: string;
   clientId: string;
-  clientSecret: string;
+  // Null on JWT rows: the packaged execution client holds no per-row secret.
+  clientSecret: string | null;
   integrationUserId: string;
+  // JWT rows only: the asserted username and environment bit for minting.
+  integrationUsername?: string | null;
+  isSandbox?: boolean | null;
 }
 
 export class BridgeError extends Error {
@@ -286,15 +291,18 @@ async function fetchBridgeCredentialUncached(
     throw new BridgeError("bridge_invalid_response", response.status);
   }
   const row = data as Record<string, unknown>;
+  const rowSecret = row.clientSecret == null ? null : row.clientSecret;
+  const rowUsername = row.integrationUsername == null ? null : row.integrationUsername;
+  const rowSandbox = row.isSandbox == null ? null : row.isSandbox;
   if (
     !isValidInstanceUrl(row.instanceUrl) ||
     typeof row.clientId !== "string" ||
     row.clientId.length < 1 ||
     row.clientId.length > 255 ||
-    typeof row.clientSecret !== "string" ||
-    row.clientSecret.length < 1 ||
-    row.clientSecret.length > 4096 ||
-    !isValidBridgeSalesforceId(row.integrationUserId)
+    (rowSecret !== null && (typeof rowSecret !== "string" || rowSecret.length < 1 || rowSecret.length > 4096)) ||
+    !isValidBridgeSalesforceId(row.integrationUserId) ||
+    (rowSecret === null && (typeof rowUsername !== "string" || rowUsername.length < 1 || rowUsername.length > 254)) ||
+    (rowSecret === null && typeof rowSandbox !== "boolean")
   ) {
     throw new BridgeError("bridge_invalid_response", response.status);
   }
@@ -304,7 +312,9 @@ async function fetchBridgeCredentialUncached(
     channelId: scope.channelId,
     instanceUrl: new URL(row.instanceUrl).origin,
     clientId: row.clientId,
-    clientSecret: row.clientSecret,
+    clientSecret: rowSecret,
     integrationUserId: row.integrationUserId,
+    integrationUsername: rowUsername,
+    isSandbox: rowSandbox,
   };
 }

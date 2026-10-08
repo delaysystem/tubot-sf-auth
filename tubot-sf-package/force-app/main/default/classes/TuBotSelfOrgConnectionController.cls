@@ -1,3 +1,6 @@
+// SELF_OAUTH_ROUTE is a Panel URL path, not a credential: the token match
+// on "OAUTH" is a false positive (no secret material in this class).
+@SuppressWarnings('PMD.AvoidHardcodedCredentialsInFieldDecls')
 public with sharing class TuBotSelfOrgConnectionController {
     private static final String SELF_OAUTH_ROUTE = '/api/v1/salesforce/self-oauth';
     private static final String CALLBACK_PATH = '/api/v1/salesforce/self-oauth/callback';
@@ -12,23 +15,13 @@ public with sharing class TuBotSelfOrgConnectionController {
         }
     }
 
-    private static String getClientId(MCP_Config__c config) {
-        if (config == null || String.isBlank(config.Self_Org_ECA_Client_Id__c)) {
-            return null;
-        }
-        return config.Self_Org_ECA_Client_Id__c.trim();
-    }
-
     @AuraEnabled
     public static Map<String, Object> getConnectionStatus() {
         requireConnectionPermission();
-        MCP_Config__c config = getOrgConfig();
-        Boolean configured = String.isNotBlank(getClientId(config));
-        Map<String, Object> result = new Map<String, Object>{ 'configured' => configured, 'connected' => false };
-        if (!configured) {
-            result.put('message', 'Run the PKCE setup command or complete the manual External Client App setup.');
-            return result;
-        }
+        // The Panel-connection client ships in the package (TuBot Panel
+        // Connection, global consumer): no per-org ECA setup exists, so the
+        // connection is always "configured" and only the Panel link varies.
+        Map<String, Object> result = new Map<String, Object>{ 'configured' => true, 'connected' => false };
 
         Map<String, Object> panelStatus = PanelAuthController.getPanelAuthStatus();
         if (!(Boolean) panelStatus.get('isConnected')) {
@@ -54,13 +47,11 @@ public with sharing class TuBotSelfOrgConnectionController {
     public static String getAuthorizationUrl() {
         requireConnectionPermission();
         MCP_Config__c config = getOrgConfig();
-        String clientId = getClientId(config);
-        if (String.isBlank(clientId)) {
-            throw new AuraHandledException('Complete the PKCE External Client App setup before connecting this Salesforce org.');
-        }
         String panelBaseUrl = PanelBaseUrlResolver.resolve(config);
         requireConnectedPanelAdministrator();
-        return requestAuthorizationUrl(panelBaseUrl, clientId);
+        // Panel holds the packaged global consumer key: the org sends only
+        // its own identity, never any client credential.
+        return requestAuthorizationUrl(panelBaseUrl);
     }
 
     private static void requireConnectedPanelAdministrator() {
@@ -70,13 +61,12 @@ public with sharing class TuBotSelfOrgConnectionController {
         }
     }
 
-    private static String requestAuthorizationUrl(String panelBaseUrl, String clientId) {
+    private static String requestAuthorizationUrl(String panelBaseUrl) {
         String callbackUrl = panelBaseUrl + CALLBACK_PATH;
         String body = JSON.serialize(new Map<String, Object>{
             'orgId' => UserInfo.getOrganizationId(),
             'instanceUrl' => Url.getOrgDomainUrl().toExternalForm(),
             'salesforceUserId' => UserInfo.getUserId(),
-            'clientId' => clientId,
             'redirectUri' => callbackUrl
         });
         HttpResponse response = PanelAuthSupportService.executePanelCallout(SELF_OAUTH_ROUTE, 'POST', body);

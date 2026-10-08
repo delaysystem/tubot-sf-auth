@@ -104,7 +104,8 @@ public with sharing class PanelSalesforceChannelSupportService {
             'credential_key_missing' => 'The auth service encryption key is missing. Contact the service administrator.',
             'credential_key_invalid' => 'The auth service encryption key is invalid. Contact the service administrator.',
             'auth_service_unavailable' => 'The auth service is temporarily unavailable; retry in a moment.',
-            'internal_error' => 'The auth service could not complete setup. Retry; contact support if it repeats.'
+            'internal_error' => 'The auth service could not complete setup. Retry; contact support if it repeats.',
+            'deprecated' => 'This Panel API is retired (410 Gone): channel management moved to the new Panel. Reconnect the package to the new Panel URL, then retry.'
         };
         return guidance.containsKey(code) ? guidance.get(code) : 'Check Panel login and Salesforce ECA setup, then retry.';
     }

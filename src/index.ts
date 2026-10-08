@@ -1,4 +1,6 @@
+import { buildJwtAssertion, JWT_BEARER_GRANT_TYPE, TUBOT_CHANNEL_API_CLIENT_ID } from "./jwt";
 import { extractTrailingResponseDocuments, parseSalesforceResponseJson } from './salesforce-response-json';
+import { isCompoundParent, isNameMarkerField } from "./describe-marker-field";
 import { invokeOwnedRecordAction } from './record-action-context';
 import { invokeAppointmentInvitation } from "./appointment-invitation-context";
 import { invokeAppointmentCancellation } from "./appointment-cancel-context";
@@ -103,6 +105,8 @@ export interface AuthEnv {
   NEW_PANEL?: Fetcher;
   /** Shared secret presented to the new panel bridge, configured as a Worker secret. Absent in tests. */
   BRIDGE_SHARED_SECRET?: string;
+  /** RSA private key (PKCS#8 PEM) for the packaged execution client's JWT bearer flow, configured as a Worker secret. Absent in tests. */
+  TUBOT_JWT_PRIVATE_KEY?: string;
   RETRIEVE64?: {
     getCallableToolUrls?(params: any): Promise<string[]>;
     registerDefinition?(params: any): Promise<any>;
@@ -274,6 +278,10 @@ async function decryptValue(env: AuthEnv, cipher: string, iv: string): Promise<s
   return new TextDecoder().decode(plain);
 }
 async function decrypt(env: AuthEnv, row: Credential): Promise<string> {
+  // JWT rows carry no per-row secret: callers must branch on jwtRow() first.
+  if (row.client_secret_cipher == null || row.client_secret_iv == null) {
+    throw authFailure(500, "credential_misconfigured", "Credential misconfigured. Reconnect the channel.", false);
+  }
   return decryptValue(env, row.client_secret_cipher, row.client_secret_iv);
 }
 async function hash(v: string): Promise<string> {
@@ -289,8 +297,15 @@ function equalHash(a: string, b: string): boolean {
 function cacheKey(row: Credential): string {
   // The random IV changes for every registration, including rotations of the
   // same client secret. Cached tokens can never cross credential versions.
+  // JWT rows carry no per-row secret: the asserted username scopes the cache.
+  const version = row.client_secret_iv ?? `jwt:${row.integration_username ?? ""}`;
   return [row.team_id, row.org_id, row.channel_id, row.instance_url,
-    row.client_id, row.client_secret_iv, row.channel_secret_hash].join("\u0000");
+    row.client_id, version, row.channel_secret_hash].join("\u0000");
+}
+
+function jwtRow(row: Credential): row is Credential & { integration_username: string; is_sandbox: number } {
+  return typeof row.integration_username === "string" && row.integration_username.length > 0 &&
+    (row.is_sandbox === 0 || row.is_sandbox === 1);
 }
 function clearChannelTokens(k: Key): void {
   const prefix = [k.teamId, k.orgId, k.channelId].join("\u0000") + "\u0000";
@@ -678,16 +693,18 @@ async function resolveBridgeCredential(env: AuthEnv, scope: Key): Promise<Creden
   }
   if (!remote) return null;
   try {
-    const encrypted = await encrypt(env, remote.clientSecret);
+    const encrypted = remote.clientSecret == null ? null : await encrypt(env, remote.clientSecret);
     return {
       team_id: remote.teamId,
       org_id: remote.orgId,
       channel_id: remote.channelId,
       instance_url: remote.instanceUrl,
       client_id: remote.clientId,
-      client_secret_cipher: encrypted.cipher,
-      client_secret_iv: encrypted.iv,
+      client_secret_cipher: encrypted ? encrypted.cipher : null,
+      client_secret_iv: encrypted ? encrypted.iv : null,
       integration_user_id: remote.integrationUserId,
+      integration_username: remote.integrationUsername ?? null,
+      is_sandbox: remote.isSandbox == null ? null : (remote.isSandbox ? 1 : 0),
       channel_secret_hash: await hash(
         ["bridge-ephemeral", remote.teamId, remote.orgId, remote.channelId].join("\u0000")),
     };
@@ -817,10 +834,27 @@ export async function token(env: AuthEnv, row: Credential): Promise<Token> {
 }
 
 async function fetchToken(env: AuthEnv, row: Credential, id: string): Promise<Token> {
-  const form = new URLSearchParams({
-    grant_type: "client_credentials", client_id: row.client_id,
-    client_secret: await decrypt(env, row),
-  });
+  // JWT rows (packaged execution client): mint a signed assertion for the
+  // pre-authorized integration username. Legacy rows keep the per-row
+  // client-secret grant byte-for-byte.
+  let form: URLSearchParams;
+  if (jwtRow(row)) {
+    if (!env.TUBOT_JWT_PRIVATE_KEY) {
+      throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
+    }
+    let assertion: string;
+    try {
+      assertion = await buildJwtAssertion(env.TUBOT_JWT_PRIVATE_KEY, row.integration_username, row.is_sandbox === 1);
+    } catch {
+      throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
+    }
+    form = new URLSearchParams({ grant_type: JWT_BEARER_GRANT_TYPE, assertion });
+  } else {
+    form = new URLSearchParams({
+      grant_type: "client_credentials", client_id: row.client_id,
+      client_secret: await decrypt(env, row),
+    });
+  }
   let response: Response;
   try {
     response = await fetch(row.instance_url + "/services/oauth2/token", {
@@ -842,6 +876,9 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string): Promise<To
     }
     if (oauthCode === "invalid_client") {
       throw authFailure(422, "salesforce_invalid_client_credentials", "Salesforce rejected the ECA consumer key or secret. Check both values and retry.");
+    }
+    if (oauthCode === "invalid_app_access" || (jwtRow(row) && oauthCode === "invalid_grant")) {
+      throw authFailure(422, "salesforce_preauth_required", "The integration user is not pre-authorized for the packaged execution client. Run setup-eca-policies.mjs, assign the TuBot JWT PreAuth set, and retry.");
     }
     if (["invalid_grant", "unauthorized_client", "unsupported_grant_type"].includes(oauthCode)) {
       throw authFailure(422, "salesforce_oauth_not_configured", "Salesforce rejected the client credentials setup. Check that the ECA is active, client credentials flow is enabled, and the Run As user is configured.");
@@ -877,7 +914,9 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string): Promise<To
   }
   if (!object(identity) || !sameSalesforceId(identity.organization_id, row.org_id) ||
       !sameSalesforceId(identity.user_id, row.integration_user_id)) {
-    throw authFailure(422, "salesforce_identity_mismatch", "The ECA credentials belong to a different Salesforce org or Run As user. Check the selected org and integration user.");
+    throw authFailure(422, "salesforce_identity_mismatch", jwtRow(row)
+      ? "The JWT grant resolved to a different Salesforce org or user. Check the selected org and integration username."
+      : "The ECA credentials belong to a different Salesforce org or Run As user. Check the selected org and integration user.");
   }
   const seconds = typeof data.expires_in === "number" && data.expires_in > 0
     ? Math.min(data.expires_in, 300) : 120;
@@ -2266,32 +2305,49 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
 
   if (path === "/internal/channels/register" && request.method === "POST") {
     if (!str(body.instanceUrl) || !validInstanceUrl(body.instanceUrl) ||
-        !str(body.clientId) || !str(body.clientSecret, 4096) ||
         !str(body.integrationUserId, 128) || !str(body.channelSecret) ||
         body.channelSecret.length < 32) return error(requestId, 400, "invalid_connection", "The Salesforce connection details are incomplete or invalid.");
-    const encrypted = await encrypt(env, body.clientSecret);
+    // JWT registrations (packaged execution client) carry no per-row secret:
+    // integrationUsername + isSandbox select the mint. Legacy registrations
+    // keep the encrypted per-row client secret byte-for-byte.
+    const jwtRegister = !str(body.clientSecret, 4096);
+    if (jwtRegister && (!str(body.integrationUsername, 254) || typeof body.isSandbox !== "boolean")) {
+      return error(requestId, 400, "invalid_connection", "JWT registration requires the integration username and environment.");
+    }
+    if (!jwtRegister && !str(body.clientId)) {
+      return error(requestId, 400, "invalid_connection", "The Salesforce connection details are incomplete or invalid.");
+    }
+    const encrypted = jwtRegister ? null : await encrypt(env, body.clientSecret);
     const secretHash = await hash(body.channelSecret);
     const now = Math.floor(Date.now() / 1000);
     const candidate: Credential = {
       team_id: body.teamId, org_id: body.orgId, channel_id: body.channelId,
-      instance_url: new URL(body.instanceUrl).origin, client_id: body.clientId,
-      client_secret_cipher: encrypted.cipher, client_secret_iv: encrypted.iv,
-      integration_user_id: body.integrationUserId, channel_secret_hash: secretHash,
+      instance_url: new URL(body.instanceUrl).origin,
+      client_id: jwtRegister ? TUBOT_CHANNEL_API_CLIENT_ID : body.clientId,
+      client_secret_cipher: encrypted ? encrypted.cipher : null,
+      client_secret_iv: encrypted ? encrypted.iv : null,
+      integration_user_id: body.integrationUserId,
+      integration_username: jwtRegister ? body.integrationUsername : null,
+      is_sandbox: jwtRegister ? (body.isSandbox ? 1 : 0) : null,
+      channel_secret_hash: secretHash,
     };
     clearChannelTokens(body);
-    // Prove both that the credentials work and that Salesforce issued them for
-    // this org and the configured Run As user before making the mapping durable.
+    // Prove both that the grant works and that Salesforce issued the token
+    // for this org and the configured user before making the mapping durable.
     await token(env, candidate);
     await env.DB.prepare(`INSERT INTO salesforce_auth_credential
-      (team_id,org_id,channel_id,instance_url,client_id,client_secret_cipher,client_secret_iv,integration_user_id,channel_secret_hash,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      (team_id,org_id,channel_id,instance_url,client_id,client_secret_cipher,client_secret_iv,integration_user_id,integration_username,is_sandbox,channel_secret_hash,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET
       instance_url=excluded.instance_url,client_id=excluded.client_id,
       client_secret_cipher=excluded.client_secret_cipher,client_secret_iv=excluded.client_secret_iv,
-      integration_user_id=excluded.integration_user_id,channel_secret_hash=excluded.channel_secret_hash,
+      integration_user_id=excluded.integration_user_id,integration_username=excluded.integration_username,
+      is_sandbox=excluded.is_sandbox,channel_secret_hash=excluded.channel_secret_hash,
       updated_at=excluded.updated_at`).bind(
       body.teamId, body.orgId, body.channelId, candidate.instance_url,
-      body.clientId, encrypted.cipher, encrypted.iv, body.integrationUserId, secretHash, now, now,
+      candidate.client_id, candidate.client_secret_cipher, candidate.client_secret_iv,
+      body.integrationUserId, candidate.integration_username ?? null, candidate.is_sandbox ?? null,
+      secretHash, now, now,
     ).run();
     return json({ ok: true, requestId }, requestId, 201);
   }

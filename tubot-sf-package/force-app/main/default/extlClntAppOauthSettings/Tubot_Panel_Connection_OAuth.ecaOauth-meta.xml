@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtlClntAppOauthSettings xmlns="http://soap.sforce.com/2006/04/metadata">
+    <commaSeparatedOauthScopes>Api, RefreshToken, OpenID</commaSeparatedOauthScopes>
+    <externalClientApplication>Tubot_Panel_Connection</externalClientApplication>
+    <isFirstPartyAppEnabled>false</isFirstPartyAppEnabled>
+    <label>TuBot Panel Connection OAuth</label>
+    <oauthLink>00Dg500000FHRCs:888g5000000x8Hh</oauthLink>
+</ExtlClntAppOauthSettings>

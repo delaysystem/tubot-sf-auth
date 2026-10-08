@@ -7,9 +7,13 @@ export interface Credential {
   channel_id: string;
   instance_url: string;
   client_id: string;
-  client_secret_cipher: string;
-  client_secret_iv: string;
+  // Null on JWT rows: the packaged execution client holds no per-row secret.
+  client_secret_cipher: string | null;
+  client_secret_iv: string | null;
   integration_user_id: string;
+  // JWT rows only: the asserted username and environment bit for minting.
+  integration_username?: string | null;
+  is_sandbox?: number | null;
   channel_secret_hash: string;
 }
 

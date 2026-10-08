@@ -1,7 +1,9 @@
-/** Channel-scoped API grant registration. Salesforce credentials are sent once to Panel. */
+/** Channel-scoped API grant registration. The org never handles ECA secrets:
+ * Panel mints tokens with the packaged universal execution client and
+ * verifies the subscriber-configured Run As user during registration.
+ */
 public with sharing class PanelSalesforceChannelService {
     public static final String PERMISSION_SET = PanelSalesforceChannelSupportService.PERMISSION_SET;
-
 
     @AuraEnabled
     public static List<Map<String, String>> listConnections() {
@@ -33,16 +35,6 @@ public with sharing class PanelSalesforceChannelService {
     @AuraEnabled
     public static void connectChannel(String requestJson) {
         PanelSalesforceChannelConnectService.connect(requestJson);
-    }
-
-    @AuraEnabled
-    public static void connectExecutionUser(String requestJson) {
-        PanelSalesforceExecutionUserService.connect(requestJson);
-    }
-
-    @AuraEnabled
-    public static void disconnectExecutionUser(String channelId, String integrationUserId) {
-        PanelSalesforceExecutionUserService.disconnect(channelId, integrationUserId);
     }
 
     @AuraEnabled

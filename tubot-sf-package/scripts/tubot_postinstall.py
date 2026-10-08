@@ -39,11 +39,11 @@ authenticated to the org (`sf org login web`; the wizard lists orgs to pick).
 ==============================================================================
 """
 
-TUBOT_POSTINSTALL_VERSION = "1.0.3"
+TUBOT_POSTINSTALL_VERSION = "1.1.0"
 
 # Fallback TuBot package version used only when sfdx-project.json cannot be
 # located (e.g. curl-downloaded standalone copy). Prefer --package-id.
-POSTINSTALL_FALLBACK_PACKAGE_VERSION_ID = "04tg5000000EzmnAAC"
+POSTINSTALL_FALLBACK_PACKAGE_VERSION_ID = "04tg5000000F8lFAAS"
 
 import argparse
 import json
@@ -310,12 +310,17 @@ def resolve_org(target_org: Optional[str]) -> Dict[str, str]:
     log_success(f"Connected to Org: {BOLD}{alias}{RESET} ({org_id}) at {instance_url}")
     log_info(f"Active Connected User: {username}")
 
+    sandbox_res = run_sf(["data", "query", "--query", "SELECT IsSandbox FROM Organization LIMIT 1", "--target-org", target_org or alias])
+    sandbox_records = sandbox_res["data"].get("result", {}).get("records", []) if sandbox_res["returncode"] == 0 else []
+    is_sandbox = bool(sandbox_records and sandbox_records[0].get("IsSandbox"))
+
     return {
         "org_id": org_id,
         "instance_url": instance_url.rstrip("/"),
         "username": username,
         "alias": alias,
         "target_flag": target_org or alias,
+        "is_sandbox": is_sandbox,
     }
 
 
@@ -908,6 +913,11 @@ def verify_and_prompt_panel_login(org: Dict[str, str], non_interactive: bool) ->
 # Step 5: Automated External Setup (ECA, Perms, Registration)
 # ==============================================================================
 API_READ_PERMISSION_SET_NAME = "Tubot_Salesforce_API_Read"
+# Packaged JWT execution client (ships in the managed package; no per-org ECA
+# deploy, no consumer secret anywhere). Subscriber pre-authorization lives in
+# the unpackaged Tubot_JWT_PreAuth set, applied by setup-eca-policies.mjs.
+PACKAGED_EXECUTION_APP_NAME = "Tubot_Channel_API"
+JWT_PREAUTH_SET_NAME = "Tubot_JWT_PreAuth"
 
 
 def resolve_api_permission_set_id(org: Dict[str, str]) -> Optional[str]:
@@ -982,191 +992,115 @@ def ensure_permission_set(org: Dict[str, str], user: Dict[str, str]):
     log_success(f"PermissionSet '{API_READ_PERMISSION_SET_NAME}' assigned and verified for {user['username']}.")
 
 
-def deploy_external_client_app(org: Dict[str, str], user: Dict[str, str], app_name: str) -> None:
-    """Generate and deploy External Client App metadata with Client Credentials Flow."""
-    log_info(f"Generating and deploying External Client App metadata: {BOLD}{app_name}{RESET}...")
-    app_label = app_name.replace("_", " ")
-    contact_email = user.get("email") or "tubot@tubot.lat"
-    if "@" not in contact_email:
-        contact_email = "tubot@tubot.lat"
+def ensure_packaged_execution_client(org: Dict[str, Any], user: Dict[str, str]) -> None:
+    """Confirm the packaged JWT execution client and pre-authorize the user.
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        sfdx_project = {
-            "packageDirectories": [{"path": "force-app", "default": True}],
-            "name": "tubot-eca-setup",
-            "namespace": "",
-            "sfdcLoginUrl": "https://login.salesforce.com",
-            "sourceApiVersion": "67.0",
-        }
-        with open(os.path.join(temp_dir, "sfdx-project.json"), "w") as f:
-            json.dump(sfdx_project, f, indent=2)
-
-        source_root = os.path.join(temp_dir, "force-app", "main", "default")
-
-        # 1. ExternalClientAppSettings
-        settings_dir = os.path.join(source_root, "settings")
-        os.makedirs(settings_dir, exist_ok=True)
-        with open(os.path.join(settings_dir, "ExternalClientApp.settings-meta.xml"), "w") as f:
-            f.write("""<?xml version="1.0" encoding="UTF-8"?>
-<ExternalClientAppSettings xmlns="http://soap.sforce.com/2006/04/metadata">
-  <enableClientSecretInRestApiAccess>true</enableClientSecretInRestApiAccess>
-</ExternalClientAppSettings>
-""")
-
-        # 2. ExternalClientApplication Header
-        eca_dir = os.path.join(source_root, "externalClientApps")
-        os.makedirs(eca_dir, exist_ok=True)
-        with open(os.path.join(eca_dir, f"{app_name}.eca-meta.xml"), "w") as f:
-            f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<ExternalClientApplication xmlns="http://soap.sforce.com/2006/04/metadata">
-  <contactEmail>{contact_email}</contactEmail>
-  <description>Local External Client App for TuBot channel-scoped Salesforce API access.</description>
-  <distributionState>Local</distributionState>
-  <isProtected>false</isProtected>
-  <label>{app_label}</label>
-</ExternalClientApplication>
-""")
-
-        # 3. ExtlClntAppGlobalOauthSettings
-        glbl_dir = os.path.join(source_root, "extlClntAppGlobalOauthSets")
-        os.makedirs(glbl_dir, exist_ok=True)
-        with open(os.path.join(glbl_dir, f"{app_name}_Global.ecaGlblOauth-meta.xml"), "w") as f:
-            f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<ExtlClntAppGlobalOauthSettings xmlns="http://soap.sforce.com/2006/04/metadata">
-  <callbackUrl>https://tubot-new-panel.emalteaproductions.workers.dev/oauth/callback</callbackUrl>
-  <externalClientApplication>{app_name}</externalClientApplication>
-  <isClientCredentialsFlowEnabled>true</isClientCredentialsFlowEnabled>
-  <isConsumerSecretOptional>false</isConsumerSecretOptional>
-  <isIntrospectAllTokens>false</isIntrospectAllTokens>
-  <isPkceRequired>false</isPkceRequired>
-  <isSecretRequiredForRefreshToken>true</isSecretRequiredForRefreshToken>
-  <label>{app_label} Global OAuth</label>
-  <shouldRotateConsumerKey>false</shouldRotateConsumerKey>
-  <shouldRotateConsumerSecret>false</shouldRotateConsumerSecret>
-</ExtlClntAppGlobalOauthSettings>
-""")
-
-        # 4. ExtlClntAppOauthSettings
-        oauth_dir = os.path.join(source_root, "extlClntAppOauthSettings")
-        os.makedirs(oauth_dir, exist_ok=True)
-        with open(os.path.join(oauth_dir, f"{app_name}_OAuth.ecaOauth-meta.xml"), "w") as f:
-            f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<ExtlClntAppOauthSettings xmlns="http://soap.sforce.com/2006/04/metadata">
-  <commaSeparatedOauthScopes>Api, OpenID</commaSeparatedOauthScopes>
-  <externalClientApplication>{app_name}</externalClientApplication>
-  <label>{app_label} OAuth</label>
-</ExtlClntAppOauthSettings>
-""")
-
-        # 5. ExtlClntAppOauthConfigurablePolicies
-        plcy_dir = os.path.join(source_root, "extlClntAppOauthPolicies")
-        os.makedirs(plcy_dir, exist_ok=True)
-        with open(os.path.join(plcy_dir, f"{app_name}_OAuth_Policies.ecaOauthPlcy-meta.xml"), "w") as f:
-            f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<ExtlClntAppOauthConfigurablePolicies xmlns="http://soap.sforce.com/2006/04/metadata">
-  <clientCredentialsFlowUser>{user['username']}</clientCredentialsFlowUser>
-  <externalClientApplication>{app_name}</externalClientApplication>
-  <isClientCredentialsFlowEnabled>true</isClientCredentialsFlowEnabled>
-  <label>{app_label} OAuth Policies</label>
-</ExtlClntAppOauthConfigurablePolicies>
-""")
-
-        # Deployment step 1: Settings
-        log_info("[1/3] Enabling REST API Consumer Secret access...")
-        r1 = run_sf(["project", "deploy", "start", "--target-org", org["target_flag"], "--source-dir", settings_dir, "--wait", "30", "--ignore-conflicts"], cwd=temp_dir)
-        if r1["returncode"] != 0:
-            log_error(f"Failed to deploy ExternalClientAppSettings: {r1.get('error_msg') or r1['stderr'] or r1['stdout']}")
-            sys.exit(1)
-
-        # Deployment step 2: ECA Header
-        log_info(f"[2/3] Registering External Client App '{app_name}'...")
-        r2 = run_sf(["project", "deploy", "start", "--target-org", org["target_flag"], "--source-dir", eca_dir, "--wait", "30", "--ignore-conflicts"], cwd=temp_dir)
-        if r2["returncode"] != 0:
-            log_error(f"Failed to deploy ExternalClientApplication header: {r2.get('error_msg') or r2['stderr'] or r2['stdout']}")
-            sys.exit(1)
-
-        # Deployment step 3: Full OAuth configuration
-        log_info(f"[3/3] Configuring Client Credentials Flow for {user['username']}...")
-        r3 = run_sf(["project", "deploy", "start", "--target-org", org["target_flag"], "--source-dir", os.path.join(temp_dir, "force-app"), "--wait", "30", "--ignore-conflicts"], cwd=temp_dir)
-        if r3["returncode"] != 0:
-            log_error(f"Failed to deploy ECA OAuth configuration: {r3.get('error_msg') or r3['stderr'] or r3['stdout']}")
-            sys.exit(1)
-
-    log_success(f"External Client App '{app_name}' deployed successfully.")
-
-
-def extract_eca_credentials(org: Dict[str, str], app_name: str) -> Tuple[str, str]:
-    """Extract Consumer Key and Consumer Secret via Salesforce REST API."""
-    log_info(f"Extracting Consumer Key & Secret for '{app_name}' via Salesforce REST API...")
-
-    auth_res = run_sf(["org", "auth", "show-access-token", "--target-org", org["target_flag"]])
-    if auth_res["returncode"] != 0:
-        log_error("Failed to retrieve access token.")
-        sys.exit(1)
-    access_token = auth_res["data"].get("result", {}).get("accessToken")
-
-    # Find ECA Identifier
-    usage_url = f"{org['instance_url']}/services/data/v67.0/apps/oauth/usage"
-    req = urllib.request.Request(usage_url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
-    with urllib.request.urlopen(req) as resp:
-        usage_data = json.loads(resp.read().decode("utf-8"))
-
-    matched_app = None
-    for app in usage_data.get("apps", []):
-        if app.get("developerName") == app_name:
-            matched_app = app
-            break
-
-    if not matched_app:
-        log_error(f"External Client App '{app_name}' not found in OAuth usage registry.")
+    No ECA is deployed (both OAuth clients ship in the managed package) and
+    no secret is extracted: Panel holds the JWT signing key and mints
+    short-lived tokens per request. This step runs setup-eca-policies.mjs
+    (creates the unpackaged Tubot_JWT_PreAuth set and locks the subscriber
+    policies to admin-approved pre-authorization), assigns that set to the
+    integration user, and blind-verifies the assignment.
+    """
+    log_info(f"Confirming packaged execution client '{PACKAGED_EXECUTION_APP_NAME}'...")
+    app_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id FROM ExternalClientApplication WHERE DeveloperName = '{PACKAGED_EXECUTION_APP_NAME}' LIMIT 1",
+        "--target-org", org["target_flag"],
+    ])
+    apps = app_res["data"].get("result", {}).get("records", []) if app_res["returncode"] == 0 else []
+    if not apps:
+        log_error(
+            f"Packaged app '{PACKAGED_EXECUTION_APP_NAME}' is not installed on org '{org['alias']}'. "
+            "Install or upgrade the TuBot package first (re-run with the 'package' step checked)."
+        )
         sys.exit(1)
 
-    eca_id = matched_app["identifier"]
-    creds_url = f"{org['instance_url']}/services/data/v67.0/apps/oauth/credentials/{eca_id}?part=keyandsecret"
-    creds_req = urllib.request.Request(creds_url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
-    with urllib.request.urlopen(creds_req) as c_resp:
-        c_data = json.loads(c_resp.read().decode("utf-8"))
-
-    client_id = c_data.get("key")
-    client_secret = c_data.get("secret")
-
-    if not client_id and c_data.get("consumers"):
-        consumer = c_data["consumers"][0]
-        client_id = consumer.get("key")
-        c_url = consumer.get("url")
-        if c_url:
-            delim = "&" if "?" in c_url else "?"
-            full_c_url = f"{org['instance_url']}{c_url}{delim}part=keyandsecret"
-            s_req = urllib.request.Request(full_c_url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
-            with urllib.request.urlopen(s_req) as s_resp:
-                s_data = json.loads(s_resp.read().decode("utf-8"))
-                client_id = s_data.get("key") or client_id
-                client_secret = s_data.get("secret") or client_secret
-
-    if not client_id or not client_secret:
-        log_error("Could not extract consumer key or secret from Salesforce REST API.")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    policies_script = os.path.join(script_dir, "setup-eca-policies.mjs")
+    log_info("Applying subscriber pre-authorization policies (setup-eca-policies.mjs)...")
+    proc = subprocess.run(
+        ["bun", policies_script, "--target-org", org["target_flag"]],
+        cwd=script_dir, capture_output=True, text=True, timeout=600,
+    )
+    if proc.returncode != 0:
+        log_error(f"Pre-authorization policies setup failed:\n{proc.stderr or proc.stdout}")
         sys.exit(1)
+    log_success("Pre-authorization policies applied.")
 
-    log_success(f"Consumer Key extracted: {BOLD}{client_id[:12]}...{RESET} (Secret secured)")
-    return client_id, client_secret
+    assign_jwt_preauth_set(org, user)
+
+
+def assign_jwt_preauth_set(org: Dict[str, Any], user: Dict[str, str]) -> None:
+    """Assign the unpackaged Tubot_JWT_PreAuth set to the user (verified)."""
+    ps_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id FROM PermissionSet WHERE Name = '{JWT_PREAUTH_SET_NAME}' AND NamespacePrefix = null LIMIT 1",
+        "--target-org", org["target_flag"],
+    ])
+    sets = ps_res["data"].get("result", {}).get("records", []) if ps_res["returncode"] == 0 else []
+    if not sets:
+        log_error(
+            f"PermissionSet '{JWT_PREAUTH_SET_NAME}' not found on org '{org['alias']}'. "
+            "The policies setup did not complete; re-run with the 'eca' step checked."
+        )
+        sys.exit(1)
+    ps_id = sets[0]["Id"]
+    if is_permission_set_assigned(org, ps_id, user["id"]):
+        log_success(f"PermissionSet '{JWT_PREAUTH_SET_NAME}' already assigned to {user['username']}.")
+        return
+    log_info(f"Assigning '{JWT_PREAUTH_SET_NAME}' to user {user['username']}...")
+    c_res = run_sf([
+        "data", "create", "record",
+        "--sobject", "PermissionSetAssignment",
+        "--values", f"AssigneeId='{user['id']}' PermissionSetId='{ps_id}'",
+        "--target-org", org["target_flag"],
+    ])
+    if c_res["returncode"] != 0 and not is_permission_set_assigned(org, ps_id, user["id"]):
+        err = c_res.get("error_msg") or c_res["stderr"] or c_res["stdout"]
+        log_error(f"Could not assign PermissionSet '{JWT_PREAUTH_SET_NAME}' to {user['username']}: {err}")
+        sys.exit(1)
+    if not is_permission_set_assigned(org, ps_id, user["id"]):
+        log_error(
+            f"PermissionSet '{JWT_PREAUTH_SET_NAME}' assignment to {user['username']} "
+            "could not be verified in the target org. Fix the underlying error and re-run."
+        )
+        sys.exit(1)
+    log_success(f"PermissionSet '{JWT_PREAUTH_SET_NAME}' assigned and verified for {user['username']}.")
+
+
+def is_permission_set_assigned(org: Dict[str, Any], perm_id: str, user_id: str) -> bool:
+    """Blind-check a PermissionSetAssignment directly in the target org."""
+    q_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id FROM PermissionSetAssignment WHERE PermissionSetId = '{perm_id}' AND AssigneeId = '{user_id}' LIMIT 1",
+        "--target-org", org["target_flag"],
+    ])
+    records = q_res["data"].get("result", {}).get("records", []) if q_res["returncode"] == 0 else []
+    return len(records) > 0
 
 
 def register_channel_with_panel(
-    org: Dict[str, str],
+    org: Dict[str, Any],
     channel: Dict[str, str],
     user: Dict[str, str],
-    client_id: str,
-    client_secret: str,
 ) -> None:
-    """Register channel credentials with Panel via Named Credential Callout."""
+    """Register the channel with Panel via Named Credential Callout.
+
+    JWT shape: the org sends identity only (no client credentials exist on
+    this path). Panel mints a token with the packaged execution client,
+    verifies the grant resolves to this org/user via userinfo, then stores
+    the mapping. HTTP 201 with verified.username means the grant was proven
+    live; 422 preauth_required means the user lacks Tubot_JWT_PreAuth.
+    """
     log_info(f"Registering channel '{channel['label']}' with Panel API...")
     payload_json = json.dumps({
         "orgId": org["org_id"],
         "channelId": channel["id"],
         "instanceUrl": org["instance_url"],
-        "clientId": client_id,
-        "clientSecret": client_secret,
         "integrationUserId": user["id"],
+        "integrationUsername": user["username"],
+        "isSandbox": bool(org.get("is_sandbox")),
     })
 
     # Escape for Apex string
@@ -1191,11 +1125,29 @@ System.debug('REG_BODY=' + res.getBody());
     statuses = extract_debug_values(output, "REG_STATUS=")
     bodies = extract_debug_values(output, "REG_BODY=")
 
-    if not statuses or statuses[0] != "200":
-        log_error(f"Panel rejected channel registration (HTTP {statuses[0] if statuses else 'unknown'}):\n{bodies[0] if bodies else output}")
+    if not statuses or statuses[0] != "201":
+        body = bodies[0] if bodies else output
+        hint = ""
+        if "preauth_required" in body:
+            hint = (
+                f"\nThe integration user is not pre-authorized. Assign '{JWT_PREAUTH_SET_NAME}' "
+                "to the user (re-run with the 'eca' step checked) and retry."
+            )
+        log_error(f"Panel rejected channel registration (HTTP {statuses[0] if statuses else 'unknown'}):\n{body}{hint}")
         sys.exit(1)
 
-    log_success("Channel credentials registered and accepted by Panel.")
+    verified_user = None
+    try:
+        verified_user = (json.loads(bodies[0]).get("verified") or {}).get("username")
+    except (ValueError, IndexError):
+        verified_user = None
+    if verified_user and verified_user != user["username"]:
+        log_error(
+            f"Panel verified a different identity ('{verified_user}') than the selected "
+            f"integration user ('{user['username']}'). Refusing to continue."
+        )
+        sys.exit(1)
+    log_success(f"Channel registered with Panel; JWT grant verified for {user['username']}.")
 
 
 def upsert_salesforce_api_channel_record(
@@ -1244,52 +1196,33 @@ def upsert_salesforce_api_channel_record(
 # Step 6: Blind Verification Protocol (Zero Mocks)
 # ==============================================================================
 def verify_setup(
-    org: Dict[str, str],
+    org: Dict[str, Any],
     channel: Dict[str, str],
     user: Dict[str, str],
-    client_id: str,
-    client_secret: str,
     record_id: str,
 ) -> None:
     log_phase("Step 6: Real-World Blind Verification (Zero Mocks)")
 
-    # 1. Test OAuth Token Exchange
-    log_info("1. Verifying OAuth Client Credentials grant against Salesforce token endpoint...")
-    form_data = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }).encode("utf-8")
+    # 1. JWT grant + identity were already proven live: registration returns
+    # 201 only after Panel mints with the packaged execution client and
+    # matches userinfo to this org/user. Here we re-assert the durable state.
+    log_info("1. Verifying JWT pre-authorization assignment in the target org...")
+    ps_res = run_sf([
+        "data", "query", "--query",
+        f"SELECT Id FROM PermissionSet WHERE Name = '{JWT_PREAUTH_SET_NAME}' AND NamespacePrefix = null LIMIT 1",
+        "--target-org", org["target_flag"],
+    ])
+    preauth_sets = ps_res["data"].get("result", {}).get("records", []) if ps_res["returncode"] == 0 else []
+    if not preauth_sets or not is_permission_set_assigned(org, preauth_sets[0]["Id"], user["id"]):
+        log_error(
+            f"PermissionSet '{JWT_PREAUTH_SET_NAME}' is NOT assigned to {user['username']}. "
+            "Re-run post-install with the 'eca' step checked."
+        )
+        sys.exit(1)
+    log_success(f"JWT pre-authorization verified for {BOLD}{user['username']}{RESET}")
 
-    token_req = urllib.request.Request(
-        f"{org['instance_url']}/services/oauth2/token",
-        data=form_data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    with urllib.request.urlopen(token_req) as resp:
-        token_data = json.loads(resp.read().decode("utf-8"))
-        granted_token = token_data.get("access_token")
-        if not granted_token:
-            log_error("OAuth token response did not contain access_token.")
-            sys.exit(1)
-        log_success(f"OAuth token granted for instance: {token_data.get('instance_url')}")
-
-    # 2. Test UserInfo endpoint
-    log_info("2. Verifying UserInfo identity resolution with granted token...")
-    user_req = urllib.request.Request(
-        f"{org['instance_url']}/services/oauth2/userinfo",
-        headers={"Authorization": f"Bearer {granted_token}"},
-    )
-    with urllib.request.urlopen(user_req) as resp:
-        u_info = json.loads(resp.read().decode("utf-8"))
-        sub_user = u_info.get("preferred_username")
-        if sub_user != user["username"]:
-            log_warn(f"UserInfo username '{sub_user}' differed from expected '{user['username']}'.")
-        else:
-            log_success(f"Identity confirmed: {BOLD}{sub_user}{RESET} (sub: {u_info.get('sub')})")
-
-    # 3. Verify Channel in Panel API
-    log_info("3. Verifying registered channel connection in Panel API...")
+    # 2. Verify Channel in Panel API
+    log_info("2. Verifying registered channel connection in Panel API...")
     apex_list = f"""
 HttpRequest req = new HttpRequest();
 req.setEndpoint('callout:tubot__Panel_Named_Credential/api/v1/salesforce/channels?orgId={org['org_id']}');
@@ -1314,8 +1247,8 @@ System.debug('LIST_BODY=' + res.getBody());
         sys.exit(1)
     log_success(f"Panel active channel verified: {BOLD}{channel['id']}{RESET}")
 
-    # 4. Verify Ground Truth in Salesforce
-    log_info("4. Asserting ground truth in Salesforce database...")
+    # 3. Verify Ground Truth in Salesforce
+    log_info("3. Asserting ground truth in Salesforce database...")
     soql = f"SELECT Id, tubot__Channel_Id__c, tubot__Integration_User_Id__c, tubot__Team_Id__c FROM tubot__Tubot_API_Channel__c WHERE Id = '{record_id}'"
     v_res = run_sf(["data", "query", "--query", soql, "--target-org", org["target_flag"]])
     records = v_res["data"].get("result", {}).get("records", [])
@@ -1324,8 +1257,8 @@ System.debug('LIST_BODY=' + res.getBody());
         sys.exit(1)
     log_success(f"Salesforce record verified: {records[0]['Id']}")
 
-    # 5. Verify API Permission Set assignment (post-install must leave it assigned)
-    log_info("5. Verifying Tubot API Read permission set assignment...")
+    # 4. Verify API Permission Set assignment (post-install must leave it assigned)
+    log_info("4. Verifying Tubot API Read permission set assignment...")
     api_ps_id = resolve_api_permission_set_id(org)
     if not api_ps_id:
         log_error(f"PermissionSet '{API_READ_PERMISSION_SET_NAME}' not found on the org.")
@@ -1663,20 +1596,20 @@ POSTINSTALL_CONSENT_STEPS = [
     },
     {
         "id": "eca",
-        "title": "External Client App + OAuth credentials",
-        "what": "Deploys the External Client App metadata (Client Credentials Flow for the integration user) and extracts its consumer key and secret.",
-        "why": "Panel uses these credentials for server-to-server Salesforce API calls.",
+        "title": "Packaged execution client + pre-authorization",
+        "what": "Confirms the packaged JWT execution client, applies subscriber pre-authorization policies, and assigns Tubot_JWT_PreAuth to the integration user. No secrets exist on this path.",
+        "why": "Panel mints short-lived JWT tokens only for pre-authorized users.",
     },
     {
         "id": "registration",
         "title": "Panel registration + Salesforce link record",
-        "what": "Sends the channel credentials to Panel and creates/updates the tubot__Tubot_API_Channel__c link record in Salesforce.",
+        "what": "Sends the channel identity to Panel (Panel proves the JWT grant live before storing) and creates/updates the tubot__Tubot_API_Channel__c link record in Salesforce.",
         "why": "This is the stored join between org, channel, user, and Panel team.",
     },
     {
         "id": "verify",
         "title": "Blind verification",
-        "what": "Re-reads every mutation from Salesforce and Panel (OAuth grant, identity, channel list, link record) and asserts ground truth.",
+        "what": "Re-reads every mutation from Salesforce and Panel (pre-authorization, channel list, link record, API permission set) and asserts ground truth.",
         "why": "Proves the setup really landed instead of trusting success messages.",
     },
 ]
@@ -1794,7 +1727,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-u", "--integration-user", help="Salesforce Integration User (Username, Email, or ID)")
     parser.add_argument("-c", "--channel", help="MessagingChannel (DeveloperName or ID)")
-    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="ECA DeveloperName (default: Tubot_SF_Channel_API)")
+    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="Deprecated and ignored: the JWT execution client ships in the package.")
     parser.add_argument("-q", "--queue-name", default=DEFAULT_QUEUE_NAME, help=f"Omni-Queue DeveloperName for new channels (default: {DEFAULT_QUEUE_NAME})")
     parser.add_argument("--queue-label", default=DEFAULT_QUEUE_LABEL, help=f"Omni-Queue label for new channels (default: {DEFAULT_QUEUE_LABEL})")
     parser.add_argument("-r", "--routing-config", dest="routing_config_name", default=DEFAULT_ROUTING_CONFIG_NAME, help=f"QueueRoutingConfig DeveloperName for new channels (default: {DEFAULT_ROUTING_CONFIG_NAME})")
@@ -1881,17 +1814,16 @@ def run_postinstall(args: argparse.Namespace) -> Dict[str, Any]:
     # 5. Automated External Setup (API permission set assignment already ran
     # atomically with user selection in Step 2)
     log_phase("Step 5: Automated External Provisioning")
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
+    eca_ready = False
     if consent["eca"]:
         if user is None:
             auto_skipped.append("eca")
-            log_skip("External Client App deploy", "requires the integration-user step")
+            log_skip("Execution client pre-authorization", "requires the integration-user step")
         else:
-            deploy_external_client_app(org, user, args.app_name)
-            client_id, client_secret = extract_eca_credentials(org, args.app_name)
+            ensure_packaged_execution_client(org, user)
+            eca_ready = True
     else:
-        log_skip("External Client App deploy", "not checked")
+        log_skip("Execution client pre-authorization", "not checked")
     record_id: Optional[str] = None
     if consent["registration"]:
         missing_inputs = [
@@ -1899,18 +1831,19 @@ def run_postinstall(args: argparse.Namespace) -> Dict[str, Any]:
             for name, val in (
                 ("messaging channel", channel),
                 ("integration user", user),
-                ("ECA credentials", client_id),
                 ("Panel connection", panel_conn),
             )
             if val is None
         ]
+        if not eca_ready:
+            missing_inputs.append("execution client pre-authorization")
         if missing_inputs:
             auto_skipped.append("registration")
             log_skip("Panel registration", f"requires skipped input(s): {', '.join(missing_inputs)}")
         else:
             assert channel is not None and user is not None
-            assert client_id is not None and client_secret is not None and panel_conn is not None
-            register_channel_with_panel(org, channel, user, client_id, client_secret)
+            assert panel_conn is not None
+            register_channel_with_panel(org, channel, user)
             record_id = upsert_salesforce_api_channel_record(org, channel, user, panel_conn["team_id"])
     else:
         log_skip("Panel registration", "not checked")
@@ -1922,7 +1855,6 @@ def run_postinstall(args: argparse.Namespace) -> Dict[str, Any]:
             for name, val in (
                 ("messaging channel", channel),
                 ("integration user", user),
-                ("ECA credentials", client_id),
                 ("channel link record", record_id),
             )
             if val is None
@@ -1932,8 +1864,8 @@ def run_postinstall(args: argparse.Namespace) -> Dict[str, Any]:
             log_skip("Blind verification", f"requires skipped input(s): {', '.join(missing_inputs)}")
         else:
             assert channel is not None and user is not None
-            assert client_id is not None and client_secret is not None and record_id is not None
-            verify_setup(org, channel, user, client_id, client_secret, record_id)
+            assert record_id is not None
+            verify_setup(org, channel, user, record_id)
     else:
         log_skip("Blind verification", "not checked")
 
@@ -1956,8 +1888,9 @@ def run_postinstall(args: argparse.Namespace) -> Dict[str, Any]:
             else None
         ),
         "eca": {
-            "appName": args.app_name,
-            "clientId": client_id,
+            "appName": PACKAGED_EXECUTION_APP_NAME,
+            "preAuthSet": JWT_PREAUTH_SET_NAME,
+            "preAuthorized": eca_ready,
         },
         "salesforceChannelRecordId": record_id,
     }
@@ -1977,8 +1910,8 @@ def run_postinstall(args: argparse.Namespace) -> Dict[str, Any]:
         print(f"  {BOLD}Integration User:{RESET}          {user['name'] + ' (' + user['username'] + ')' if user else 'skipped'}")
         print(f"  {BOLD}Messaging Channel:{RESET}         {channel['label'] + ' (' + channel['developer_name'] + ', Id: ' + channel['id'] + ')' if channel else 'skipped'}")
         print(f"  {BOLD}Panel Team:{RESET}                {panel_conn['team_name'] + ' (' + panel_conn['team_id'] + ')' if panel_conn else 'skipped'}")
-        print(f"  {BOLD}External Client App:{RESET}       {args.app_name}")
-        print(f"  {BOLD}Consumer Key:{RESET}              {client_id[:12] + '...' if client_id else 'skipped'}")
+        print(f"  {BOLD}Execution Client:{RESET}         {PACKAGED_EXECUTION_APP_NAME} (packaged, JWT)")
+        print(f"  {BOLD}Pre-Authorized:{RESET}            {JWT_PREAUTH_SET_NAME if eca_ready else 'skipped'}")
         print(f"  {BOLD}Tubot API Channel Record:{RESET} {record_id or 'skipped'}\n")
 
     return result

@@ -14,9 +14,7 @@ import getMessagingBackupDetails from '@salesforce/apex/MessagingBackupControlle
 import deleteMessagingBackup from '@salesforce/apex/MessagingBackupController.deleteMessagingBackup';
 import listApiConnections from '@salesforce/apex/PanelSalesforceChannelService.listConnections';
 import connectApiChannel from '@salesforce/apex/PanelSalesforceChannelService.connectChannel';
-import connectApiExecutionUser from '@salesforce/apex/PanelSalesforceChannelService.connectExecutionUser';
 import disconnectApiChannel from '@salesforce/apex/PanelSalesforceChannelService.disconnectChannel';
-import disconnectApiExecutionUser from '@salesforce/apex/PanelSalesforceChannelService.disconnectExecutionUser';
 import prepareApiChannel from '@salesforce/apex/PanelSalesforceChannelService.prepareChannel';
 import isApiPermissionReady from '@salesforce/apex/PanelSalesforceChannelService.isApiPermissionReady';
 import getToolProxyList from '@salesforce/apex/PanelSalesforceChannelService.getToolProxyList';
@@ -29,6 +27,7 @@ import getSetupHealthCheck from '@salesforce/apex/TubotSetupWizardController.get
 import getIntegrationCandidates from '@salesforce/apex/TubotSetupWizardController.getIntegrationCandidates';
 import assignApiPermissionSet from '@salesforce/apex/TubotSetupWizardController.assignApiPermissionSet';
 import getEcaSetupGuidance from '@salesforce/apex/TubotSetupWizardController.getEcaSetupGuidance';
+import runSimpleSetupStep from '@salesforce/apex/SimpleSetupController.runStep';
 import canManageApiConnections from '@salesforce/customPermission/Manage_Tubot_API_Connections';
 
 export default class PanelLoginSettings extends NavigationMixin(LightningElement) {
@@ -57,10 +56,21 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     @track isAssigningPermission = false;
     @track wizardEcaGuidance = null;
     @track wizardSelectedChannelId = '';
-    @track wizardClientId = '';
-    @track wizardClientSecret = '';
     @track isWizardConnecting = false;
     @track wizardConnectSuccess = false;
+
+    // Simple Setup (one-click automatic) state
+    @track simpleSetupConsented = false;
+    @track simpleSetupRunning = false;
+    @track simpleSetupDone = false;
+    @track simpleSetupSteps = [];
+    @track simpleSetupError = '';
+    @track simpleSetupEcaGuidance = null;
+
+    // Legacy manual setup UI (step wizard, connection details, per-channel
+    // API access) stays in the template for break-glass but unrendered:
+    // Simple Setup is the supported path. Flip to true to restore it.
+    showLegacySetupUi = false;
 
     @track showPanelData = false;
     @track subscriptionData = null;
@@ -75,11 +85,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     @track selectedChannelId = '';
     @track apiConnections = [];
     @track apiIntegrationUserId = '';
-    @track apiClientId = '';
-    @track apiClientSecret = '';
-    @track apiExecutionIntegrationUserId = '';
-    @track apiExecutionClientId = '';
-    @track apiExecutionClientSecret = '';
     @track isApiConnectionBusy = false;
     @track apiConnectionsError = '';
     @track apiConnectionSetupError = '';
@@ -622,8 +627,10 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     get wizardNextFromHealthDisabled() { return !this.wizardHealth; }
     get wizardNextFromUserDisabled() { return !this.selectedWizardUser; }
     get wizardConnectDisabled() {
-        return !this.wizardSelectedChannelId || !this.selectedWizardUserId ||
-               !this.wizardClientId || !this.wizardClientSecret || this.isWizardConnecting;
+        return !this.wizardSelectedChannelId || !this.selectedWizardUserId || this.isWizardConnecting;
+    }
+    get wizardEcaPoliciesCli() {
+        return 'bun scripts/setup-eca-policies.mjs --target-org YOUR_ORG_ALIAS';
     }
     get selectedWizardUserUsername() {
         return this.selectedWizardUser ? this.selectedWizardUser.username : 'Selected Integration User';
@@ -718,16 +725,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         this.selectedChannelId = event.detail.value;
     }
 
-    handleWizardClientIdChange(event) {
-        this.wizardClientId = event.detail.value;
-        this.apiClientId = event.detail.value;
-    }
-
-    handleWizardClientSecretChange(event) {
-        this.wizardClientSecret = event.detail.value;
-        this.apiClientSecret = event.detail.value;
-    }
-
     async handleWizardConnectChannel() {
         if (this.wizardConnectDisabled) return;
         this.isWizardConnecting = true;
@@ -738,13 +735,11 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             });
             const payload = JSON.stringify({
                 channelId: this.wizardSelectedChannelId,
-                integrationUserId: this.selectedWizardUserId,
-                clientId: this.wizardClientId.trim(),
-                clientSecret: this.wizardClientSecret.trim()
+                integrationUserId: this.selectedWizardUserId
             });
             await connectApiChannel({ requestJson: payload });
             this.wizardConnectSuccess = true;
-            this.showToast('Connected', 'Channel API credentials registered and verified with Panel!', 'success');
+            this.showToast('Connected', 'Channel registered and verified with Panel (Run As mapping checked server-side)!', 'success');
             await this.loadApiConnections();
         } catch (err) {
             this.showToast('Connection Failed', err?.body?.message || err?.message || 'Registration failed', 'error');
@@ -824,11 +819,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     }
 
     handleApiIntegrationUserChange(event) { this.apiIntegrationUserId = event.target.value.trim(); }
-    handleApiClientIdChange(event) { this.apiClientId = event.target.value.trim(); }
-    handleApiClientSecretChange(event) { this.apiClientSecret = event.target.value; }
-    handleApiExecutionIntegrationUserChange(event) { this.apiExecutionIntegrationUserId = event.target.value.trim(); }
-    handleApiExecutionClientIdChange(event) { this.apiExecutionClientId = event.target.value.trim(); }
-    handleApiExecutionClientSecretChange(event) { this.apiExecutionClientSecret = event.target.value; }
 
     handleOpenEcaSetup() {
         // Keep the privileged app setup in Salesforce Setup. Lightning sessions cannot
@@ -872,10 +862,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         return !this.isConnected || !this.canEditSettings || !this.selfOrgConnectionConnected || this.isSelfOrgConnectionBusy;
     }
 
-    get selfOrgSetupCommand() {
-        return 'bun scripts/setup-self-org-oauth.mjs --target-org <org-alias>';
-    }
-
     get panelCredentialRepairCommand() {
         return 'bun scripts/repair-panel-external-credential-access.mjs --target-org <org-alias>';
     }
@@ -897,8 +883,130 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         }
     }
 
+    // =========================================================================
+    // Simple Setup (one-click automatic)
+    // =========================================================================
+
+    get simpleSetupRunDisabled() {
+        return !this.simpleSetupConsented || this.simpleSetupRunning;
+    }
+
+    handleSimpleSetupConsent(event) {
+        this.simpleSetupConsented = event.target.checked;
+    }
+
+    simpleSetupDisplaySteps() {
+        return [
+            { key: 'user', label: 'Integration user & API access' },
+            { key: 'channel', label: 'Messaging Channel & Omni-Queue' },
+            { key: 'eca', label: 'External Client App' },
+            { key: 'finalize', label: 'Register & verify' }
+        ];
+    }
+
+    setSimpleSetupStep(key, state, message) {
+        this.simpleSetupSteps = this.simpleSetupSteps.map((step) => {
+            if (step.key !== key) {
+                return step;
+            }
+            const iconName = state === 'done'
+                ? 'utility:check'
+                : state === 'failed' ? 'utility:error' : state === 'action-required' ? 'utility:warning' : 'utility:clock';
+            return {
+                ...step,
+                state,
+                message: message || '',
+                iconName,
+                showSpinner: state === 'running'
+            };
+        });
+    }
+
+    sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async handleSimpleSetupRun() {
+        if (!this.simpleSetupConsented || this.simpleSetupRunning) {
+            return;
+        }
+        if (!this.isConnected) {
+            this.simpleSetupError = 'Connect Panel first (Panel login above), then run Simple Setup.';
+            this.showToast('Panel Login Required', this.simpleSetupError, 'warning');
+            return;
+        }
+        this.simpleSetupRunning = true;
+        this.simpleSetupDone = false;
+        this.simpleSetupError = '';
+        this.simpleSetupSteps = this.simpleSetupDisplaySteps().map((step) => ({
+            ...step,
+            state: 'pending',
+            message: '',
+            iconName: 'utility:clock',
+            showSpinner: false
+        }));
+        // Server calls per display row. Every step is synchronous (the OAuth
+        // clients ship in the package, so nothing deploys or polls).
+        this.simpleSetupEcaGuidance = null;
+        const chain = [
+            { call: 'user', row: 'user' },
+            { call: 'channel', row: 'channel' },
+            { call: 'eca', row: 'eca' },
+            { call: 'finalize', row: 'finalize' },
+            { call: 'finalize-register', row: 'finalize' }
+        ];
+        const state = {};
+        if (this.selectedWizardUserId) {
+            state.user = { id: this.selectedWizardUserId };
+        }
+        if (this.selectedChannelId) {
+            state.channel = { id: this.selectedChannelId };
+        }
+        try {
+            for (const link of chain) {
+                this.setSimpleSetupStep(link.row, 'running', '');
+                const result = await runSimpleSetupStep({ step: link.call, state });
+                if (result.status === 'action-required') {
+                    this.simpleSetupEcaGuidance = result.eca || null;
+                    this.setSimpleSetupStep(link.row, 'action-required', result.message || '');
+                    this.simpleSetupError = result.message || 'Additional setup is required.';
+                    this.showToast('Action required', result.message || 'Run the policies command, then re-run Simple Setup.', 'warning');
+                    return;
+                }
+                if (result.status !== 'done') {
+                    throw new Error(result.message || 'Setup step failed.');
+                }
+                Object.assign(state, result.state || {});
+                if (result.user) {
+                    state.user = result.user;
+                }
+                if (result.channel) {
+                    state.channel = result.channel;
+                }
+                if (link.call === 'eca' && result.eca) {
+                    this.simpleSetupEcaGuidance = result.eca;
+                }
+                this.setSimpleSetupStep(link.row, 'done', result.message || '');
+            }
+            this.simpleSetupDone = true;
+            this.showToast('Simple Setup Complete', 'Channel registered and verified end to end.', 'success');
+        } catch (err) {
+            const message = err.body?.message || err.message || 'Simple Setup failed.';
+            this.simpleSetupError = message;
+            const failedRow = this.simpleSetupSteps.find((step) => step.state === 'running');
+            if (failedRow) {
+                this.setSimpleSetupStep(failedRow.key, 'failed', message);
+            }
+            this.showToast('Simple Setup Failed', message, 'error');
+        } finally {
+            this.simpleSetupRunning = false;
+        }
+    }
+
     get showSelfOrgSetupInstructions() {
-        return !this.selfOrgConnectionConfigured;
+        // The Panel-connection client ships in the package: no CLI or manual
+        // ECA setup can be missing. Instructions stay hidden permanently.
+        return false;
     }
 
     get canManageSelfOrgApi() {
@@ -914,19 +1022,16 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             if (!permissionReady) throw new Error('Salesforce API permission assignment is still pending. Wait a few seconds and retry. If it remains pending, assign Tubot_Salesforce_API_Read to this user in Setup, then retry.');
             await connectApiChannel({ requestJson: JSON.stringify({
                 channelId: this.selectedChannelId,
-                integrationUserId: this.apiIntegrationUserId,
-                clientId: this.apiClientId,
-                clientSecret: this.apiClientSecret
+                integrationUserId: this.apiIntegrationUserId
             }) });
             this.showToast('Channel connected', 'Panel can now use this channel with the configured Salesforce integration user.', 'success');
             await this.loadApiConnections();
         } catch (error) {
-            const message = error.body?.message || error.message || 'Check ECA setup and retry.';
+            const message = error.body?.message || error.message || 'Check the Run As user on the packaged TuBot Channel API app and retry.';
             this.apiConnectionSetupError = message;
             this.showToast('Channel connection failed', message, 'error');
             await this.loadApiConnections();
         } finally {
-            this.apiClientSecret = '';
             this.isApiConnectionBusy = false;
         }
     }
@@ -942,51 +1047,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             const message = error.body?.message || error.message || 'Check Panel login and retry.';
             this.apiConnectionSetupError = message;
             this.showToast('Disconnect failed', message, 'error');
-        } finally {
-            this.isApiConnectionBusy = false;
-        }
-    }
-
-    async handleConnectApiExecutionUser() {
-        this.isApiConnectionBusy = true;
-        this.apiConnectionSetupError = '';
-        try {
-            await prepareApiChannel({ channelId: this.selectedChannelId, integrationUserId: this.apiExecutionIntegrationUserId });
-            const permissionReady = await isApiPermissionReady({ integrationUserId: this.apiExecutionIntegrationUserId });
-            if (!permissionReady) throw new Error('Salesforce API permission assignment is still pending. Wait a few seconds and retry.');
-            await connectApiExecutionUser({ requestJson: JSON.stringify({
-                channelId: this.selectedChannelId,
-                integrationUserId: this.apiExecutionIntegrationUserId,
-                clientId: this.apiExecutionClientId,
-                clientSecret: this.apiExecutionClientSecret
-            }) });
-            this.showToast('Execution user connected', 'Conversation Data API can rotate to this execution user when another user reaches its limit.', 'success');
-            this.apiExecutionIntegrationUserId = '';
-            this.apiExecutionClientId = '';
-            await this.loadApiConnections();
-        } catch (error) {
-            const message = error.body?.message || error.message || 'Check ECA setup and retry.';
-            this.apiConnectionSetupError = message;
-            this.showToast('Execution user connection failed', message, 'error');
-            await this.loadApiConnections();
-        } finally {
-            this.apiExecutionClientSecret = '';
-            this.isApiConnectionBusy = false;
-        }
-    }
-
-    async handleDisconnectApiExecutionUser(event) {
-        const integrationUserId = event.currentTarget.dataset.userId;
-        this.isApiConnectionBusy = true;
-        this.apiConnectionSetupError = '';
-        try {
-            await disconnectApiExecutionUser({ channelId: this.selectedChannelId, integrationUserId });
-            this.showToast('Execution user removed', 'This ECA is no longer available for the channel.', 'success');
-            await this.loadApiConnections();
-        } catch (error) {
-            const message = error.body?.message || error.message || 'Check Panel login and retry.';
-            this.apiConnectionSetupError = message;
-            this.showToast('Execution user removal failed', message, 'error');
         } finally {
             this.isApiConnectionBusy = false;
         }

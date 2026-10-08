@@ -1,12 +1,16 @@
-/** Registers ECA client credentials for a prepared primary Salesforce API channel. */
+/** Registers a prepared Salesforce API channel with Panel. No ECA secrets
+ * are handled here: Panel mints OAuth tokens with the packaged universal
+ * execution client (TuBot Channel API) whose secret lives only in Panel.
+ * Panel verifies the org's Run As user during registration and rejects
+ * mismatches, so a channel can only connect when the subscriber admin has
+ * assigned the matching Run As user on the packaged app.
+ */
 public with sharing class PanelSalesforceChannelConnectService {
     private class ConnectionContext {
         private Id channelId;
         private Id userId;
         private String channelIdText;
         private String userIdText;
-        private String clientId;
-        private String clientSecret;
         private Boolean permissionAssigned;
     }
 
@@ -23,9 +27,7 @@ public with sharing class PanelSalesforceChannelConnectService {
         ConnectionContext context = new ConnectionContext();
         String channelId = (String) request.get('channelId');
         String userIdentifier = (String) request.get('integrationUserId');
-        context.clientId = (String) request.get('clientId');
-        context.clientSecret = (String) request.get('clientSecret');
-        validateRequiredConnectionValues(context, channelId, userIdentifier);
+        validateRequiredConnectionValues(channelId, userIdentifier);
         context.channelId = parseChannelId(channelId);
         context.userId = requireIntegrationUser(userIdentifier);
         context.channelIdText = String.valueOf(context.channelId);
@@ -33,10 +35,9 @@ public with sharing class PanelSalesforceChannelConnectService {
         return context;
     }
 
-    private static void validateRequiredConnectionValues(ConnectionContext context, String channelId, String userIdentifier) {
-        if (String.isBlank(channelId) || String.isBlank(userIdentifier) ||
-            String.isBlank(context.clientId) || String.isBlank(context.clientSecret)) {
-            throw PanelSalesforceChannelSupportService.newException('Channel, integration user, ECA consumer key and ECA consumer secret are required.');
+    private static void validateRequiredConnectionValues(String channelId, String userIdentifier) {
+        if (String.isBlank(channelId) || String.isBlank(userIdentifier)) {
+            throw PanelSalesforceChannelSupportService.newException('Channel and integration user are required.');
         }
     }
 
@@ -89,7 +90,7 @@ public with sharing class PanelSalesforceChannelConnectService {
             WITH USER_MODE LIMIT 1
         ];
         if (prepared.isEmpty()) {
-            throw PanelSalesforceChannelSupportService.newException('Prepare the channel API permission before registering ECA credentials.');
+            throw PanelSalesforceChannelSupportService.newException('Prepare the channel API permission before connecting.');
         }
         if (!context.permissionAssigned) {
             throw PanelSalesforceChannelSupportService.newException('API permission assignment is still being prepared. Retry in a moment.');
@@ -99,8 +100,8 @@ public with sharing class PanelSalesforceChannelConnectService {
     private static void registerConnection(ConnectionContext context) {
         Map<String, Object> payload = new Map<String, Object>{
             'orgId' => UserInfo.getOrganizationId(), 'channelId' => context.channelIdText,
-            'instanceUrl' => URL.getOrgDomainUrl().toExternalForm(), 'clientId' => context.clientId,
-            'clientSecret' => context.clientSecret, 'integrationUserId' => context.userIdText
+            'instanceUrl' => URL.getOrgDomainUrl().toExternalForm(),
+            'integrationUserId' => context.userIdText
         };
         HttpResponse response = PanelAuthSupportService.executePanelCallout(
             '/api/v1/salesforce/channels', 'POST', JSON.serialize(payload)

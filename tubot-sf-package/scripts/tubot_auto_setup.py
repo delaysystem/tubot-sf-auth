@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tubot_postinstall as wiz
 
-AUTO_SETUP_VERSION = "1.0.0"
+AUTO_SETUP_VERSION = "1.1.0"
 POLL_INTERVAL_S = 60
 PANEL_POLL_INTERVAL_S = 30
 CREATE_RETRY_EVERY_N_POLLS = 5
@@ -194,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-org", help="sf alias/username of the org to provision (no default).")
     parser.add_argument("-u", "--integration-user", help="Integration User (Username, Email, or ID). Default: first Standard user.")
     parser.add_argument("-c", "--channel", help="MessagingChannel (DeveloperName or ID). Default: newest existing, else auto-create.")
-    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="ECA DeveloperName.")
+    parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="Deprecated and ignored: the JWT execution client ships in the package.")
     parser.add_argument("--package-id", help="TuBot package version ID (default: latest in sfdx-project.json).")
     parser.add_argument("--skip-package-install", action="store_true", help="Skip package verification/installation.")
     parser.add_argument("--skip-verify", action="store_true", help="Skip post-setup blind verification.")
@@ -217,25 +217,24 @@ def main(argv=None) -> None:
         wiz.ensure_tubot_package_installed(org["target_flag"], package_id=args.package_id)
     user = resolve_user_auto(org, args.integration_user)
 
-    # Fully automatic first: ECA deploy + credential extraction need no human.
-    wiz.log_phase("Auto: External Client App Provisioning")
+    # Fully automatic first: packaged-client pre-authorization needs no human.
+    wiz.log_phase("Auto: Execution Client Pre-Authorization")
     wiz.ensure_permission_set(org, user)
-    wiz.deploy_external_client_app(org, user, args.app_name)
-    client_id, client_secret = wiz.extract_eca_credentials(org, args.app_name)
+    wiz.ensure_packaged_execution_client(org, user)
 
     channel = ensure_channel(org, user, args)
     panel_conn = ensure_panel(org, args)
 
-    wiz.register_channel_with_panel(org, channel, user, client_id, client_secret)
+    wiz.register_channel_with_panel(org, channel, user)
     record_id = wiz.upsert_salesforce_api_channel_record(org, channel, user, panel_conn["team_id"])
     if not args.skip_verify:
-        wiz.verify_setup(org, channel, user, client_id, client_secret, record_id)
+        wiz.verify_setup(org, channel, user, record_id)
 
     result = {"success": True, "auto_setup_version": AUTO_SETUP_VERSION,
               "org": {"alias": org["alias"], "org_id": org["org_id"]},
               "user": {"name": user["name"], "username": user["username"]},
               "channel": channel, "panel": {"teamId": panel_conn["team_id"], "teamName": panel_conn["team_name"]},
-              "eca": {"appName": args.app_name, "clientId": client_id},
+              "eca": {"appName": wiz.PACKAGED_EXECUTION_APP_NAME, "preAuthSet": wiz.JWT_PREAUTH_SET_NAME},
               "salesforceChannelRecordId": record_id}
     if args.json:
         print(json.dumps(result, indent=2))
@@ -245,7 +244,7 @@ def main(argv=None) -> None:
               f"  User: {user['name']} ({user['username']})\n"
               f"  Channel: {channel['label']} ({channel['developer_name']}, Id: {channel['id']})\n"
               f"  Panel team: {panel_conn['team_name']} ({panel_conn['team_id']})\n"
-              f"  ECA: {args.app_name} ({client_id[:12]}...)\n"
+              f"  Execution client: {wiz.PACKAGED_EXECUTION_APP_NAME} (packaged, JWT)\n"
               f"  Channel record: {record_id}\n")
 
 

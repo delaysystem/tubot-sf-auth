@@ -61,12 +61,11 @@ private class PanelSalesforceChannelServiceTest {
     }
 
     @IsTest
-    static void unprivilegedCallerCannotRegisterCredentials() {
+    static void unprivilegedCallerCannotConnect() {
         Boolean denied = false;
         try {
             PanelSalesforceChannelService.connectChannel(JSON.serialize(new Map<String, String>{
-                'channelId' => 'channel-test-001', 'integrationUserId' => UserInfo.getUserId(),
-                'clientId' => 'key', 'clientSecret' => 'secret'
+                'channelId' => 'channel-test-001', 'integrationUserId' => UserInfo.getUserId()
             }));
         } catch (AuraHandledException ex) {
             denied = true;
@@ -218,9 +217,7 @@ private class PanelSalesforceChannelServiceTest {
             try {
                 PanelSalesforceChannelService.connectChannel(JSON.serialize(new Map<String, String>{
                     'channelId' => String.valueOf(syntheticMessagingChannelId()),
-                    'integrationUserId' => String.valueOf(admin.Id),
-                    'clientId' => 'test-eca-client',
-                    'clientSecret' => 'test-only-eca-secret'
+                    'integrationUserId' => String.valueOf(admin.Id)
                 }));
             } catch (AuraHandledException ex) {
                 unknownChannelRejected = ex.getMessage().contains('Messaging Channel does not exist');
@@ -255,7 +252,7 @@ private class PanelSalesforceChannelServiceTest {
     }
 
     @IsTest
-    static void connectChannelRegistersCredentialsForPreparedChannel() {
+    static void connectChannelRegistersPreparedChannelWithoutSecrets() {
         User admin = setupAdminAccess();
         assignApiPermission(admin);
         String channelId = String.valueOf(syntheticMessagingChannelId());
@@ -274,52 +271,20 @@ private class PanelSalesforceChannelServiceTest {
         System.runAs(admin) {
             PanelSalesforceChannelService.connectChannel(JSON.serialize(new Map<String, String>{
                 'channelId' => channelId,
-                'integrationUserId' => String.valueOf(admin.Id),
-                'clientId' => 'test-eca-client',
-                'clientSecret' => 'test-only-eca-secret'
+                'integrationUserId' => String.valueOf(admin.Id)
             }));
         }
         Test.stopTest();
 
+        // Durable regression: registration must never carry ECA client
+        // credentials. Panel mints with the packaged universal execution
+        // client whose secret lives only in Panel.
         Map<String, Object> payload = (Map<String, Object>) JSON.deserializeUntyped(mock.lastRequest.getBody());
         System.assertEquals(channelId, payload.get('channelId'));
         System.assertEquals(String.valueOf(admin.Id), payload.get('integrationUserId'));
-        System.assertEquals(true, payload.containsKey('clientSecret'));
-    }
-
-    @IsTest
-    static void executionUserCanConnectAndDisconnectWithPreparedPermission() {
-        User admin = setupAdminAccess();
-        assignApiPermission(admin);
-        String channelId = String.valueOf(syntheticMessagingChannelId());
-        String userId = String.valueOf(admin.Id);
-        System.runAs(admin) {
-            insert new Tubot_API_Channel__c(
-                Channel_Id__c = channelId,
-                Integration_User_Id__c = userId,
-                Team_Id__c = 'team_mock_123'
-            );
-        }
-        Test.setMock(HttpCalloutMock.class, new ChannelCalloutMock(204, ''));
-
-        Test.startTest();
-        System.runAs(admin) {
-            PanelSalesforceChannelService.connectExecutionUser(JSON.serialize(new Map<String, String>{
-                'channelId' => channelId,
-                'integrationUserId' => userId,
-                'clientId' => 'test-execution-client',
-                'clientSecret' => 'test-only-execution-secret'
-            }));
-            PanelSalesforceChannelService.disconnectExecutionUser(channelId, userId);
-        }
-        Test.stopTest();
-
-        System.runAs(admin) {
-            System.assertEquals(0, [
-                SELECT COUNT() FROM Tubot_API_Channel__c
-                WHERE Channel_Id__c = :channelId AND Integration_User_Id__c = :userId
-            ]);
-        }
+        System.assertEquals(false, payload.containsKey('clientSecret'), 'Registration payload must not contain a client secret.');
+        System.assertEquals(false, payload.containsKey('client_secret'), 'Registration payload must not contain a client secret.');
+        System.assertEquals(false, payload.containsKey('clientId'), 'Registration payload must not contain a client id.');
     }
 
     @IsTest
@@ -395,12 +360,28 @@ private class PanelSalesforceChannelServiceTest {
         } else {
             assignmentId = existing[0].Id;
         }
+        // Invoke execute() directly instead of enqueueJob + stopTest: the async
+        // flush also runs the chained record-update job, whose USER_MODE
+        // channel query lacks FLS in the reduced-permission async test
+        // context of packaging build orgs. REMOVE produces no inserts, so no
+        // chain fires inline; the reconcile + delete under test runs
+        // identically (same precedent as PanelApiAssignmentQueueableTest).
         Test.startTest();
-        System.enqueueJob(new PanelApiAssignmentQueueable(new List<PanelApiAssignmentQueueable.Request>{
+        new PanelApiAssignmentQueueable(new List<PanelApiAssignmentQueueable.Request>{
             new PanelApiAssignmentQueueable.Request(userId, 'REMOVE', assignmentId)
-        }));
+        }).execute(null);
         Test.stopTest();
         System.assertEquals(0, [SELECT COUNT() FROM PermissionSetAssignment WHERE Id = :assignmentId]);
         }
+    }
+
+    @IsTest
+    static void deprecatedPanelApiSurfacesCutoverGuidance() {
+        HttpResponse gone = new HttpResponse();
+        gone.setStatusCode(410);
+        gone.setBody('{"error":"deprecated","message":"Salesforce channel management has moved to the new Panel. Manage channels in Panel settings instead of this API."}');
+        String message = PanelSalesforceChannelSupportService.panelFailure(gone, 'Salesforce channel connection failed');
+        System.assert(message.contains('HTTP 410'), 'The 410 status must be visible: ' + message);
+        System.assert(message.contains('new Panel'), 'Cutover guidance must name the new Panel: ' + message);
     }
 }

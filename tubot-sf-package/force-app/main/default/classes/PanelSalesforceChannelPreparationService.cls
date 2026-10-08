@@ -64,7 +64,7 @@ public with sharing class PanelSalesforceChannelPreparationService {
         ];
         context.assignmentOwned = !context.assignmentExists;
         for (Tubot_API_Channel__c sibling : context.siblings) {
-            if (sibling.Assignment_Owned__c) { context.assignmentOwned = true; }
+            if (sibling.Assignment_Owned__c == true) { context.assignmentOwned = true; }
             if (String.isNotBlank(sibling.Assignment_Id__c)) { context.assignmentId = sibling.Assignment_Id__c; }
         }
     }
@@ -105,7 +105,7 @@ public with sharing class PanelSalesforceChannelPreparationService {
         if (!context.assignmentOwned) { return; }
         List<Tubot_API_Channel__c> updates = new List<Tubot_API_Channel__c>();
         for (Tubot_API_Channel__c sibling : context.siblings) {
-            if (!sibling.Assignment_Owned__c) {
+            if (sibling.Assignment_Owned__c != true) {
                 sibling.Assignment_Owned__c = true;
                 sibling.Assignment_Id__c = context.assignmentId;
                 updates.add(sibling);

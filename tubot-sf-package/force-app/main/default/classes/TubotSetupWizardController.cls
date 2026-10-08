@@ -7,6 +7,10 @@
 public with sharing class TubotSetupWizardController {
 
     public static final String API_READ_PERMISSION_SET = 'Tubot_Salesforce_API_Read';
+    // Subscriber-side pre-authorization membership for the packaged execution
+    // client (JWT bearer flow). Created by the policies CLI command (unpackaged:
+    // managed permsets cannot be pre-auth members) and assigned here by DML.
+    public static final String JWT_PREAUTH_PERMISSION_SET = 'Tubot_JWT_PreAuth';
     public static final String SETTINGS_ADMIN_PERMISSION_SET = 'Panel_Settings_Admin_Access';
     public static final String CHANNEL_ADMIN_PERMISSION_SET = 'Tubot_Channel_Connection_Admin_Access';
 
@@ -128,7 +132,11 @@ public with sharing class TubotSetupWizardController {
     }
 
     /**
-     * @description Assigns the packaged Tubot API Read permission set to a selected user.
+     * @description Assigns API access to a selected user: the packaged API Read
+     * permission set (required) plus the subscriber-side JWT pre-authorization
+     * membership (when the policies CLI command has created it). Skips the
+     * pre-auth assignment with a flag when absent so setup can guide the admin
+     * to run the policies command first.
      */
     @AuraEnabled
     public static Map<String, Object> assignApiPermissionSet(String userIdentifier) {
@@ -143,44 +151,68 @@ public with sharing class TubotSetupWizardController {
         if (psId == null) {
             throw new AuraHandledException('Permission Set ' + API_READ_PERMISSION_SET + ' is missing from this org.');
         }
+        ensurePermissionSetAssigned(targetUserId, psId);
 
-        List<PermissionSetAssignment> existing = [
-            SELECT Id FROM PermissionSetAssignment
-            WHERE AssigneeId = :targetUserId AND PermissionSetId = :psId
-            WITH USER_MODE
-            LIMIT 1
-        ];
-
-        if (existing.isEmpty()) {
-            PermissionSetAssignment psa = new PermissionSetAssignment(
-                AssigneeId = targetUserId,
-                PermissionSetId = psId
-            );
-            Database.insert(psa, AccessLevel.USER_MODE);
+        Id preAuthId = resolveSubscriberPermissionSetId(JWT_PREAUTH_PERMISSION_SET);
+        Boolean preAuthAssigned = false;
+        if (preAuthId != null) {
+            ensurePermissionSetAssigned(targetUserId, preAuthId);
+            preAuthAssigned = true;
         }
 
         return new Map<String, Object>{
             'success' => true,
             'userId' => String.valueOf(targetUserId),
             'permissionSet' => API_READ_PERMISSION_SET,
-            'isAssigned' => true
+            'isAssigned' => true,
+            'preAuthAssigned' => preAuthAssigned
         };
     }
 
+    private static void ensurePermissionSetAssigned(Id targetUserId, Id psId) {
+        List<PermissionSetAssignment> existing = [
+            SELECT Id FROM PermissionSetAssignment
+            WHERE AssigneeId = :targetUserId AND PermissionSetId = :psId
+            WITH USER_MODE
+            LIMIT 1
+        ];
+        if (existing.isEmpty()) {
+            insert as user new PermissionSetAssignment(
+                AssigneeId = targetUserId,
+                PermissionSetId = psId
+            );
+        }
+    }
+
+    private static Id resolveSubscriberPermissionSetId(String baseName) {
+        List<PermissionSet> sets = [
+            SELECT Id FROM PermissionSet
+            WHERE Name = :baseName AND NamespacePrefix = null
+            WITH USER_MODE
+            LIMIT 1
+        ];
+        return sets.isEmpty() ? null : sets[0].Id;
+    }
+
     /**
-     * @description Returns ECA configuration details and guidelines for AppExchange compliance.
+     * @description Returns the packaged execution-client details plus the
+     * subscriber pre-authorization guidance. Both OAuth clients ship in the
+     * package; the admin runs the policies CLI command once per org (no
+     * secrets, no Setup clicks), and setup assigns pre-auth membership by DML.
+     * Panel mints short-lived JWT tokens only for pre-authorized users.
      */
     @AuraEnabled
     public static Map<String, Object> getEcaSetupGuidance() {
         PanelAuthSupportService.requireSettingsAdmin();
 
         return new Map<String, Object>{
-            'recommendedAppName' => 'Tubot_SF_Channel_API',
-            'recommendedAppLabel' => 'Tubot SF Channel API',
+            'recommendedAppName' => 'Tubot_Channel_API',
+            'recommendedAppLabel' => 'TuBot Channel API',
             'requiredScopes' => 'Api, OpenID, RefreshToken',
-            'oauthFlow' => 'Client Credentials Flow',
+            'oauthFlow' => 'JWT Bearer Flow',
             'callbackUrl' => PanelAuthSupportService.DEFAULT_PANEL_URL + '/oauth/callback',
-            'setupUrl' => '/lightning/setup/ExternalClientApps/home'
+            'setupUrl' => '/lightning/setup/ExternalClientApps/home',
+            'policiesCli' => 'bun scripts/setup-eca-policies.mjs --target-org YOUR_ORG_ALIAS'
         };
     }
 
@@ -208,13 +240,23 @@ public with sharing class TubotSetupWizardController {
         };
     }
 
+    // Resolve the permission set matching this code's own namespace. Dev orgs
+    // can hold both the packaged and unpackaged copies; a bare LIMIT 1 lookup
+    // may assign one copy while connect/prepare checks the other, deadlocking
+    // setup with "still being prepared". Mirrors resolveApiPermissionSetId.
     private static Id resolvePermissionSetId(String baseName) {
+        String here = TubotSetupWizardController.class.getName();
+        String wantNs = here.contains('.') ? here.substringBefore('.') : null;
         List<PermissionSet> sets = [
-            SELECT Id, Name FROM PermissionSet
-            WHERE Name = :baseName OR Name LIKE :('%__' + baseName)
+            SELECT Id, NamespacePrefix FROM PermissionSet
+            WHERE Name = :baseName
             WITH USER_MODE
-            LIMIT 1
         ];
+        for (PermissionSet ps : sets) {
+            if (ps.NamespacePrefix == wantNs) {
+                return ps.Id;
+            }
+        }
         return sets.isEmpty() ? null : sets[0].Id;
     }
 }

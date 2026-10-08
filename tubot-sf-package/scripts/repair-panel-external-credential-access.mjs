@@ -209,7 +209,7 @@ function externalCredentialMetadata() {
         `</ExternalCredential>\n`;
 }
 
-function namedCredentialMetadata(panelBaseUrl = 'https://tubot-new-panel.emalteaproductions.workers.dev') {
+function namedCredentialMetadata(panelBaseUrl = 'https://panel.tubot.lat') {
     return `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">\n` +
         `    <allowMergeFieldsInBody>false</allowMergeFieldsInBody>\n` +
@@ -260,7 +260,7 @@ function permissionSetMetadata(includePackagedPrincipal = false) {
         `</PermissionSet>\n`;
 }
 
-function remoteSiteMetadata(panelBaseUrl = 'https://tubot-new-panel.emalteaproductions.workers.dev') {
+function remoteSiteMetadata(panelBaseUrl = 'https://panel.tubot.lat') {
     return `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<RemoteSiteSetting xmlns="http://soap.sforce.com/2006/04/metadata">\n` +
         `    <description>Active remote site setting for TuBot Panel polling and callouts</description>\n` +

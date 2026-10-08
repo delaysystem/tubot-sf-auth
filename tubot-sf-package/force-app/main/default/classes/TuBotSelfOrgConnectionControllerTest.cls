@@ -39,7 +39,6 @@ private class TuBotSelfOrgConnectionControllerTest {
         config.Panel_Team_Id__c = 'test-team';
         config.Panel_Team_Name__c = 'Test Panel Team';
         config.Panel_Permissions__c = 'edit_salesforce_settings';
-        config.Self_Org_ECA_Client_Id__c = 'test-eca-client';
         upsert config;
     }
 
@@ -47,31 +46,12 @@ private class TuBotSelfOrgConnectionControllerTest {
         return [SELECT Id FROM User WHERE Id = :UserInfo.getUserId()];
     }
 
-    private static void setClientId(String clientId) {
-        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
-        config.Self_Org_ECA_Client_Id__c = clientId;
-        Database.upsert(config, AccessLevel.SYSTEM_MODE);
-    }
-
     @IsTest
-    static void connectionStatusReportsMissingClientSetup() {
-        PanelAuthSupportService.managePermissionTestOverride = true;
-        setClientId(null);
-        User admin = currentUser();
-        Map<String, Object> result;
-        System.runAs(admin) {
-            result = TuBotSelfOrgConnectionController.getConnectionStatus();
-        }
-        System.assertEquals(false, result.get('configured'));
-        System.assertEquals(false, result.get('connected'));
-        System.assert(((String) result.get('message')).contains('PKCE setup'));
-    }
-
-    @IsTest
-    static void connectionStatusPromptsForPanelLoginFirst() {
+    static void connectionStatusIsAlwaysConfiguredForBundledClient() {
+        // The Panel-connection client ships in the package (global
+        // consumer): no per-org ECA setup can be missing.
         PanelAuthSupportService.managePermissionTestOverride = true;
         MCP_Config__c config = MCP_Config__c.getOrgDefaults();
-        config.Self_Org_ECA_Client_Id__c = 'test-eca-client';
         config.Panel_Team_Id__c = null;
         Database.upsert(config, AccessLevel.SYSTEM_MODE);
 
@@ -87,27 +67,12 @@ private class TuBotSelfOrgConnectionControllerTest {
     }
 
     @IsTest
-    static void authorizationUrlRequiresEcaSetup() {
-        PanelAuthSupportService.managePermissionTestOverride = true;
-        setClientId(null);
-        User admin = currentUser();
-        Boolean rejected = false;
-        System.runAs(admin) {
-            try {
-                TuBotSelfOrgConnectionController.getAuthorizationUrl();
-            } catch (AuraHandledException ex) {
-                rejected = true;
-            }
-        }
-        System.assertEquals(true, rejected);
-    }
-
-    @IsTest
     static void authorizationUrlUsesPanelPkceBroker() {
         PanelAuthSupportService.managePermissionTestOverride = true;
-        Test.setMock(HttpCalloutMock.class, new PanelResponseMock(
+        PanelResponseMock mock = new PanelResponseMock(
             200, '{"authorizationUrl":"https://login.salesforce.com/services/oauth2/authorize?response_type=code"}'
-        ));
+        );
+        Test.setMock(HttpCalloutMock.class, mock);
         User admin = currentUser();
         String result;
         Test.startTest();
@@ -116,6 +81,11 @@ private class TuBotSelfOrgConnectionControllerTest {
         }
         Test.stopTest();
         System.assertEquals('https://login.salesforce.com/services/oauth2/authorize?response_type=code', result);
+        // Durable regression: the org sends only its own identity. Panel
+        // holds the packaged global consumer key.
+        Map<String, Object> payload = (Map<String, Object>) JSON.deserializeUntyped(mock.requestBody);
+        System.assertEquals(false, payload.containsKey('clientId'), 'Authorize request must not carry a client id.');
+        System.assertEquals(false, payload.containsKey('clientSecret'), 'Authorize request must not carry a client secret.');
     }
 
     @IsTest

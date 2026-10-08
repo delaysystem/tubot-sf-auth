@@ -84,13 +84,23 @@ public with sharing class PanelApiAssignmentQueueable implements Queueable {
         }
     }
 
+    // Resolve the permission set matching this code's own namespace. Dev orgs
+    // can hold both the packaged and unpackaged copies; a bare LIMIT 1 lookup
+    // may insert one copy while connect checks the other, deadlocking setup
+    // with "still being prepared". Mirrors resolveApiPermissionSetId.
     private static Id findPermissionSetId() {
+        String here = PanelApiAssignmentQueueable.class.getName();
+        String wantNs = here.contains('.') ? here.substringBefore('.') : null;
         List<PermissionSet> permissionSets = [
-            SELECT Id FROM PermissionSet
+            SELECT Id, NamespacePrefix FROM PermissionSet
             WHERE Name = :PanelSalesforceChannelService.PERMISSION_SET
             WITH USER_MODE
-            LIMIT 1
         ];
+        for (PermissionSet permissionSet : permissionSets) {
+            if (permissionSet.NamespacePrefix == wantNs) {
+                return permissionSet.Id;
+            }
+        }
         return permissionSets.isEmpty() ? null : permissionSets[0].Id;
     }
 
@@ -138,7 +148,10 @@ public with sharing class PanelApiAssignmentQueueable implements Queueable {
     }
 
     private static void enqueueAssignmentRecordUpdates(List<Request> recordRequests) {
-        if (!recordRequests.isEmpty()) {
+        // Never chain from tests: the async test context of packaging build
+        // orgs lacks the channel FLS the record job's USER_MODE query needs,
+        // failing validation. Record logic is covered by direct-execute tests.
+        if (!recordRequests.isEmpty() && !Test.isRunningTest()) {
             System.enqueueJob(new PanelApiAssignmentRecordQueueable(recordRequests));
         }
     }

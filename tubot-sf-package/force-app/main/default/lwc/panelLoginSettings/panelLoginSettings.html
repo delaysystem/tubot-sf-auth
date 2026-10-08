@@ -52,24 +52,104 @@
             <!-- Tab: Setup Wizard -->
             <lightning-tab label="Setup Wizard" value="wizard" icon-name="utility:setup_assistant_guide">
                 <div class="slds-m-top_small">
-                    <!-- One-Line CLI Post-Install (collapsed: alternative to the guided wizard below) -->
-                    <lightning-accordion allow-multiple-sections-open class="slds-m-bottom_medium">
-                        <lightning-accordion-section name="cliPostinstall" label="One-Line CLI Post-Install (Specific Org)">
-                            <p class="slds-text-body_small text-gray-600 slds-m-bottom_x-small">
-                                Run the full interactive post-install from any workstation (Windows, Linux, or macOS) against one specific org — no scratch org is created. The wizard lists your authenticated Salesforce orgs to pick the target, then selects the integration user, selects or creates the Messaging Channel and Omni-Queue, walks through Panel sign-in, provisions the External Client App, registers the channel with Panel, and runs the blind-verification self-test.
-                            </p>
-                            <p class="slds-text-body_small slds-m-bottom_x-small">
-                                <strong>Prerequisites:</strong> Python 3.9+, curl, and Salesforce CLI authenticated to the org (run <code>sf org login web</code> first if the org list is empty).
-                            </p>
-                            <pre class="slds-box slds-theme_shade slds-text-body_small font-mono" style="white-space: pre-wrap; word-break: break-all;"><lightning-formatted-text value={postinstallCommand}></lightning-formatted-text></pre>
-                            <div class="slds-m-top_x-small">
-                                <lightning-button variant="neutral" label="Copy Command" icon-name="utility:copy" onclick={handleCopyPostinstallCommand} size="small"></lightning-button>
+                    <!-- Simple Setup (recommended): one-click automatic setup -->
+                    <article class="slds-card slds-box slds-theme_default slds-m-bottom_medium">
+                        <div class="slds-card__header slds-grid">
+                            <header class="slds-media slds-media_center slds-has-flexi-truncate">
+                                <div class="slds-media__figure">
+                                    <lightning-icon icon-name="standard:bot" size="small" alternative-text="Simple Setup"></lightning-icon>
+                                </div>
+                                <div class="slds-media__body">
+                                    <h2 class="slds-card__header-title">
+                                        <span class="slds-text-heading_small font-bold">Simple Setup (Recommended)</span>
+                                    </h2>
+                                    <p class="slds-text-body_small text-gray-500">
+                                        One click runs the full setup automatically in this org.
+                                    </p>
+                                </div>
+                                <template if:true={simpleSetupDone}>
+                                    <span class="slds-badge slds-theme_success">Completed</span>
+                                </template>
+                            </header>
+                        </div>
+                        <div class="slds-card__body slds-card__body_inner">
+                            <ul class="slds-list_dotted slds-text-body_small slds-m-bottom_small">
+                                <li>Selects the integration user and assigns API access</li>
+                                <li>Selects or creates the Messaging Channel and Omni-Queue</li>
+                                <li>Confirms the packaged execution client (assign Run As below)</li>
+                                <li>Registers the channel and verifies end to end</li>
+                            </ul>
+                            <template if:true={simpleSetupEcaGuidance}>
+                                <div class="slds-box slds-theme_shade slds-m-bottom_small">
+                                    <p class="slds-text-body_small"><strong>Pre-authorization for {simpleSetupEcaGuidance.appLabel}:</strong> run the policies command, then re-run Simple Setup:</p>
+                                    <pre class="slds-box slds-theme_default slds-text-body_small slds-m-top_x-small"><lightning-formatted-text value={simpleSetupEcaGuidance.cliCommand}></lightning-formatted-text></pre>
+                                </div>
+                            </template>
+                            <template if:true={wizardUserOptions.length}>
+                                <lightning-combobox
+                                    label="Integration user"
+                                    value={selectedWizardUserId}
+                                    options={wizardUserOptions}
+                                    onchange={handleWizardSelectUser}
+                                    disabled={simpleSetupRunning}
+                                    class="slds-m-bottom_small">
+                                </lightning-combobox>
+                            </template>
+                            <template if:true={messagingChannelOptions.length}>
+                                <lightning-combobox
+                                    label="Messaging Channel"
+                                    value={selectedChannelId}
+                                    options={messagingChannelOptions}
+                                    onchange={handleChannelChange}
+                                    disabled={simpleSetupRunning}
+                                    class="slds-m-bottom_small">
+                                </lightning-combobox>
+                            </template>
+                            <template if:false={messagingChannelOptions.length}>
+                                <p class="slds-text-body_small slds-m-bottom_small">No Messaging Channel yet — Simple Setup will create one automatically.</p>
+                            </template>
+                            <lightning-input
+                                type="checkbox"
+                                label="I understand Simple Setup will create the items above in this org"
+                                checked={simpleSetupConsented}
+                                onchange={handleSimpleSetupConsent}
+                                disabled={simpleSetupRunning}>
+                            </lightning-input>
+                            <template if:true={simpleSetupSteps.length}>
+                                <ul class="slds-m-top_small">
+                                    <template for:each={simpleSetupSteps} for:item="step">
+                                        <li key={step.key} class="slds-grid slds-grid_vertical-align-center slds-m-bottom_xx-small">
+                                            <template if:true={step.showSpinner}>
+                                                <lightning-spinner size="small" alternative-text="Running..."></lightning-spinner>
+                                            </template>
+                                            <template if:false={step.showSpinner}>
+                                                <lightning-icon icon-name={step.iconName} size="x-small" alternative-text={step.state}></lightning-icon>
+                                            </template>
+                                            <span class="slds-m-left_x-small slds-text-body_small"><strong>{step.label}</strong></span>
+                                            <template if:true={step.message}>
+                                                <span class="slds-m-left_x-small slds-text-body_small text-gray-600">{step.message}</span>
+                                            </template>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </template>
+                            <template if:true={simpleSetupError}>
+                                <div class="slds-notify slds-notify_alert slds-alert_error slds-m-top_small" role="alert">
+                                    <span>{simpleSetupError}</span>
+                                </div>
+                            </template>
+                            <div class="slds-m-top_small">
+                                <lightning-button
+                                    variant="brand"
+                                    label="Run Simple Setup"
+                                    icon-name="utility:play"
+                                    onclick={handleSimpleSetupRun}
+                                    disabled={simpleSetupRunDisabled}>
+                                </lightning-button>
                             </div>
-                            <p class="slds-text-body_small text-gray-600 slds-m-top_x-small">
-                                No arguments needed: pick the target org when the wizard lists your authenticated orgs — the script never auto-selects an org. Windows (python.org installs): use <code>python</code> instead of <code>python3</code>; in older PowerShell use <code>curl.exe</code> instead of <code>curl</code>. The installer is served by Panel at <code>{postinstallScriptUrl}</code> and contains no secrets.
-                            </p>
-                        </lightning-accordion-section>
-                    </lightning-accordion>
+                        </div>
+                    </article>
+                    <template if:true={showLegacySetupUi}>
                     <!-- Progress Indicator -->
                     <div class="slds-box slds-theme_default slds-m-bottom_medium">
                         <lightning-progress-indicator current-step={wizardStep} type="path" variant="base">
@@ -287,10 +367,10 @@
                                     </div>
                                     <div class="slds-media__body">
                                         <h2 class="slds-card__header-title">
-                                            <span class="slds-text-heading_small font-bold">Step 3: External Client App (ECA) Policy &amp; OAuth Setup</span>
+                                            <span class="slds-text-heading_small font-bold">Step 3: Execution Client Pre-Authorization</span>
                                         </h2>
                                         <p class="slds-text-body_small text-gray-500">
-                                            Configure a Local External Client App in Salesforce Setup using the parameters below.
+                                            The TuBot Channel API client ships in the package. Run the policies command once per org, then connect.
                                         </p>
                                     </div>
                                 </header>
@@ -322,11 +402,12 @@
 
                                 <div class="slds-box slds-box_x-small slds-theme_default slds-m-bottom_medium">
                                     <ol class="slds-list_ordered slds-text-body_small slds-m-left_medium">
-                                        <li class="slds-m-bottom_xx-small">Click the button below to open <strong>External Client App Manager</strong> in Salesforce Setup.</li>
-                                        <li class="slds-m-bottom_xx-small">Click <strong>New Local External Client App</strong> and enter name <code>Tubot_SF_Channel_API</code>.</li>
-                                        <li class="slds-m-bottom_xx-small">Enable OAuth Settings, select scopes <code>api</code> and <code>openid</code>, and enable <strong>Client Credentials Flow</strong>.</li>
-                                        <li class="slds-m-bottom_xx-small">In OAuth Policies, set <strong>Run As</strong> to <code>{selectedWizardUserUsername}</code>.</li>
-                                        <li>Copy the Consumer Key and Consumer Secret, then proceed to Step 4.</li>
+                                        <li class="slds-m-bottom_xx-small">From the package folder, run the policies command (uses your own authenticated CLI session, no secrets):</li>
+                                    </ol>
+                                    <pre class="slds-box slds-theme_shade slds-text-body_small slds-m-vertical_x-small"><lightning-formatted-text value={wizardEcaPoliciesCli}></lightning-formatted-text></pre>
+                                    <ol class="slds-list_ordered slds-text-body_small slds-m-left_medium" start="2">
+                                        <li class="slds-m-bottom_xx-small">The command creates the subscriber pre-authorization and locks the packaged app to admin-approved users.</li>
+                                        <li>Assigning the integration user (Step 2) grants pre-auth membership automatically. Nothing to paste, no Setup clicks.</li>
                                     </ol>
                                     <div class="slds-m-top_small">
                                         <lightning-button
@@ -355,10 +436,10 @@
                                     </div>
                                     <div class="slds-media__body">
                                         <h2 class="slds-card__header-title">
-                                            <span class="slds-text-heading_small font-bold">Step 4: Register &amp; Verify Channel API Credentials</span>
+                                            <span class="slds-text-heading_small font-bold">Step 4: Register &amp; Verify Channel</span>
                                         </h2>
                                         <p class="slds-text-body_small text-gray-500">
-                                            Register the ECA credentials for your Messaging Channel to enable secure, channel-scoped tool execution.
+                                            Register your Messaging Channel. Panel verifies the Run As mapping server-side; nothing to paste.
                                         </p>
                                     </div>
                                 </header>
@@ -368,7 +449,7 @@
                                     <div class="slds-notify slds-notify_alert slds-alert_success slds-m-bottom_medium" role="alert">
                                         <span class="slds-assistive-text">Success</span>
                                         <span>
-                                            🎉 <strong>Setup Complete!</strong> The channel API credentials have been verified and securely registered with Panel. The integration user and External Client App are fully grounded.
+                                            🎉 <strong>Setup Complete!</strong> The channel has been verified and securely registered with Panel. The integration user and Run As mapping are fully grounded.
                                         </span>
                                     </div>
                                 </template>
@@ -391,22 +472,9 @@
                                         </div>
                                     </div>
 
-                                    <lightning-input
-                                        class="slds-m-top_small"
-                                        label="External Client App Consumer Key"
-                                        value={wizardClientId}
-                                        onchange={handleWizardClientIdChange}
-                                        placeholder="Enter ECA Consumer Key (Client ID)...">
-                                    </lightning-input>
-
-                                    <lightning-input
-                                        class="slds-m-top_small"
-                                        type="password"
-                                        label="External Client App Consumer Secret"
-                                        value={wizardClientSecret}
-                                        onchange={handleWizardClientSecretChange}
-                                        placeholder="Enter ECA Consumer Secret...">
-                                    </lightning-input>
+                                    <p class="slds-text-body_small slds-m-top_small">
+                                        The packaged TuBot Channel API client authenticates Panel. Registration fails closed if its Run As user does not match the integration user above.
+                                    </p>
 
                                     <div class="slds-m-top_medium">
                                         <lightning-button
@@ -426,6 +494,19 @@
                             </div>
                         </article>
                     </template>
+                    </template>
+                    <!-- Advanced fallback: manual CLI setup script (collapsed, de-emphasized) -->
+                    <lightning-accordion allow-multiple-sections-open class="slds-m-top_medium">
+                        <lightning-accordion-section name="cliPostinstall" label="Advanced: Manual Setup Script">
+                            <p class="slds-text-body_small slds-m-bottom_x-small">
+                                Prefer Simple Setup above. For break-glass or offline review, the same flow is available as a standalone script (Python 3.9+, curl, authenticated Salesforce CLI).
+                            </p>
+                            <pre class="slds-box slds-theme_shade slds-text-body_small font-mono" style="white-space: pre-wrap; word-break: break-all; font-size: 0.75rem;"><lightning-formatted-text value={postinstallCommand}></lightning-formatted-text></pre>
+                            <div class="slds-m-top_x-small">
+                                <lightning-button variant="neutral" label="Copy Command" icon-name="utility:copy" onclick={handleCopyPostinstallCommand} size="small"></lightning-button>
+                            </div>
+                        </lightning-accordion-section>
+                    </lightning-accordion>
                 </div>
             </lightning-tab>
 
@@ -494,6 +575,7 @@
                                 <lightning-button variant="destructive-text" label="Disconnect Panel" icon-name="utility:logout" onclick={handleLogout}></lightning-button>
                             </div>
 
+                            <template if:true={showLegacySetupUi}>
                             <!-- Technical rows + live Panel data, collapsed by default -->
                             <lightning-accordion allow-multiple-sections-open class="slds-m-bottom_medium">
                                 <lightning-accordion-section name="connectionDetails" label="Connection details">
@@ -547,6 +629,7 @@
                                     </template>
                                 </lightning-accordion-section>
                             </lightning-accordion>
+                            </template>
                         </template>
 
                         <!-- Disconnected State -->
@@ -579,12 +662,6 @@
                                             <p class="slds-text-body_small slds-m-top_small">The repair uses Salesforce Metadata REST and cURL to add a small org-local permission set, assigns it only to the currently authenticated Salesforce user, and verifies the access with Salesforce CLI. It does not read, print, or store a Panel token. Return here and click <strong>Connect with Panel</strong> again.</p>
                                             <p class="slds-text-body_small slds-m-top_small">If the script reports the Panel External Credential or Named Credential is missing, upgrade or reinstall TuBot first so Salesforce restores the packaged credential definitions.</p>
                                             <p class="slds-text-body_small slds-m-top_small">Manual option: in Setup, create a permission set, open <strong>Object Settings → User External Credentials</strong>, grant Read, Create, Edit, Delete, and View All, then assign it to this admin.</p>
-                                            <div class="slds-border_top slds-m-top_medium slds-p-top_small">
-                                                <p class="slds-text-title_bold">Restore the Salesforce API ECA</p>
-                                                <p class="slds-text-body_small slds-m-vertical_x-small">The PKCE Salesforce API app is separate from Panel token storage. From the TuBot source checkout, run this as a Salesforce admin to recreate it and save its consumer key:</p>
-                                                <pre class="slds-box slds-theme_shade slds-text-body_small"><lightning-formatted-text value={selfOrgSetupCommand}></lightning-formatted-text></pre>
-                                                <p class="slds-text-body_small slds-m-top_x-small">It uses PKCE without a client secret. Salesforce API connection instructions also appear in this tab after Panel connects.</p>
-                                            </div>
                                         </lightning-accordion-section>
                                     </lightning-accordion>
                                 </template>
@@ -629,13 +706,14 @@
             </div>
         </div>
 
+        <template if:true={showLegacySetupUi}>
         <template if:true={isConnected}>
             <article class="slds-card slds-box slds-theme_default slds-m-top_medium">
                 <h2 class="slds-text-heading_small slds-m-bottom_small">Salesforce API access by Messaging Channel</h2>
                 <p class="slds-text-body_small slds-m-bottom_medium">
-                    Panel login uses a Salesforce External Credential for the Panel token. Salesforce API access uses a separate External Client App (ECA).
-                    The package assigns its API permission set to each selected user and verifies that each ECA token belongs to this org and Run As user.
-                    Add multiple execution users to rotate Conversation Data API requests when a user reaches its per-minute limit. Each ECA has one Run As user.
+                    Panel login uses a Salesforce External Credential for the Panel token. Salesforce API access uses the packaged TuBot Channel API client.
+                    The package assigns its API permission set to the selected user; Panel mints short-lived tokens and verifies the Run As mapping during registration.
+                    One execution user per channel: the integration user configured as Run As on the packaged app.
                 </p>
                 <template if:true={apiConnectionsError}>
                     <div class="slds-notify slds-notify_alert slds-alert_error slds-m-bottom_small" role="alert">
@@ -664,26 +742,9 @@
                                 <template if:true={executionUser.isPrimary}>
                                     <lightning-badge label="Primary"></lightning-badge>
                                 </template>
-                                <template if:false={executionUser.isPrimary}>
-                                    <lightning-button-icon icon-name="utility:delete" alternative-text="Remove execution user"
-                                        title="Remove execution user" data-user-id={executionUser.integrationUserId}
-                                        onclick={handleDisconnectApiExecutionUser} disabled={isApiConnectionBusy}></lightning-button-icon>
-                                </template>
                             </div>
                         </template>
                     </div>
-                    <lightning-accordion allow-multiple-sections-open class="slds-m-top_small">
-                        <lightning-accordion-section name="addExecutionUser" label="Add an execution user">
-                            <lightning-input label="Integration user ID" value={apiExecutionIntegrationUserId}
-                                onchange={handleApiExecutionIntegrationUserChange}></lightning-input>
-                            <lightning-input class="slds-m-top_x-small" label="ECA consumer key" value={apiExecutionClientId}
-                                onchange={handleApiExecutionClientIdChange}></lightning-input>
-                            <lightning-input class="slds-m-top_x-small" type="password" label="ECA consumer secret"
-                                value={apiExecutionClientSecret} onchange={handleApiExecutionClientSecretChange}></lightning-input>
-                            <lightning-button class="slds-m-top_small" variant="brand" label="Add execution user"
-                                onclick={handleConnectApiExecutionUser} disabled={apiConnectionDisabled}></lightning-button>
-                        </lightning-accordion-section>
-                    </lightning-accordion>
                     <lightning-button class="slds-m-top_small" variant="destructive" label="Disconnect channel API access"
                         onclick={handleDisconnectApiChannel} disabled={apiConnectionDisabled}></lightning-button>
                     <lightning-button class="slds-m-top_small slds-m-left_x-small" variant="brand-outline" label="View Tool Proxy Endpoints" icon-name="utility:link" onclick={handleFetchToolProxies} disabled={toolProxiesLoading}></lightning-button>
@@ -696,17 +757,15 @@
                     </template>
                     <lightning-input class="slds-m-top_small" label="Integration user ID" value={apiIntegrationUserId}
                         onchange={handleApiIntegrationUserChange}></lightning-input>
-                    <lightning-input label="ECA consumer key" value={apiClientId} onchange={handleApiClientIdChange}></lightning-input>
-                    <lightning-input type="password" label="ECA consumer secret" value={apiClientSecret}
-                        onchange={handleApiClientSecretChange}></lightning-input>
                     <lightning-button class="slds-m-top_small" variant="brand" label="Connect channel API access"
                         onclick={handleConnectApiChannel} disabled={apiConnectionDisabled}></lightning-button>
                     <p class="slds-text-body_small slds-m-top_x-small">
-                        Need an app first? Complete Step 3 of the Setup Wizard tab to create the External Client App, then return here to connect.
-                        Never include the consumer secret in support messages.
+                        Assign the integration user as Run As on the packaged TuBot Channel API app first (Step 3 of the Setup Wizard tab).
+                        Registration verifies the mapping server-side; there is nothing to paste.
                     </p>
                 </template>
             </article>
+        </template>
         </template>
 
     </lightning-tab>
@@ -803,22 +862,9 @@
                                         <span>{selfOrgConnectionError}</span>
                                     </div>
                                 </template>
-                                <template if:true={showSelfOrgSetupInstructions}>
-                                    <lightning-accordion allow-multiple-sections-open class="slds-m-top_small">
-                                        <lightning-accordion-section name="selfOrgPkceSetup" label="PKCE setup instructions">
-                                            <p class="slds-text-body_small slds-m-bottom_x-small">From the tubot-sf-package folder after installing or deploying the package:</p>
-                                            <pre class="slds-box slds-theme_shade slds-text-body_small"><lightning-formatted-text value={selfOrgSetupCommand}></lightning-formatted-text></pre>
-                                            <p class="slds-text-body_small slds-m-top_small">The command creates the public External Client App, reads the callback base URL from MCP_Config__c, saves the ECA consumer key, and verifies that setting with Salesforce CLI. It never requests a client secret.</p>
-                                            <p class="slds-text-title_bold slds-m-top_small">Manual setup</p>
-                                            <ol class="slds-list_ordered slds-m-left_medium slds-text-body_small">
-                                                <li>Create a local External Client App with API, OpenID, and Refresh Token scopes.</li>
-                                                <li>Enable Authorization Code, require S256 PKCE, allow a missing consumer secret, and disable secret requirements for token exchange and refresh.</li>
-                                                <li>Set the callback to the configured Panel base URL followed by <code>/api/v1/salesforce/self-oauth/callback</code>.</li>
-                                                <li>Save the app's consumer key in <code>MCP_Config__c.Self_Org_ECA_Client_Id__c</code>.</li>
-                                            </ol>
-                                        </lightning-accordion-section>
-                                    </lightning-accordion>
-                                </template>
+                                <p class="slds-text-body_small slds-text-color_weak slds-m-top_small">
+                                    The Panel-connection client ships in the package: just click Connect and authorize. No setup command, no keys to save.
+                                </p>
                             </div>
                         </template>
 
