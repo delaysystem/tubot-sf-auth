@@ -1,4 +1,5 @@
 import { sameSalesforceId } from "./salesforce-id";
+import { emailAlertLiveExecutorId } from "./email-alert-owned-context";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -15,6 +16,10 @@ export async function invokeSessionPermissionContext(input: {
   const action = input.route.split("/").at(-1);
   const failure = (errorCode: string, message: string): Result => ({ status: 422, ok: false, body: { errorCode, message } });
   if (!["activateSessionPermSet", "deactivateSessionPermSet"].includes(action ?? "") || !id(input.userId)) return failure("SESSION_CONTEXT_INVALID", "A discovered session action and connected execution identity are required.");
+  // Activation applies to the token identity, not the stored credential
+  // row, which can name a different user; fall back to the stored
+  // identity when userinfo is unreachable.
+  const executorId = (await emailAlertLiveExecutorId(request)) ?? input.userId;
   const definitions: Value = {};
   for (const name of ["PermissionSet", "PermissionSetAssignment", "SessionPermSetActivation"]) {
     const r = await request(`${root}/sobjects/${name}/describe`);
@@ -52,23 +57,23 @@ export async function invokeSessionPermissionContext(input: {
         if (typeof actual.body.NamespacePrefix !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(actual.body.NamespacePrefix)) return failure("SESSION_NAMESPACE_UNAVAILABLE", "The owned permission set namespace is invalid.");
         namespace = actual.body.NamespacePrefix;
       }
-      const assigned = await request(`${root}/sobjects/PermissionSetAssignment`, "POST", { PermissionSetId: permissionSetId, AssigneeId: input.userId });
+      const assigned = await request(`${root}/sobjects/PermissionSetAssignment`, "POST", { PermissionSetId: permissionSetId, AssigneeId: executorId });
       if (!assigned.ok || !id(assigned.body?.id)) return assigned;
       assignmentId = assigned.body.id;
       const assignment = await request(`${root}/sobjects/PermissionSetAssignment/${assignmentId}`);
-      if (!assignment.ok || assignment.body?.PermissionSetId !== permissionSetId || !sameSalesforceId(assignment.body?.AssigneeId, input.userId)) return failure("SESSION_ASSIGNMENT_UNVERIFIED", "The permission set was not assigned to the connected execution user.");
+      if (!assignment.ok || assignment.body?.PermissionSetId !== permissionSetId || !sameSalesforceId(assignment.body?.AssigneeId, executorId)) return failure("SESSION_ASSIGNMENT_UNVERIFIED", "The permission set was not assigned to the connected execution user.");
       if (action === "deactivateSessionPermSet") {
         const activated = await invoke("activateSessionPermSet");
         if (!succeeded(activated)) return activated;
         const rows = await activations();
-        if (rows.length !== 1 || !id(rows[0].Id) || !sameSalesforceId(rows[0].UserId, input.userId)) return failure("SESSION_ACTIVATION_UNVERIFIED", "The prerequisite activation was not stored for the connected execution user.");
+        if (rows.length !== 1 || !id(rows[0].Id) || !sameSalesforceId(rows[0].UserId, executorId)) return failure("SESSION_ACTIVATION_UNVERIFIED", "The prerequisite activation was not stored for the connected execution user.");
         observedActivationIds.push(rows[0].Id);
         if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
       }
       const result = await request(input.route, "POST", { inputs: [argumentsForSession()] });
       if (!succeeded(result)) return result;
       const rows = await activations();
-      verified = action === "activateSessionPermSet" ? rows.length === 1 && id(rows[0].Id) && id(rows[0].AuthSessionId) && sameSalesforceId(rows[0].UserId, input.userId) : rows.length === 0;
+      verified = action === "activateSessionPermSet" ? rows.length === 1 && id(rows[0].Id) && id(rows[0].AuthSessionId) && sameSalesforceId(rows[0].UserId, executorId) : rows.length === 0;
       if (verified && action === "activateSessionPermSet") {
         observedActivationIds.push(rows[0].Id);
         if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
@@ -94,7 +99,7 @@ export async function invokeSessionPermissionContext(input: {
   }
   return { status: outcome.status, body: outcome.body, ...(cleanupError ? { cleanupError } : {}), contextSchema: {
     source: "salesforce_live_session_permission_action", targetObject: "SessionPermSetActivation", markerField: "Label", parentContextObject: "PermissionSet", parentField: "PermissionSetId",
-    permissionSetId, assignmentId, permissionSetName: name, namespace, executionUserId: input.userId, verified, verificationRecordIds: observedActivationIds,
+    permissionSetId, assignmentId, permissionSetName: name, namespace, executionUserId: executorId, recordedUserId: input.userId, verified, verificationRecordIds: observedActivationIds,
     mutationKind: action === "activateSessionPermSet" ? "create" : "delete",
     automaticSteps: ["Discover live permission and activation schemas", "Create an empty owned session permission set", "Assign it to the connected execution identity", "Invoke the current-session action", "Read actual activation state", "Deactivate and remove owned assignment and permission set"],
   } };

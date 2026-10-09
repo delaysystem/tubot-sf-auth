@@ -45,6 +45,7 @@
  *   accountless carts even though the platform leaves the field nillable.
  */
 
+import { isCompoundParent } from "./describe-marker-field";
 import { commercialAccountLinkField, seedCommercialAccountLink } from "./fixture-reference-seeding";
 
 type Value = Record<string, any>;
@@ -54,18 +55,22 @@ const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const OBJECT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
-const ID_SUFFIX = /Id$/i;
+const ID_SUFFIX = /Ids?$/i;
 const NON_ALNUM = /[^a-z0-9]/g;
 const OBJECT_SUFFIX = new Set(["c", "kav", "mdt", "b", "e", "x", "share", "history", "feed"]);
 const NUMERIC_TYPES = new Set(["INTEGER", "LONG", "DOUBLE", "DECIMAL"]);
 /** Platform ID-stem aliases: the stem names no live object but the platform
  * vocabulary fixes the target (Commerce cartId is always a WebCart row;
- * loyalty JournalId is always a TransactionJournal row). Same mapping the
- * searcher sampler uses; alias hits join stem hits under the same
- * exactly-one rule, so a genuine second match stays AMBIGUOUS. */
+ * loyalty JournalId is always a TransactionJournal row; Field Service saID
+ * is always a ServiceAppointment row; the maps summary-event id is always
+ * a LiveAssetDailySummaryEvent row). Same mapping the searcher sampler
+ * uses; alias hits join stem hits under the same exactly-one rule, so a
+ * genuine second match stays AMBIGUOUS. */
 const STEM_ALIASES: Record<string, string[]> = {
   cart: ["webcart"],
   journal: ["transactionjournal"],
+  sa: ["serviceappointment"],
+  sumevent: ["mapsliveassetdailysummaryevent"],
 };
 /** Object-agnostic ID stems: the input names a record without naming its object. */
 const AGNOSTIC_STEMS = new Set(["record", "object", "sobject"]);
@@ -131,9 +136,24 @@ export function apexExecInputSetValid(descriptorInputs: unknown): boolean {
 
 /**
  * Zero-value passthrough args for every required non-ID input (BOOLEAN
- * false, numerics 0). Optional inputs are always omitted. Returns null
- * when a required input has no safe zero value (strings and exotic types):
- * business content is never invented.
+ * false, numerics 0, DATE/DATETIME tomorrow UTC) plus every OPTIONAL
+ * boolean (false — never omitted). All other optionals are omitted.
+ * Returns null when a required input has no safe zero value (strings
+ * and exotic types): business content is never invented.
+ *
+ * Dates bind the SAME tomorrow on every required date input: equal dates
+ * are the minimal window satisfying from<=to range validation, and a
+ * single-day window minimizes the rows a range-selecting vendor can see
+ * (live evidence: clone/status vendors scope by the passed owned ids, so
+ * the window selects owned fixtures only). Past dates are never used:
+ * vendors reject elapsed windows and live history is never in range.
+ *
+ * Optional booleans bind false because null-hostile vendors fault on
+ * omission (live evidence: a clone vendor writes an optional scheduling
+ * flag straight onto the cloned row, and null 400s
+ * VENDOR_DML_ROW_FAULT while false succeeds). False is the conservative
+ * no-op value; optional IDs, strings, and dates still omit (identifiers
+ * are never invented, content never guessed).
  */
 export function apexExecStaticArgs(descriptorInputs: unknown, idInput: string | readonly string[]): Record<string, unknown> | null {
   const inputs = Array.isArray(descriptorInputs) ? descriptorInputs.filter(record) : [];
@@ -142,13 +162,37 @@ export function apexExecStaticArgs(descriptorInputs: unknown, idInput: string | 
   for (const field of inputs) {
     if (typeof field.name !== "string" || !FIELD_NAME.test(field.name)) return null;
     if (skipped.has(field.name)) continue;
-    if (field.required !== true) continue;
     const type = typeof field.type === "string" ? field.type.toUpperCase() : "";
+    if (field.required !== true) {
+      if (type === "BOOLEAN") args[field.name] = false;
+      continue;
+    }
     if (type === "BOOLEAN") args[field.name] = false;
     else if (NUMERIC_TYPES.has(type)) args[field.name] = 0;
+    else if (type === "DATE" || type === "DATETIME") args[field.name] = apexExecTomorrowArg(type);
     else return null;
   }
   return args;
+}
+
+/** Tomorrow UTC as a DATE (YYYY-MM-DD) or DATETIME (midnight Z) arg value. */
+export function apexExecTomorrowArg(type: string): string {
+  const day = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  return type === "DATETIME" ? `${day}T00:00:00.000Z` : day;
+}
+
+/**
+ * True when the named required ID input is declared a collection
+ * (isCollection or maxOccurs > 1): the invoke must bind `[fixtureId]`,
+ * never the scalar, or vendors fault "Unable to convert" on List<Id>.
+ */
+export function apexExecIdInputIsCollection(descriptorInputs: unknown, name: string): boolean {
+  const inputs = Array.isArray(descriptorInputs) ? descriptorInputs.filter(record) : [];
+  const field = inputs.find((entry) => entry.name === name) as
+    (Value & { isCollection?: unknown; maxOccurs?: unknown }) | undefined;
+  if (!field) return false;
+  return field.isCollection === true ||
+    (typeof field.maxOccurs === "number" && field.maxOccurs > 1);
 }
 
 /**
@@ -352,22 +396,109 @@ export function apexExecNestedFlags(outputValues: unknown): boolean {
   return flagged;
 }
 
-/** Distinct well-formed IDs among the top-level output values. */
+/**
+ * Distinct well-formed IDs among the top-level output values, including
+ * one-level arrays (clone-style vendors return `clonedIds: [id, ...]`).
+ * Callers read-verify each hit before treating it as an owned child, so
+ * echoed live ids never delete blindly; deeper nesting stays out of scope.
+ */
 export function apexExecOutputIds(outputValues: unknown): string[] {
   if (!record(outputValues)) return [];
   const ids: string[] = [];
+  const take = (value: unknown): void => {
+    if (typeof value === "string" && SF_ID.test(value) && !ids.includes(value)) ids.push(value);
+  };
   for (const key of Object.keys(outputValues)) {
     const value = outputValues[key];
-    if (typeof value === "string" && SF_ID.test(value) && !ids.includes(value)) ids.push(value);
+    if (Array.isArray(value)) {
+      for (const entry of value.slice(0, 200)) take(entry);
+    } else take(value);
   }
   return ids;
+}
+
+/**
+ * True when a fixture POST failed the way managed before-insert triggers
+ * fail on sparse fixtures: HTTP 400 carrying a null dereference (live
+ * evidence: `FSL.TR001_Service_BeforeInsert ... System.NullPointerException:
+ * Attempt to de-reference a null object` on a parentless ServiceAppointment).
+ * A 400 creates no row, so exactly one parent-bound retry is safe.
+ */
+export function apexExecTriggerNpe400(result: { status: number; body: unknown }): boolean {
+  if (result.status !== 400) return false;
+  let text = "";
+  try { text = JSON.stringify(result.body ?? ""); } catch { return false; }
+  return /NullPointerException|de-reference a null object/i.test(text);
+}
+
+/**
+ * Nillable creator-settable parent references (`ParentRecordId`
+ * vocabulary) on the live describe, with their reference targets in
+ * describe order. Managed triggers dereference these on insert even
+ * though the platform leaves them nillable; binding a live parent row
+ * satisfies the trigger without writing the borrowed row.
+ */
+export function apexExecTriggerParentFields(fields: Value[]): Array<{ field: string; targets: string[] }> {
+  const found: Array<{ field: string; targets: string[] }> = [];
+  for (const entry of fields) {
+    if (!record(entry) || typeof entry.name !== "string" || !FIELD_NAME.test(entry.name)) continue;
+    if (entry.name.toLowerCase() !== "parentrecordid") continue;
+    if (entry.nillable === false || entry.createable !== true) continue;
+    if (typeof entry.type !== "string" || entry.type.toLowerCase() !== "reference") continue;
+    const targets = (Array.isArray(entry.referenceTo) ? entry.referenceTo : [])
+      .filter((name): name is string => typeof name === "string" && OBJECT_NAME.test(name));
+    if (targets.length > 0) found.push({ field: entry.name, targets });
+  }
+  return found;
+}
+
+/**
+ * Owner seed for fixture inserts: `{ OwnerId }` only when the live
+ * describe carries the field. Ownerless objects (live evidence:
+ * maps__LiveAssetDailySummaryEvent__c has no OwnerId column) 400 the
+ * whole insert when the seed is present.
+ */
+export function apexExecOwnerSeed(fields: Value[], ownerUserId: string): Value {
+  const hasOwner = fields.some((entry) =>
+    record(entry) && entry.name === "OwnerId");
+  return hasOwner ? { OwnerId: ownerUserId } : {};
+}
+
+/**
+ * Probe-coordinate seeds for createable geolocation compounds: geo-query
+ * vendors interpolate the fixture's position into SOQL, and a null
+ * position faults `unexpected token: 'null'` (live evidence: maps
+ * closest-record). Each compound seeds via its Latitude/Longitude
+ * component doubles (compounds themselves are never createable);
+ * components missing or uncreateable are skipped. The point is San
+ * Francisco (proven live): Null Island (0,0) faults this vendor class
+ * instead (`unexpected token: 'E'` — its SOQL templating chokes on
+ * zero), so obviously-synthetic loses to actually-working.
+ */
+export function apexExecPositionSeeds(fields: Value[]): Value {
+  const seeds: Value = {};
+  const byName = new Map<string, Value>();
+  for (const entry of fields) {
+    if (record(entry) && typeof entry.name === "string") byName.set(entry.name, entry);
+  }
+  for (const entry of fields) {
+    if (!record(entry) || typeof entry.name !== "string" || typeof entry.type !== "string") continue;
+    if (entry.type.toLowerCase() !== "location" || !entry.name.endsWith("__c")) continue;
+    const stem = entry.name.slice(0, -"__c".length);
+    const lat = byName.get(`${stem}__Latitude__s`);
+    const lon = byName.get(`${stem}__Longitude__s`);
+    if (!record(lat) || lat.createable !== true || !record(lon) || lon.createable !== true) continue;
+    seeds[`${stem}__Latitude__s`] = 37.7749;
+    seeds[`${stem}__Longitude__s`] = -122.4194;
+  }
+  return seeds;
 }
 
 const markerFieldFor = (fields: Value[]): string | null => {
   const pick = fields.find((entry) => record(entry) && entry.createable === true && entry.filterable === true &&
     (entry.type === "string" || entry.type === "combobox") && typeof entry.length === "number" && entry.length >= 48 &&
     entry.calculated !== true && entry.autoNumber !== true && typeof entry.name === "string" &&
-    !fields.some((other) => record(other) && other.compoundFieldName === entry.name));
+    !isCompoundParent(fields, entry));
   return pick && typeof pick.name === "string" ? pick.name : null;
 };
 
@@ -385,6 +516,59 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
   status: number; body: any; cleanupError?: string; contextSchema?: Value;
 }> {
   const { root, request } = input;
+  // One parent-bound fixture retry after a trigger-NPE 400: bind the
+  // first live parent row per ParentRecordId-style field (describe
+  // target order; borrowed rows are never written) and POST once.
+  // Null when no parent field or live row applies — the caller keeps
+  // the original failure. The retry outcome (success or failure)
+  // replaces the original attempt as the later evidence.
+  const createWithTriggerParents = async (
+    target: string, fields: Value[], values: Value,
+  ): Promise<{ status: number; ok: boolean; body: any } | null> => {
+    const parents = apexExecTriggerParentFields(fields);
+    if (parents.length === 0) return null;
+    const seeds: Value = {};
+    for (const parent of parents) {
+      let bound: string | null = null;
+      for (const candidate of parent.targets) {
+        const probe = await request(`${root}/query?q=${encodeURIComponent(`SELECT Id FROM ${candidate} ORDER BY Id LIMIT 1`)}`);
+        const hit: unknown = record(probe.body) && Array.isArray(probe.body.records)
+          ? probe.body.records.filter(record).map((row) => row.Id).find(identity)
+          : undefined;
+        if (probe.ok && identity(hit)) { bound = hit; break; }
+      }
+      if (bound === null) return null;
+      seeds[parent.field] = bound;
+    }
+    return request(`${root}/sobjects/${target}`, "POST", { ...values, ...seeds });
+  };
+  // Mint one owned parent row for a rowless required reference (depth
+  // exactly one): describe must show createable + deletable + zero
+  // required references of its own. The mint joins `owned` BEFORE the
+  // child fixture, so reverse-order cleanup deletes the child first.
+  // Null when unmintable — the caller keeps its rowless refusal.
+  const mintOwnedParent = async (objectName: string): Promise<string | null> => {
+    const schema = await request(`${root}/sobjects/${objectName}/describe`);
+    if (!schema.ok || !record(schema.body) || schema.body.createable !== true ||
+      schema.body.deletable !== true || !Array.isArray(schema.body.fields)) return null;
+    const parentFields = (schema.body.fields as unknown[]).filter(record);
+    if (apexExecRequiredReferences(parentFields).length > 0) return null;
+    const parentMarkerField = markerFieldFor(parentFields);
+    const seeds: Value = {
+      ...apexExecOwnerSeed(parentFields, input.ownerUserId),
+      ...(parentMarkerField !== null ? { [parentMarkerField]: marker } : {}),
+    };
+    const parentBuilt = await input.build(objectName, marker, seeds);
+    if ("failure" in parentBuilt) return null;
+    const parentCreated = await request(`${root}/sobjects/${objectName}`, "POST", parentBuilt.values);
+    const parentId: unknown = parentCreated.body?.id ?? parentCreated.body?.Id;
+    if (!parentCreated.ok || !identity(parentId)) return null;
+    owned.push({ objectName, id: parentId, markerField: parentMarkerField });
+    const parentRead = await request(`${root}/sobjects/${objectName}/${parentId}`);
+    if (!parentRead.ok || !record(parentRead.body) || parentRead.body.Id !== parentId ||
+      (parentMarkerField !== null && parentRead.body[parentMarkerField] !== marker)) return null;
+    return parentId;
+  };
   const resolveGeoQueryBinding = async (): Promise<{ objectName: string; fieldName: string } | null> => {
     const describes: unknown[] = [];
     for (const objectName of GEO_QUERY_OBJECTS) {
@@ -416,7 +600,13 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
     (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
     return done(fail("APEX_EXEC_WINDOW_INVALID", "A bounded verification window is required."), { verified: false });
   }
-  const marker = `AE exec ${crypto.randomUUID()}`;
+  // Short ownership marker (15 chars): marker fields carry hidden
+  // validations below their describe length (live evidence:
+  // ServiceTerritory.Name describes 255 but the platform rejects >40
+  // when User Territory Sharing is enabled), so the 44-char form 400s
+  // fixtures that length checks would pass. 12 hex chars stay unique;
+  // the AE prefix keeps probe residue identifiable.
+  const marker = `AE ${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const owned: Array<{ objectName: string; id: string; markerField: string | null }> = [];
   let cleanupError: string | undefined;
   let outcome: Result = fail("APEX_EXEC_CONTEXT_UNAVAILABLE", "The owned apex execution context could not be prepared.");
@@ -426,7 +616,7 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
   let idInput = "";
   let staticArgs: Record<string, unknown> = {};
   let fixtureId: string | undefined;
-  let idValues: Record<string, string> = {};
+  let idValues: Record<string, string | string[]> = {};
   let fixtureObjects: string[] = [];
   let childIds: string[] = [];
   let echoFound = false;
@@ -535,12 +725,20 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
         }
         const fields = (schema.body.fields as unknown[]).filter(record);
         const markerField = markerFieldFor(fields);
-        const seedValues: Value = markerField !== null
-          ? { OwnerId: input.ownerUserId, [markerField]: marker }
-          : { OwnerId: input.ownerUserId };
-        // Required-reference parents resolve to live rows (fixture
-        // synthesis cannot mint parents). Ambiguous (polymorphic) or
-        // rowless targets refuse with no fixture and no POST.
+        const seedValues: Value = {
+          ...apexExecOwnerSeed(fields, input.ownerUserId),
+          ...(markerField !== null ? { [markerField]: marker } : {}),
+          // Geo-query vendors read the fixture's own position; anything
+          // else leaves coordinates unset (never invent location data the
+          // vendor does not dereference).
+          ...(apexExecGeoQueryInputNames(descriptorInputs, idInputs) !== null
+            ? apexExecPositionSeeds(fields) : {}),
+        };
+        // Required-reference parents resolve to live rows; rowless
+        // single-target parents mint one owned row (depth exactly one:
+        // mintable means createable + deletable + zero required
+        // references of its own, else the rowless refusal below stands).
+        // Ambiguous (polymorphic) targets refuse with no POST.
         let parentFailed: Result | null = null;
         for (const ref of apexExecRequiredReferences(fields)) {
           if (ref.target === "") {
@@ -553,12 +751,17 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
           const parentId: unknown = record(parent.body) && Array.isArray(parent.body.records)
             ? parent.body.records.filter(record).map((row) => row.Id).find(identity)
             : undefined;
-          if (!parent.ok || !identity(parentId)) {
+          if (parent.ok && identity(parentId)) {
+            seedValues[ref.field] = parentId;
+            continue;
+          }
+          const minted = await mintOwnedParent(ref.target);
+          if (minted === null) {
             parentFailed = fail("APEX_EXEC_PARENT_ROWLESS",
-              `No live ${ref.target} row backs the required ${target}.${ref.field}; the native call was not attempted.`);
+              `No live ${ref.target} row backs the required ${target}.${ref.field}, and no owned parent is mintable; the native call was not attempted.`);
             break;
           }
-          seedValues[ref.field] = parentId;
+          seedValues[ref.field] = minted;
         }
         if (parentFailed !== null) return parentFailed;
         // Nillable commercial Account links (WebCart-style) bind a live
@@ -599,7 +802,11 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
         const built = await input.build(target, marker,
           probeAddress !== null ? { ...seedValues, ...probeAddress } : seedValues);
         if ("failure" in built) return built.failure;
-        const created = await request(`${root}/sobjects/${target}`, "POST", built.values);
+        let created = await request(`${root}/sobjects/${target}`, "POST", built.values);
+        if ((!created.ok || !identity(created.body?.id ?? created.body?.Id)) && apexExecTriggerNpe400(created)) {
+          const rescued = await createWithTriggerParents(target, fields, built.values);
+          if (rescued !== null) created = rescued;
+        }
         const createdId: unknown = created.body?.id ?? created.body?.Id;
         if (!created.ok || !identity(createdId)) return created;
         owned.push({ objectName: target, id: createdId, markerField });
@@ -616,6 +823,11 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
         fixtureObjects.push(target);
       }
       fixtureId = fixtureIds[0];
+      for (const name of idInputs) {
+        if (apexExecIdInputIsCollection(descriptorInputs, name) && identity(idValues[name])) {
+          idValues[name] = [idValues[name]];
+        }
+      }
       const invoked = await request(input.route, "POST", { inputs: [{ ...staticArgs, ...idValues }] });
       invokeRan = true;
       if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
@@ -628,13 +840,19 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
         const reread = await request(`${root}/sobjects/${fixtureObjects[index]}/${fixtureIds[index]}`);
         if (!reread.ok || !record(reread.body) || reread.body.Id !== fixtureIds[index]) fixtureOk = false;
       }
+      // Geo-query vendors return FOREIGN live ids (the found record),
+      // which are query hits, not side effects: they verify nothing and
+      // fail nothing. Every other lane keeps the conservative rule (an
+      // unadopted output id is an unverified side effect) — foreign
+      // creates outside a query lane stay failing, never silent.
+      const geoQuery = apexExecGeoQueryInputNames(descriptorInputs, idInputs) !== null;
       for (const child of childIds) {
         let hit: string | null = null;
         for (const objectName of fixtureObjects) {
           const childRead = await request(`${root}/sobjects/${objectName}/${child}`);
           if (childRead.ok && record(childRead.body) && childRead.body.Id === child) { hit = objectName; break; }
         }
-        if (hit === null) childrenOk = false;
+        if (hit === null) { if (!geoQuery) childrenOk = false; }
         else owned.push({ objectName: hit, id: child, markerField: null });
       }
       nested = acceptance.outputValues !== null && apexExecNestedFlags(acceptance.outputValues);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  eventSlotCompletion,
   personIdentityCompletion,
   verificationProducerInput,
 } from "./flow-producer-context";
@@ -80,5 +81,28 @@ describe("personIdentityCompletion", () => {
         { LastName: "Probe" },
       ),
     ).toEqual({ LastName: "Probe" });
+  });
+});
+
+describe("eventSlotCompletion", () => {
+  const fields = [
+    { name: "Subject", type: "string", createable: true },
+    { name: "ActivityDateTime", type: "datetime", createable: true },
+    { name: "DurationInMinutes", type: "int", createable: true },
+  ];
+  it("stamps a forward slot on Event fixtures missing it", () => {
+    const completed = eventSlotCompletion("Event", fields, { Subject: "Probe" });
+    expect(completed.DurationInMinutes).toBe(60);
+    expect(Date.parse(completed.ActivityDateTime as string)).toBeGreaterThan(Date.now());
+    expect(completed.Subject).toBe("Probe");
+  });
+  it("never touches non-Event objects, supplied slots, or undescribed fields", () => {
+    expect(eventSlotCompletion("Task", fields, { Subject: "Probe" })).toEqual({ Subject: "Probe" });
+    expect(eventSlotCompletion("Event", fields,
+      { Subject: "Probe", ActivityDateTime: "2026-03-01T10:00:00.000Z", DurationInMinutes: 30 }))
+      .toEqual({ Subject: "Probe", ActivityDateTime: "2026-03-01T10:00:00.000Z", DurationInMinutes: 30 });
+    expect(eventSlotCompletion("Event",
+      [{ name: "Subject", type: "string", createable: true }], { Subject: "Probe" }))
+      .toEqual({ Subject: "Probe" });
   });
 });

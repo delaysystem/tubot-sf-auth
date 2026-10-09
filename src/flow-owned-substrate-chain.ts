@@ -1,3 +1,4 @@
+import { minimalPersonCreateInputNames } from "./person-create-inputs";
 /**
  * Owned-substrate execution for metadata-hidden custom Flow actions.
  *
@@ -85,12 +86,13 @@ import {
 } from "./flow-execution-evidence";
 import { classifyManagedFlowFault, type ManagedFlowFault } from "./managed-flow-faults";
 import { cleanupOwnedContext, type OwnedRecord, type OwnershipScope } from "./owned-context-cleanup";
-import { planOwnedContext, type ContextNode, type ContextSchema } from "./owned-context-plan";
+import { planOwnedContext, type ContextNode, type ContextPlanIssue, type ContextSchema } from "./owned-context-plan";
+import { isSetupReferenceObject, readSetupReferenceRow, retryPlanWithRetainedSetup } from "./retained-setup-anchor";
 import { isTriggerNullInsertFault, planTriggerNullEnrichment } from "./trigger-null-enrichment";
 import { sweepFlowCommunicationResidue } from "./flow-residue-sweep";
 
-/** Family builder version: owned-substrate execution for refused flow shapes. 2: plural `Ids` collections count as record evidence; classification runs on the singular form. 3: opaque execution faults attach evidence-fed managedFlowFault (FLOW_EXECUTION_INVOCABLE_MISSING / FLOW_EXECUTION_SCHEMA_SKEW narrow the generic stamp). 4: creation-sweep/read/delete plans, bare-record fallback, template config sampling, optional-generic omission, bare-text channel guard. 5: evidence covers update filters and delete filters, narrowing more generic stamps to schema skew; assessed output failures stamp R5 setup/input branches (FLOW_UPSTREAM_ACCESS_REQUIRED / FLOW_SETUP_RECORD_REQUIRED). 6: diagnosed faults attach a repairPlan, and provably non-creating agent-context faults repair inline through the producer-backed lifecycle. 7: fixtureless marker sweeps, zero-anchor synthetic reads, external-identity synthetic binding, strict self-user binding, mirror-output creation tracking, JSON-embedded and collection created-id tracking, created-child sweeps with dependency-ordered deletes, read-only collaboration carve-out, fulfillment/recurrence resolution-decided sweeps, undeletable-created-object refusal. 8: trigger-null-tolerant fixture enrichment (a mint that faults in a managed BeforeInsert trigger retries once with nillable references populated from owned mints). */
-export const FLOW_OWNED_SUBSTRATE_BUILDER_VERSION = 8;
+/** Family builder version: owned-substrate execution for refused flow shapes. 2: plural `Ids` collections count as record evidence; classification runs on the singular form. 3: opaque execution faults attach evidence-fed managedFlowFault (FLOW_EXECUTION_INVOCABLE_MISSING / FLOW_EXECUTION_SCHEMA_SKEW narrow the generic stamp). 4: creation-sweep/read/delete plans, bare-record fallback, template config sampling, optional-generic omission, bare-text channel guard. 5: evidence covers update filters and delete filters, narrowing more generic stamps to schema skew; assessed output failures stamp R5 setup/input branches (FLOW_UPSTREAM_ACCESS_REQUIRED / FLOW_SETUP_RECORD_REQUIRED). 6: diagnosed faults attach a repairPlan, and provably non-creating agent-context faults repair inline through the producer-backed lifecycle. 7: fixtureless marker sweeps, zero-anchor synthetic reads, external-identity synthetic binding, strict self-user binding, mirror-output creation tracking, JSON-embedded and collection created-id tracking, created-child sweeps with dependency-ordered deletes, read-only collaboration carve-out, fulfillment/recurrence resolution-decided sweeps, undeletable-created-object refusal. 8: trigger-null-tolerant fixture enrichment (a mint that faults in a managed BeforeInsert trigger retries once with nillable references populated from owned mints). 9: description-overlap ranking, retained-setup anchors, reference disambiguation, person fills, address completion, notification reference fixtures, ordered cleanup. 10: Event fixture completion (forward ActivityDateTime slot + DurationInMinutes) for scheduling flows validating slot fields on the passed record variable. */
+export const FLOW_OWNED_SUBSTRATE_BUILDER_VERSION = 11;
 
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
@@ -185,6 +187,10 @@ export type OwnedSubstratePlan = {
   allowBareRecordFallback?: boolean;
   /** Searcher-passed: creation claim limited to generative nouns (brief/summary/prompt/...). */
   generative?: boolean;
+  /** Searcher-passed: live Conversation id resolved from an operator-supplied
+   * identifier. Binds Conversation references nothing can mint; re-verified
+   * live here (row must exist right now), never trusted blindly. */
+  operatorConversationId?: string | null;
 };
 
 export type OwnedSubstrateTransport = (path: string, method?: string, body?: any) => Promise<Result>;
@@ -273,7 +279,7 @@ export function objectHintCandidates(
     "available", "input", "passed", "stores", "store", "used", "uses", "use", "variable", "identifier",
     "when", "specified", "specific", "next", "given", "current", "existing", "active"]);
   let descBudget = 8;
-  for (const width of [2, 3, 1, 4]) {
+  for (const width of [4, 3, 2, 1]) {
     if (width > words.length || descBudget <= 0) continue;
     for (let start = 0; start + width <= words.length && descBudget > 0; start += 1) {
       const slice = words.slice(start, start + width);
@@ -298,6 +304,32 @@ function routeTailTokens(route: string): string[] {
   const tail = route.split("?")[0].split("/").at(-1) ?? "";
   return tail.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .split(/[^A-Za-z0-9]+/).filter((token) => token.length >= 3);
+}
+
+const CREATION_VERB_TOKEN = /^(?:creat\w*|insert\w*|generat\w*)$/;
+/** True when a validated sweep candidate genuinely names created rows: its tokens sit
+ * within 12 words after a creation verb AND do not equal a reference-shaped input's
+ * stem (id-input echoes name pre-existing rows, e.g. clinicalServiceRequestId).
+ * Equality-only (never substring): a more-specific child ("case proceeding
+ * participant") must stay exact even when a parent input ("caseProceedingId")
+ * exists, or undeletable created children would leak past the sweep. */
+export function isExactCreationCandidate(candidate: string, flowDescription: string | null | undefined, inputNames: readonly string[]): boolean {
+  const words = `${flowDescription ?? ""}`.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+  const tokens = candidate.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return false;
+  const singular = (t: string): string => t.endsWith("s") && t.length > 3 && !t.endsWith("ss") ? t.slice(0, -1) : t;
+  const norm = tokens.map(singular).join("");
+  for (const name of inputNames) {
+    if (!/^(.{3,}?)(Id|ID|Key|Number|Nbr)$/.test(name)) continue;
+    const stem = name.replace(/(?:Id|ID|Key|Number|Nbr)$/, "").replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0).map(singular).join("");
+    if (stem.length > 0 && stem === norm) return false;
+  }
+  return words.some((token, at) => {
+    if (!CREATION_VERB_TOKEN.test(token)) return false;
+    const window = words.slice(at + 1, at + 13).map(singular);
+    return tokens.some((_, i) => window.slice(i, i + tokens.length).map(singular).join(" ") === tokens.map(singular).join(" "));
+  });
 }
 
 /**
@@ -531,25 +563,135 @@ export function neutralOwnedValue(type: string | null | undefined, description: 
   }
 }
 
-/**
- * Rank live catalog names against ordered hint candidates without naming
- * any object: earlier candidates win, exact beats containment, shorter
- * names win ties. Returns the single best validated hit, else null.
- */
-export function rankHintCandidates(candidates: string[], liveNames: string[]): string | null {
+/** Rank live names: description overlap wins; exact beats containment, earlier wins ties, shorter wins rest. No hint text preserves legacy order. */
+export function rankHintCandidates(candidates: string[], liveNames: string[], hintText = ""): string | null {
   const live = new Set(liveNames.filter((name) => FIELD_NAME.test(name)));
-  for (const candidate of candidates) {
-    if (live.has(candidate)) return candidate;
-  }
+  const tokensOf = (text: string): string[] => text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 3);
+  const hint = new Set(tokensOf(hintText));
+  const overlap = (name: string): number => tokensOf(name).filter((token) => hint.has(token)).length;
+  type Hit = { name: string; exact: boolean; score: number; length: number; index: number };
+  const hits: Hit[] = [];
   const lowered = [...live].map((name) => ({ name, lower: name.toLowerCase() }));
-  for (const candidate of candidates) {
+  candidates.forEach((candidate, index) => {
+    if (live.has(candidate)) {
+      hits.push({ name: candidate, exact: true, score: overlap(candidate), length: candidate.length, index });
+      return;
+    }
     const want = candidate.toLowerCase();
-    const hits = lowered.filter((entry) => entry.lower === want || entry.lower.endsWith(want) || entry.lower.startsWith(want));
-    if (hits.length === 0) continue;
-    hits.sort((a, b) => a.name.length - b.name.length);
-    return hits[0].name;
+    for (const entry of lowered) {
+      if (entry.lower === want || entry.lower.endsWith(want) || entry.lower.startsWith(want)) {
+        hits.push({ name: entry.name, exact: entry.lower === want, score: overlap(entry.name), length: entry.name.length, index });
+      }
+    }
+  });
+  if (hits.length === 0) return null;
+  // Candidate order encodes evidence strength (input stem first, route and
+  // description joins later), so it dominates: overlap only breaks ties
+  // among multiple live matches of one candidate, never promotes a
+  // description-vocabulary ghost above the input's own stem.
+  hits.sort((a, b) => a.index - b.index || Number(b.exact) - Number(a.exact) || b.score - a.score || a.length - b.length);
+  return hits[0].name;
+}
+
+/**
+ * True when a catalog hit is strongly evidenced by the input itself: the
+ * reference stem or a CamelCase name n-gram names the object (mirrors
+ * objectHintCandidates name joins). Route-tail and description joins are
+ * weak evidence (flow/topic vocabulary, not the input's object), so a
+ * rejected weak hit falls through to miss handling while a rejected
+ * strong hit keeps its precise grant/substrate terminal.
+ */
+export function isStrongHintCandidate(inputName: string, hit: string): boolean {
+  if (typeof inputName !== "string" || typeof hit !== "string") return false;
+  const stem = referenceStem(inputName);
+  if (stem && hit === stem[0].toUpperCase() + stem.slice(1)) return true;
+  const tokens = stripHungarianPrefix(inputName).replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/).filter((token) => token.length >= 2);
+  const join = (parts: string[]): string =>
+    parts.map((token) => token[0].toUpperCase() + token.slice(1).toLowerCase()).join("");
+  for (let width = Math.min(3, tokens.length); width >= 1; width -= 1) {
+    for (let start = 0; start + width <= tokens.length; start += 1) {
+      if (join(tokens.slice(start, start + width)) === hit) return true;
+    }
   }
+  return false;
+}
+
+/** Person/address-shaped scalar fill for optional flow inputs (null when not person-shaped). */
+export function personShapedScalarFill(name: unknown, marker: string): string | null {
+  if (typeof name !== "string") return null;
+  const lower = name.toLowerCase();
+  if (lower === "firstname" || lower === "givenname" || lower === "fname") return "Action";
+  if (lower === "lastname" || lower === "familyname" || lower === "surname" || lower === "lname") return marker;
+  if (/email/i.test(lower) && !/body|message|content|text|template/i.test(lower)) {
+    return `owned-probe-${crypto.randomUUID()}@example.invalid`;
+  }
+  if (lower === "phone" || lower === "phonenumber" || lower === "mobilephone" || lower === "mobile") return "+15550100123";
+  if (lower === "street" || lower === "mailingstreet" || lower === "streetaddress" || lower === "address" || lower === "address1") {
+    return "1 Market Street";
+  }
+  if (lower === "city" || lower === "mailingcity" || lower === "town") return "San Francisco";
+  if (lower === "state" || lower === "mailingstate" || lower === "province" || lower === "statecode") return "CA";
+  if (/postal|zip/i.test(lower)) return "94105";
+  if (lower === "country" || lower === "mailingcountry" || lower === "countrycode") return "USA";
   return null;
+}
+
+const overlapTokensOf = (text: string): string[] => text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 3);
+
+/** Camel-split token overlap between a candidate object and hint text. */
+export function scoreTargetOverlap(target: string, hint: string): number {
+  if (!hint) return 0;
+  const hintSet = new Set(overlapTokensOf(hint));
+  return overlapTokensOf(target).filter((token) => hintSet.has(token)).length;
+}
+
+/** Disambiguate a multi-target plan reference via description overlap; single winner retries the plan. Null keeps caller verdict. */
+export async function disambiguatePlanReference(input: {
+  issue: ContextPlanIssue;
+  roots: string[];
+  maxNodes: number;
+  markerLength: number;
+  inputs: Array<{ name?: unknown; description?: unknown }>;
+  root: string;
+  request: (p: string, m?: string, b?: any) => Promise<Result>;
+  describe: (o: string) => Promise<ContextSchema | undefined>;
+}): Promise<{ ok: true; nodes: ContextNode[]; cleanupOrder: string[] } | null> {
+  const { issue } = input;
+  const field = typeof issue.field === "string" ? issue.field : null;
+  const targets = Array.isArray(issue.targets) ? issue.targets : [];
+  if (!field || targets.length < 2) return null;
+  const sharing = input.inputs.find((item) => typeof item.name === "string" && item.name.toLowerCase() === field.toLowerCase());
+  const hint = sharing && typeof sharing.description === "string" ? sharing.description : "";
+  const scored: Array<{ target: string; score: number; inPlan: boolean }> = [];
+  for (const target of targets) {
+    let schema: ContextSchema | undefined;
+    try {
+      schema = await input.describe(target);
+    } catch {
+      continue;
+    }
+    if (!schema || schema.createable !== true || schema.queryable !== true || schema.deletable !== true) continue;
+    scored.push({ target, score: scoreTargetOverlap(target, hint), inPlan: input.roots.includes(target) });
+  }
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.score - a.score || Number(b.inPlan) - Number(a.inPlan));
+  const winner = scored[0].score > (scored[1]?.score ?? -1) ||
+    (scored[0].score === (scored[1]?.score ?? -1) && scored[0].inPlan && !scored[1]?.inPlan)
+    ? scored[0] : null;
+  if (!winner || scored.length > 1 && scored[1].score === winner.score && scored[1].inPlan === winner.inPlan) return null;
+  try {
+    const retried = await planOwnedContext({
+      roots: input.roots,
+      maxNodes: input.maxNodes,
+      markerLength: input.markerLength,
+      describe: input.describe,
+      referenceTargets: { [`${issue.objectName}.${field}`]: winner.target },
+    });
+    return retried.ok ? retried : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Qualified object names from an EntityDefinition candidate query body. */
@@ -773,11 +915,13 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
   const marker = `AS owned ${crypto.randomUUID()}`;
   const owned: OwnedRecord[] = [];
   const scopes: OwnershipScope[] = [];
+  let fixtureCleanupOrder: string[] = [];
   const fixtureIds: Record<string, string> = {};
   const actuals: Record<string, Value> = {};
   const createdChildren: OwnedRecord[] = [];
   const sweepTargets: Array<{ objectName: string; nameField: string | null; parentFields: string[]; references: string[] }> = [];
   const omittedInputs: string[] = [];
+  const operatorBound: string[] = [];
   const absenceNotes: string[] = [];
   const fixtureEmails: string[] = [];
   const fixtureContactIds: string[] = [];
@@ -889,6 +1033,7 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
         const field = fieldByName(name);
         const fieldDescription = typeof field?.description === "string" ? field.description : null;
         const single = typeof field?.maxOccurs !== "number" || field.maxOccurs <= 1;
+        if (plan.kind === "notification_self_via_auth" && NOTIFICATION_TYPE_INPUT.test(`${name} ${fieldDescription ?? ""}`)) continue;
         // Every plan binds self-user-shaped references to the integration
         // user itself, never a minted User: the probe acts as its own
         // identity, which is contained on every plan kind.
@@ -920,9 +1065,48 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
       const exact = exactSoql ? await request(`${root}/query?q=${encodeURIComponent(exactSoql)}`) : null;
       if (exact && !exact.ok) return exact;
       const liveNames = exact ? entityDefinitionNames(exact.body) : [];
+      // Non-fixtureable catalog hits (setup objects, route-vocabulary ghosts
+      // like Skill) never become fixture targets: the ranking below prefers
+      // fixtureable alternatives and only strong (stem/name-evidenced) hits
+      // keep their precise grant/substrate terminal.
+      const fixtureDescribes = new Map<string, Value | null>();
+      const rejectedObjects = new Set<string>();
+      const rejectedHits: Array<{ inputName: string; objectName: string; strong: boolean }> = [];
+      const fixtureable = async (objectName: string): Promise<boolean> => {
+        if (!fixtureDescribes.has(objectName)) {
+          const schema = await request(`${root}/sobjects/${objectName}/describe`);
+          fixtureDescribes.set(objectName, schema.ok && record(schema.body) ? schema.body as Value : null);
+        }
+        const schema = fixtureDescribes.get(objectName);
+        return !!schema && schema.queryable === true && schema.createable === true && schema.deletable === true;
+      };
+      const acceptHint = async (inputName: string, lookup: string[], pool: string[], hintText = ""): Promise<string | null> => {
+        let usable = pool.filter((live) => !rejectedObjects.has(live));
+        let found = rankHintCandidates(lookup, usable, hintText);
+        while (found && !(await fixtureable(found))) {
+          const strong = isStrongHintCandidate(inputName, found);
+          rejectedHits.push({ inputName, objectName: found, strong });
+          // A strong (stem-evidenced) hit is never substituted: setup
+          // references borrow a live row downstream (retained anchor) and
+          // every other strong miss keeps its honest terminal there. A
+          // weaker fixtureable substitute carries the wrong table's id and
+          // faults the flow's own lookup (verified: ServiceAppointment id
+          // bound to serviceResourceId errored the interview).
+          if (strong) return found;
+          rejectedObjects.add(found);
+          usable = pool.filter((live) => !rejectedObjects.has(live));
+          found = rankHintCandidates(lookup, usable, hintText);
+        }
+        return found;
+      };
       for (const name of planIdInputs) {
         if (selfBound[name] !== undefined || synthetic[name] !== undefined) continue;
         const field = fieldByName(name);
+        // Notification-type inputs sample a live CustomNotificationType row
+        // downstream; ranking them as fixture targets pre-poisons the live
+        // sample with synthetic filler (mirror the resolver loop above).
+        if (plan.kind === "notification_self_via_auth" &&
+          NOTIFICATION_TYPE_INPUT.test(`${name} ${typeof field?.description === "string" ? field.description : ""}`)) continue;
         const stem = referenceStem(name);
         const genericStem = !stem || GENERIC_STEM.test(stem);
         // Bare fallback and omission apply only to id-shaped inputs (`*Id`, `*Key`,
@@ -933,13 +1117,17 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
         const idShaped = REFERENCE_SUFFIX.test(stripped) || REFERENCE_SUFFIX.test(stripped.replace(/s$/i, ""));
         const documentsRecord = inputDocumentsRecord(name,
           typeof field?.description === "string" ? field.description : null);
-        const hit = rankHintCandidates(candidateLists.get(name) ?? [], liveNames);
+        const hintText = `${name} ${typeof field?.description === "string" ? field.description : ""} ${flowDescription}`;
+        // Template-named sweep inputs sample one live configuration row and
+        // never mint a fixture, so they keep the raw rank without a
+        // fixtureability gate.
+        const rawHit = rankHintCandidates(candidateLists.get(name) ?? [], liveNames, hintText);
+        if (sweepPlan && rawHit && isTemplateShaped(name)) {
+          templateNeeds.push({ inputName: name, objectName: rawHit });
+          continue;
+        }
+        const hit = await acceptHint(name, candidateLists.get(name) ?? [], liveNames, hintText);
         if (hit) {
-          // Template-named sweep inputs sample one live configuration row instead of minting a fixture.
-          if (sweepPlan && isTemplateShaped(name)) {
-            templateNeeds.push({ inputName: name, objectName: hit });
-            continue;
-          }
           targets.set(name, hit);
           continue;
         }
@@ -947,12 +1135,13 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           const like = await request(`${root}/query?q=${encodeURIComponent(
             `SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%${stem}%' LIMIT 50`)}`);
           if (!like.ok) return like;
-          const ranked = rankHintCandidates(candidateLists.get(name) ?? [], entityDefinitionNames(like.body));
+          const rawRanked = rankHintCandidates(candidateLists.get(name) ?? [], entityDefinitionNames(like.body), hintText);
+          if (sweepPlan && rawRanked && isTemplateShaped(name)) {
+            templateNeeds.push({ inputName: name, objectName: rawRanked });
+            continue;
+          }
+          const ranked = await acceptHint(name, candidateLists.get(name) ?? [], entityDefinitionNames(like.body), hintText);
           if (ranked) {
-            if (sweepPlan && isTemplateShaped(name)) {
-              templateNeeds.push({ inputName: name, objectName: ranked });
-              continue;
-            }
             targets.set(name, ranked);
             continue;
           }
@@ -973,6 +1162,19 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
             continue;
           }
           const shown = (candidateLists.get(name) ?? []).slice(0, 6).join(", ");
+          const strong = rejectedHits.find((entry) => entry.inputName === name && entry.strong);
+          if (strong) {
+            const schema = fixtureDescribes.get(strong.objectName);
+            if (!schema || schema.queryable !== true) {
+              return fail("FLOW_RECORD_TARGET_ABSENT",
+                `Live object '${strong.objectName}' is not queryable by the execution identity; the flow cannot run without it.`);
+            }
+            // Operator-supplied conversation fallback: an unmintable
+            // Conversation reference binds the live row instead of failing.
+            // The id is re-verified here (GET must 200 right now).
+            return fail("FLOW_RECORD_CONTEXT_UNAVAILABLE",
+              `The live Flow schema does not resolve its record inputs to createable objects ('${strong.objectName}' is not createable and deletable).`);
+          }
           return fail("FLOW_RECORD_TARGET_ABSENT",
             `Reference input '${name}' resolves to no live object (tried ${shown || "no usable hint"} against the live catalog); the flow cannot run without it.`);
         }
@@ -1043,7 +1245,10 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           if (sweepResolved.length >= 3) break;
           if (sweepLive.includes(candidate) && !sweepResolved.includes(candidate)) {
             sweepResolved.push(candidate);
-            sweepExactNames.add(candidate);
+            // Verb-window + input-echo exactness: prose nouns that merely
+            // appear in the description (or echo an id input) resolve as
+            // fuzzy hits and skip-if-unusable instead of refusing by name.
+            if (isExactCreationCandidate(candidate, flowDescription, inputs.filter((f) => typeof f.name === "string").map((f) => f.name as string))) sweepExactNames.add(candidate);
           }
         }
         const stopWords = new Set(["flow", "flows", "record", "records", "input", "inputs", "value", "values",
@@ -1157,6 +1362,14 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
       }
       // Describe every target; owned fixtures need the full lifecycle.
       const describes = new Map<string, Value>();
+      const describeForPlan = async (name: string): Promise<ContextSchema | undefined> => {
+        const cached = describes.get(name) as unknown as ContextSchema | undefined;
+        if (cached && Array.isArray((cached as unknown as Value).fields)) return cached;
+        const schema = await request(`${root}/sobjects/${name}/describe`).catch(() => null);
+        if (!schema || !schema.ok || !record(schema.body) || !Array.isArray((schema.body as Value).fields)) return undefined;
+        describes.set(name, schema.body as Value);
+        return schema.body as unknown as ContextSchema;
+      };
       for (const objectName of new Set(targets.values())) {
         const schema = await request(`${root}/sobjects/${objectName}/describe`);
         if (!schema.ok) return schema;
@@ -1166,14 +1379,36 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
         }
         describes.set(objectName, schema.body as Value);
       }
+      const retainedTargets = new Map<string, { objectName: string; id: string }>();
       for (const [inputName, objectName] of targets) {
-        void inputName;
         const schema = describes.get(objectName);
         if (!schema || schema.queryable !== true) {
           return fail("FLOW_RECORD_TARGET_ABSENT",
             `Live object '${objectName}' is not queryable by the execution identity; the flow cannot run without it.`);
         }
         if (schema.createable !== true || schema.deletable !== true) {
+          // Operator-supplied conversation fallback: an unmintable
+          // Conversation reference binds the live row (read-context only,
+          // never cleaned) instead of failing. The id is re-verified
+          // here (GET must 200 right now); absent/invalid keeps the
+          // honest terminal below.
+          if (objectName === "Conversation" && identity(plan.operatorConversationId)) {
+            const live = await request(`${root}/sobjects/Conversation/${plan.operatorConversationId}`);
+            if (live.ok) {
+              selfBound[inputName] = plan.operatorConversationId;
+              targets.delete(inputName);
+              operatorBound.push(inputName);
+              continue;
+            }
+          }
+          if (isSetupReferenceObject(objectName)) {
+            const retainedId = await readSetupReferenceRow({ root, objectName, request, describe: describeForPlan });
+            if (retainedId) {
+              retainedTargets.set(inputName, { objectName, id: retainedId });
+              targets.delete(inputName);
+              continue;
+            }
+          }
           return fail("FLOW_RECORD_CONTEXT_UNAVAILABLE",
             `The live Flow schema does not resolve its record inputs to createable objects ('${objectName}' is not createable and deletable).`);
         }
@@ -1208,18 +1443,27 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
       }
       const roots = [...new Set(targets.values())];
       // Scalar-create plans bind no fixtures: every input is synthetic.
-      const graph = roots.length === 0
+      let graph = roots.length === 0
         ? { ok: true as const, nodes: [] as ContextNode[], cleanupOrder: [] as string[] }
         : await planOwnedContext({
           roots,
           maxNodes: 12,
           markerLength: marker.length,
-          describe: async (name) => describes.get(name) as unknown as ContextSchema | undefined,
+          describe: describeForPlan,
         });
+      if (!graph.ok) {
+        const rescued = await retryPlanWithRetainedSetup({ issue: graph.issue, roots, maxNodes: 12, markerLength: marker.length, describe: describeForPlan, request, root });
+        if (rescued) graph = rescued;
+      }
+      if (!graph.ok && graph.issue.code === 'OWNED_CONTEXT_REFERENCE_AMBIGUOUS') {
+        const disambiguated = await disambiguatePlanReference({ issue: graph.issue, roots, maxNodes: 12, markerLength: marker.length, describe: describeForPlan, request, root, inputs });
+        if (disambiguated) graph = disambiguated;
+      }
       if (!graph.ok) {
         return fail(graph.issue.code,
           `The live owned fixture dependency graph could not be safely planned (${graph.issue.objectName || "root"}).`);
       }
+      fixtureCleanupOrder = graph.cleanupOrder;
       const ids: Record<string, string> = {};
       const args: Value = {};
       // Live describe reader shared by enrichment (cached in describes).
@@ -1252,6 +1496,84 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
         }
         if (typeof completed.Email === "string" && completed.Email.endsWith("@example.invalid")) {
           fixtureEmails.push(completed.Email);
+        }
+        for (const [addressField, addressValue] of [["MailingStreet", "1 Market Street"], ["MailingCity", "San Francisco"], ["MailingState", "CA"], ["MailingPostalCode", "94105"], ["MailingCountry", "USA"]]) {
+          const target = fields.find((field) => field.name === addressField && field.createable === true);
+          if (target && (completed[addressField] == null || completed[addressField] === "")) completed[addressField] = addressValue;
+        }
+        // Scheduling completion: the FSL engine needs territory + worktype +
+        // duration on the appointment; bind live setup rows when absent.
+        if (target.objectName === "ServiceAppointment") {
+          const want = (name: string): boolean => {
+            const field = fields.find((entry) => entry.name === name && entry.createable === true);
+            return !!field && (completed[name] == null || completed[name] === "");
+          };
+          if (want("ServiceTerritoryId")) {
+            // Prefer a territory with member coverage: the engine cannot
+            // schedule in an empty territory (arbitrary LIMIT 1 picks one).
+            const covered = await request(`${root}/query?q=${encodeURIComponent("SELECT ServiceTerritoryId FROM ServiceTerritoryMember LIMIT 1")}`).catch(() => null);
+            const coveredRow = covered?.ok && record(covered.body) && Array.isArray(covered.body.records)
+              ? covered.body.records.filter(record).find((entry) => identity(entry.ServiceTerritoryId)) : undefined;
+            if (coveredRow) {
+              completed.ServiceTerritoryId = coveredRow.ServiceTerritoryId;
+            } else {
+              const territories = await request(`${root}/query?q=${encodeURIComponent("SELECT Id FROM ServiceTerritory LIMIT 1")}`).catch(() => null);
+              const row = territories?.ok && record(territories.body) && Array.isArray(territories.body.records)
+                ? territories.body.records.filter(record).find((entry) => identity(entry.Id)) : undefined;
+              if (row) completed.ServiceTerritoryId = row.Id;
+            }
+          }
+          if (want("WorkTypeId")) {
+            const worktypes = await request(`${root}/query?q=${encodeURIComponent("SELECT Id, EstimatedDuration, DurationType FROM WorkType LIMIT 1")}`).catch(() => null);
+            const row = worktypes?.ok && record(worktypes.body) && Array.isArray(worktypes.body.records)
+              ? worktypes.body.records.filter(record).find((entry) => identity(entry.Id)) : undefined;
+            if (row) {
+              completed.WorkTypeId = row.Id;
+              if (want("Duration") && typeof row.EstimatedDuration === "number" && row.EstimatedDuration > 0) {
+                completed.Duration = row.DurationType === "Hours" ? row.EstimatedDuration * 60 : row.EstimatedDuration;
+              }
+            }
+          }
+          if (want("Duration")) completed.Duration = 60;
+          // Forward window: the generic builder stamps datetimes at now, so the
+          // engine sees a degenerate past window and refuses. Keep caller times
+          // only when they already sit in the future.
+          const floor60 = (t: number) => Math.floor(t / 60000) * 60000;
+          const winNow = Date.now();
+          const earliestMs = Date.parse(String(completed.EarliestStartTime ?? ""));
+          const dueMs = Date.parse(String(completed.DueDate ?? ""));
+          const earliest = Number.isFinite(earliestMs) && earliestMs > winNow + 1800000
+            ? earliestMs : floor60(winNow + 3600000);
+          const due = Number.isFinite(dueMs) && dueMs > earliest ? dueMs : earliest + 3600000;
+          const earliestField = fields.find((entry) => entry.name === "EarliestStartTime" && entry.createable === true);
+          const dueField = fields.find((entry) => entry.name === "DueDate" && entry.createable === true);
+          if (earliestField) completed.EarliestStartTime = new Date(earliest).toISOString();
+          if (dueField) completed.DueDate = new Date(due).toISOString();
+          // Scheduled times: formatting flows read SchedStartTime (an
+          // unscheduled fixture faults their own adjustment), and the
+          // fields are createable. Derive from the forward window,
+          // clamped inside it; always derived, never a now-stamp.
+          const spanMin = typeof completed.Duration === "number" && completed.Duration > 0 ? completed.Duration : 60;
+          const schedStart = earliest;
+          const schedEnd = Math.min(schedStart + spanMin * 60000, due);
+          const schedStartField = fields.find((entry) => entry.name === "SchedStartTime" && entry.createable === true);
+          const schedEndField = fields.find((entry) => entry.name === "SchedEndTime" && entry.createable === true);
+          if (schedStartField) completed.SchedStartTime = new Date(schedStart).toISOString();
+          if (schedEndField) completed.SchedEndTime = new Date(schedEnd).toISOString();
+        }
+        // Event completion: scheduling flows validate slot fields on the
+        // passed record variable; the generic builder omits them (not
+        // insert-required). Stamp a forward slot when absent.
+        if (target.objectName === "Event") {
+          const want = (name: string): boolean => {
+            const field = fields.find((entry) => entry.name === name && entry.createable === true);
+            return !!field && (completed[name] == null || completed[name] === "");
+          };
+          if (want("Subject")) completed.Subject = marker;
+          if (want("DurationInMinutes")) completed.DurationInMinutes = 60;
+          if (want("ActivityDateTime")) {
+            completed.ActivityDateTime = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+          }
         }
         return request(`${root}/sobjects/${target.objectName}`, "POST", completed);
       };
@@ -1289,8 +1611,12 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
       // Trigger-null-tolerant enrichment: populate the failed row's nillable
       // references from owned mints and retry the insert once. Returns the
       // retry outcome, or null when nothing enrichable resolves (the caller
-      // keeps the original fault). Enrichment parents are owned, tracked,
-      // and read back exactly like planned nodes.
+      // keeps the original fault). Best-effort per candidate: setup-flavored
+      // targets describe as mintable but reject the probe insert, and one
+      // unmintable target must not void the parents that did mint. Skipped
+      // candidates stay null on the retry; the retry outcome still decides
+      // honestly. Enrichment parents are owned, tracked, and read back
+      // exactly like planned nodes.
       const enrichAndRetry = async (node: ContextNode, values: Value): Promise<Result | null> => {
         const schema = describes.get(node.objectName);
         const fields = schema && Array.isArray(schema.fields) ? schema.fields : [];
@@ -1319,15 +1645,18 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           for (const parent of sub.nodes) {
             if (ids[parent.objectName]) continue;
             const fault = await mintNode(parent, false);
-            if (fault) return null;
+            if (fault) continue;
           }
         }
         const enriched: Value = { ...values };
+        let bound = 0;
         for (const candidate of candidates) {
           const id = ids[candidate.target];
-          if (!identity(id)) return null;
+          if (!identity(id)) continue;
           enriched[candidate.field] = id;
+          bound += 1;
         }
+        if (bound === 0) return null;
         return postNode(node, enriched);
       };
       for (const node of graph.nodes) {
@@ -1338,9 +1667,19 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
         fixtureIds[inputName] = ids[objectName];
         mappings.push({ inputName, objectName });
       }
-      for (const [name, value] of Object.entries(synthetic)) args[name] = value;
+      // Pre-bound values wrap for collection inputs (maxOccurs > 1): a
+      // scalar into a collection input faults natively ("can't accept
+      // values of type String"). selfBound stays scalar: only single
+      // inputs ever bind there.
+      const wrapFor = (name: string, value: unknown): unknown => {
+        const bound = fieldByName(name);
+        const multi = typeof bound?.maxOccurs === "number" && (bound.maxOccurs as number) > 1;
+        return multi ? [value] : value;
+      };
+      for (const [name, value] of Object.entries(synthetic)) args[name] = wrapFor(name, value);
       for (const [name, id] of Object.entries(selfBound)) args[name] = id;
-      for (const [name, id] of Object.entries(templateIds)) args[name] = id;
+      for (const [name, id] of Object.entries(templateIds)) args[name] = wrapFor(name, id);
+      for (const [name, retained] of retainedTargets) { fixtureIds[name] = retained.id; mappings.push({ inputName: name, objectName: retained.objectName }); args[name] = wrapFor(name, retained.id); }
       for (const [inputName, objectName] of targets) {
         const field = fieldByName(inputName);
         const collection = typeof field?.maxOccurs === "number" && field.maxOccurs > 1;
@@ -1356,11 +1695,13 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
       }
       // Live picklist values across every described object (fixtures, templates): same-named
       // constrained inputs bind live values instead of neutral fillers that would fault.
+      const personNames = plan.kind === "scalar_create_via_auth" ? minimalPersonCreateInputNames(inputs) : null;
       const describedFields = [...describes.values()].flatMap((schema) =>
         Array.isArray(schema.fields) ? (schema.fields as unknown[]).filter(record) : []);
       for (const field of inputs) {
         if (typeof field.name !== "string" || Object.hasOwn(args, field.name)) continue;
         if (omittedInputs.includes(field.name)) continue;
+        if (personNames && !personNames.has(field.name)) { omittedInputs.push(field.name); continue; }
         const collection = typeof field.maxOccurs === "number" && field.maxOccurs > 1;
         const wrap = (value: unknown): unknown => collection ? [value] : value;
         const stringish = ["STRING", "TEXT", "TEXTAREA"].includes(String(field.type ?? "STRING").toUpperCase());
@@ -1389,7 +1730,8 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           // Optional unconstrained non-prose sweep/read/delete inputs omit (discovery-minimal).
         } else if (plan.kind === "scalar_create_via_auth" || field.required !== true) {
           const declared = stringish ? descriptorPicklistChoice(field) : undefined;
-          const value = declared !== undefined ? declared : neutralOwnedValue(
+          const person = plan.kind === "scalar_create_via_auth" && stringish ? personShapedScalarFill(field.name, marker) : null;
+          const value = declared !== undefined ? declared : person ?? neutralOwnedValue(
             typeof field.type === "string" ? field.type : null,
             typeof field.description === "string" ? field.description : null);
           args[field.name] = wrap(value);
@@ -1577,15 +1919,36 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           childDescribes += 1;
           if (!record(schema.body) || !Array.isArray(schema.body.fields)) continue;
           const fields = (schema.body.fields as unknown[]).filter(record);
+          const parentFields = fields.filter((field) => typeof field.name === "string" && FIELD_NAME.test(field.name) &&
+            String(field.type ?? "").toLowerCase() === "reference" && Array.isArray(field.referenceTo) &&
+            (field.referenceTo as unknown[]).some((ref) => typeof ref === "string" && parentObjects.has(ref)))
+            .map((field) => String(field.name));
+          // Queryable-but-undeletable candidates prove absence by query
+          // instead of failing blind: without a lookup to a created parent
+          // no child row can exist, and an empty probe-window query proves
+          // none was created. Only a found linked row is untracked.
+          if (schema.body.queryable === true && schema.body.deletable !== true &&
+            fields.some((field) => field.name === "CreatedDate")) {
+            if (parentFields.length === 0) continue;
+            const absenceClauses = parentFields.flatMap((parentField) =>
+              parentIds.map((parentId) => `${parentField} = '${parentId}'`));
+            const absenceWindowStart = new Date(Math.max(0, probeStart - 60_000)).toISOString();
+            const absence = await request(`${root}/query?q=${encodeURIComponent(
+              `SELECT Id FROM ${candidate} WHERE CreatedDate >= ${absenceWindowStart} AND (${absenceClauses.join(" OR ")}) LIMIT 5`)}`);
+            if (!absence.ok) return absence;
+            const absenceRows = record(absence.body) && Array.isArray(absence.body.records)
+              ? (absence.body.records as unknown[]).filter(record).map((row) => row.Id)
+                .filter((id): id is string => identity(id) && !fixtureIdSet.has(id) && !parentIds.includes(id)) : null;
+            if (!absenceRows || absenceRows.length > 0) {
+              cleanupError ??= `Created-child sweep on '${candidate}' found an undeletable linked row; a created child row exists untracked.`;
+            }
+            continue;
+          }
           if (schema.body.queryable !== true || schema.body.deletable !== true ||
             !fields.some((field) => field.name === "CreatedDate")) {
             cleanupError ??= `Created-child sweep on '${candidate}' found the object not cleanable; a created child row may exist untracked.`;
             continue;
           }
-          const parentFields = fields.filter((field) => typeof field.name === "string" && FIELD_NAME.test(field.name) &&
-            String(field.type ?? "").toLowerCase() === "reference" && Array.isArray(field.referenceTo) &&
-            (field.referenceTo as unknown[]).some((ref) => typeof ref === "string" && parentObjects.has(ref)))
-            .map((field) => String(field.name));
           if (parentFields.length === 0) continue;
           const references = [...new Set(fields
             .filter((field) => String(field.type ?? "").toLowerCase() === "reference" && Array.isArray(field.referenceTo))
@@ -1631,8 +1994,62 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           }
         }
       }
-      // Parents delete after their swept children.
+      // Parents delete after their swept children. Before each parent
+      // delete, sweep flow-created parents UP: a created record can point
+      // at a sibling the flow created in the same transaction (NewAppt's
+      // service appointment points at its flow-created work order), and
+      // only the output-tracked id deletes otherwise. Up-rows prove
+      // probe-window creation and non-fixture identity like children;
+      // live-linked parents (old dates, fixtures) are never touched.
+      // Depth is one level by design.
+      const createdParentIds = new Set(createdParents.map((entry) => entry.id));
       for (const parent of createdParents) {
+        // Created-output objects are often not fixture targets, so their
+        // schema is fetched on demand for reference enumeration.
+        let schema = describes.get(parent.objectName);
+        if ((!schema || !Array.isArray((schema as Value).fields)) && FIELD_NAME.test(parent.objectName)) {
+          const fetched = await request(`${root}/sobjects/${parent.objectName}/describe`);
+          if (fetched.ok && record(fetched.body)) {
+            describes.set(parent.objectName, fetched.body as Value);
+            schema = fetched.body as Value;
+          }
+        }
+        const schemaFields = schema && Array.isArray((schema as Value).fields)
+          ? ((schema as Value).fields as unknown[]).filter(record) : [];
+        if (schemaFields.length > 0) {
+          const parentRead = await request(`${root}/sobjects/${parent.objectName}/${parent.id}`);
+          if (parentRead.ok && record(parentRead.body)) {
+            const refIds = [...new Set(schemaFields
+              .filter((field) => typeof field.name === "string" && FIELD_NAME.test(field.name as string) &&
+                String(field.type ?? "").toLowerCase() === "reference")
+              .map((field) => parentRead.body[(field.name as string)])
+              .filter((value): value is string => identity(value) &&
+                !fixtureIdSet.has(value) && !createdParentIds.has(value)))].slice(0, 5);
+            for (const refId of refIds) {
+              const keyPrefix = refId.slice(0, 3);
+              const objCheck = await request(`${root}/query?q=${encodeURIComponent(
+                `SELECT QualifiedApiName FROM EntityDefinition WHERE KeyPrefix = '${keyPrefix}' LIMIT 1`)}`);
+              if (!objCheck.ok) return objCheck;
+              const objName = entityDefinitionNames(objCheck.body)[0] ?? null;
+              if (!objName || !FIELD_NAME.test(objName)) continue;
+              const upRead = await request(`${root}/sobjects/${objName}/${refId}`);
+              if (!upRead.ok || !record(upRead.body) || upRead.body.Id !== refId) {
+                if (upRead.status === 404) continue;
+                cleanupError = `Created-parent sweep on '${objName}' failed ownership readback; deletion was withheld.`;
+                continue;
+              }
+              const upCreatedAt = typeof upRead.body.CreatedDate === "string" ? Date.parse(upRead.body.CreatedDate) : NaN;
+              if (!Number.isFinite(upCreatedAt) || upCreatedAt < probeStart - 300_000) continue;
+              const upDeleted = await request(`${root}/sobjects/${objName}/${refId}`, "DELETE");
+              const upGone = await request(`${root}/sobjects/${objName}/${refId}`);
+              if ((!upDeleted.ok && upDeleted.status !== 404) || upGone.status !== 404) {
+                cleanupError = `Created-parent sweep on '${objName}' could not be verified; the record may still exist.`;
+                continue;
+              }
+              createdChildren.push({ objectName: objName, id: refId });
+            }
+          }
+        }
         const deleted = await request(`${root}/sobjects/${parent.objectName}/${parent.id}`, "DELETE");
         const gone = await request(`${root}/sobjects/${parent.objectName}/${parent.id}`);
         if ((!deleted.ok && deleted.status !== 404) || gone.status !== 404) {
@@ -1712,7 +2129,8 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
     if (owned.length > 0) {
       const cleaned = await cleanupOwnedContext({
         root, request, records: owned, scopes,
-        order: [...new Set([...owned.map((entry) => entry.objectName), ...scopes.map((scope) => scope.objectName)])],
+        order: [...new Set([...fixtureCleanupOrder, ...owned.map((entry) => entry.objectName), ...scopes.map((scope) => scope.objectName)])],
+        reclaimOwnerId: input.integrationUserId,
       });
       cleanupError ??= cleaned.cleanupError;
       owned.splice(0, owned.length, ...cleaned.ownedRecords);
@@ -1723,6 +2141,7 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
     marker, mappings, createdChildren,
     ownedRecords: owned, verificationRecordIds: Object.values(fixtureIds), fixtureRecordIds: fixtureIds,
     sweepTargets: sweepTargets.map((target) => target.objectName), omittedInputs,
+    ...(operatorBound.length > 0 ? { operatorConversationInputs: operatorBound } : {}),
     ...(absenceNotes.length > 0 ? { absenceNotes } : {}),
     residueSweep,
     ...(executionFault ? { managedFlowFault: executionFault } : {}),

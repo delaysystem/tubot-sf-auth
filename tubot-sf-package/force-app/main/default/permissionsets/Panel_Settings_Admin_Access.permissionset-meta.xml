@@ -3,16 +3,12 @@
     <description>Grants access to Panel Settings tab, messaging backup/restore, and backend service classes</description>
     <label>Panel Settings Admin Access</label>
     <hasActivationRequired>false</hasActivationRequired>
+    <classAccesses><apexClass>PanelSettingsAccessResource</apexClass><enabled>true</enabled></classAccesses>
     <classAccesses><apexClass>SimpleSetupController</apexClass><enabled>true</enabled></classAccesses>
     
-    <classAccesses><apexClass>PanelSalesforceChannelService</apexClass><enabled>true</enabled></classAccesses>
     <classAccesses><apexClass>TubotSetupWizardController</apexClass><enabled>true</enabled></classAccesses>
     <classAccesses>
         <apexClass>PanelAuthController</apexClass>
-        <enabled>true</enabled>
-    </classAccesses>
-    <classAccesses>
-        <apexClass>PanelAccountController</apexClass>
         <enabled>true</enabled>
     </classAccesses>
     <classAccesses>
@@ -140,7 +136,19 @@
 
     <externalCredentialPrincipalAccesses>
         <enabled>true</enabled>
+        <externalCredentialPrincipal>tubot__Panel_Refresh_External_Credential-Panel_Principal</externalCredentialPrincipal>
+    </externalCredentialPrincipalAccesses>
+    <externalCredentialPrincipalAccesses>
+        <enabled>true</enabled>
         <externalCredentialPrincipal>tubot__Panel_External_Credential-Panel_Principal</externalCredentialPrincipal>
+    </externalCredentialPrincipalAccesses>
+    <externalCredentialPrincipalAccesses>
+        <enabled>true</enabled>
+        <externalCredentialPrincipal>tubot__Panel_Staging_Refresh_External_Credential-Panel_Principal</externalCredentialPrincipal>
+    </externalCredentialPrincipalAccesses>
+    <externalCredentialPrincipalAccesses>
+        <enabled>true</enabled>
+        <externalCredentialPrincipal>tubot__Panel_Staging_External_Credential-Panel_Principal</externalCredentialPrincipal>
     </externalCredentialPrincipalAccesses>
 
     <tabSettings>

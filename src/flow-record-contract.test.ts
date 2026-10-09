@@ -117,3 +117,107 @@ test('retrieve-or-create fixtures populate only live writable email lookup field
   const outcome=await invokeFlowRecordContract({root,route:root+'/actions/custom/flow/LiveCreation',plan:{source:'salesforce_live_flow_record_contract',supportsStoredResolution:true,targets:[{objectName:'Prospect',inputName:'record',outputName:'recordId',markerField:'Label',fields:[{name:'MailAddress',type:'email',createable:true,nillable:true},{name:'HiddenEmail',type:'email',createable:false}]}]},request,build:async(_,__,values)=>({values})});
   expect(outcome.contextSchema?.verified).toBe(true);expect(outcome.cleanupError).toBeUndefined();expect(stored).toBeUndefined();
 });
+test('person-contact fields are never nulled, set, or picked as markers', async () => {
+  const root='/services/data/v67.0', identity='001000000000001AAA'; let sent:any;
+  const fields=[
+    {name:'Name',type:'string',length:255,createable:true,filterable:true,nillable:true,nameField:true,compoundFieldName:'Name'},
+    {name:'LastName',type:'string',length:80,createable:true,filterable:true,nillable:true,nameField:true,compoundFieldName:'Name'},
+    {name:'pi__utm_term__pc',type:'string',length:255,createable:true,filterable:true,nillable:true,nameField:false,compoundFieldName:null},
+    {name:'Email__pc',type:'email',length:80,createable:true,filterable:true,nillable:true,nameField:false,compoundFieldName:null},
+  ];
+  const described=await describeFlowRecordContract({root,descriptor:{inputs:[{name:'accountRecord',type:'SOBJECT',sObjectType:'Account',maxOccurs:1,description:'Stores record details to retrieve or create.'}],outputs:[{name:'accountRecordId',type:'STRING',maxOccurs:1}]},request:async()=>({status:200,ok:true,body:{createable:true,deletable:true,queryable:true,fields}})});
+  expect(described.status).toBe(200);
+  expect(described.contextSchema?.targets[0].markerField).toBe('Name');
+  const request=async(path:string,method='GET',body?:any)=>{
+    const result=(body:any,status=200)=>({status,ok:status<400,body});
+    if(path.includes('/actions/')){sent=body.inputs[0].accountRecord;return result([{isSuccess:true,errors:[],outputValues:{accountRecordId:identity}}]);}
+    if(path.includes('/query?'))return result({records:[{Id:identity}]});
+    if(method==='DELETE')return result(null,204);
+    return result({Id:identity,Name:sent?.Name},200);
+  };
+  const outcome=await invokeFlowRecordContract({root,route:root+'/actions/custom/flow/LiveCreation',plan:{source:'salesforce_live_flow_record_contract',supportsStoredResolution:true,targets:[{objectName:'Account',inputName:'accountRecord',outputName:'accountRecordId',markerField:'Name',fields}]},request,build:async(_,__,values)=>({values})});
+  expect(Object.keys(sent).some(k=>k.endsWith('__pc'))).toBe(false);
+  expect(sent.Name).toMatch(/^AS probe /);
+  expect(outcome.status).toBe(200);
+});
+test('generic interview faults with member nulls retry once sparse', async () => {
+  const root='/services/data/v67.0', identity='003000000000001AAA'; let invoked=0, secondSent:any;
+  const fields=[
+    {name:'LastName',type:'string',length:80,createable:true,filterable:true,nillable:false,nameField:true,compoundFieldName:null},
+    {name:'FirstName',type:'string',length:40,createable:true,filterable:true,nillable:true,nameField:false,compoundFieldName:'Name'},
+  ];
+  const request=async(path:string,method='GET',body?:any)=>{
+    const result=(body:any,status=200)=>({status,ok:status<400,body});
+    if(path.includes('/actions/')){
+      invoked++;
+      const input=body.inputs[0].contactRecord;
+      if(invoked===1){
+        expect(input.FirstName).toBe(null);
+        return result([{isSuccess:false,errors:[{statusCode:'UNKNOWN_EXCEPTION',message:'An error occurred when executing a flow interview.'}],outputValues:{}}],400);
+      }
+      secondSent=input;
+      return result([{isSuccess:true,errors:[],outputValues:{contactRecordId:identity}}]);
+    }
+    if(path.includes('/query?'))return result({records:[{Id:identity}]});
+    if(method==='DELETE')return result(null,204);
+    return result({Id:identity,LastName:secondSent?.LastName},200);
+  };
+  const outcome=await invokeFlowRecordContract({root,route:root+'/actions/custom/flow/LiveCreation',plan:{source:'salesforce_live_flow_record_contract',supportsStoredResolution:false,targets:[{objectName:'Contact',inputName:'contactRecord',outputName:'contactRecordId',markerField:'LastName',fields}]},request,build:async(_,__,values)=>({values})});
+  expect(invoked).toBe(2);
+  expect('FirstName' in secondSent).toBe(false);
+  expect(secondSent.LastName).toMatch(/^AS probe /);
+  expect(outcome.contextSchema?.verified).toBe(true);
+});
+test('persistent interview faults retry once minimal without identity emails', async () => {
+  const root='/services/data/v67.0', identity='003000000000002AAA'; let invoked=0, thirdSent:any;
+  const fields=[
+    {name:'LastName',type:'string',length:80,createable:true,filterable:true,nillable:false,nameField:true,compoundFieldName:null},
+    {name:'FirstName',type:'string',length:40,createable:true,filterable:true,nillable:true,nameField:false,compoundFieldName:'Name'},
+    {name:'Email',type:'email',length:80,createable:true,filterable:true,nillable:true,nameField:false,compoundFieldName:null},
+  ];
+  const fault=[{isSuccess:false,errors:[{statusCode:'UNKNOWN_EXCEPTION',message:'An error occurred when executing a flow interview.'}],outputValues:{}}];
+  const request=async(path:string,method='GET',body?:any)=>{
+    const result=(body:any,status=200)=>({status,ok:status<400,body});
+    if(path.includes('/actions/')){
+      invoked++;
+      const input=body.inputs[0].contactRecord;
+      if(invoked<3) return result(fault,400);
+      thirdSent=input;
+      return result([{isSuccess:true,errors:[],outputValues:{contactRecordId:identity}}]);
+    }
+    if(path.includes('/query?'))return result({records:[{Id:identity}]});
+    if(method==='DELETE')return result(null,204);
+    return result({Id:identity,LastName:thirdSent?.LastName},200);
+  };
+  const outcome=await invokeFlowRecordContract({root,route:root+'/actions/custom/flow/LiveCreation',plan:{source:'salesforce_live_flow_record_contract',supportsStoredResolution:true,targets:[{objectName:'Contact',inputName:'contactRecord',outputName:'contactRecordId',markerField:'LastName',fields}]},request,build:async(_,__,values)=>({values})});
+  expect(invoked).toBe(3);
+  expect('Email' in thirdSent).toBe(false);
+  expect(thirdSent.LastName).toMatch(/^AS probe /);
+  expect(outcome.contextSchema?.verified).toBe(true);
+});
+test('account targets on person orgs retry once with split person names', async () => {
+  const root='/services/data/v67.0', identity='001000000000003AAA'; let invoked=0, personSent:any;
+  const fields=[
+    {name:'Name',type:'string',length:255,createable:true,filterable:true,nillable:true,nameField:true,compoundFieldName:'Name'},
+    {name:'FirstName',type:'string',length:40,createable:true,filterable:true,nillable:true,nameField:true,compoundFieldName:'Name'},
+  ];
+  const fault=[{isSuccess:false,errors:[{statusCode:'UNKNOWN_EXCEPTION',message:'An error occurred when executing a flow interview.'}],outputValues:{}}];
+  const request=async(path:string,method='GET',body?:any)=>{
+    const result=(body:any,status=200)=>({status,ok:status<400,body});
+    if(path.includes('/actions/')){
+      invoked++;
+      const input=body.inputs[0].personAccountRecord;
+      if(invoked<3) return result(fault,400);
+      personSent=input;
+      return result([{isSuccess:true,errors:[],outputValues:{personAccountRecordId:identity}}]);
+    }
+    if(path.includes('/query?'))return result({records:[{Id:identity}]});
+    if(method==='DELETE')return result(null,204);
+    return result({Id:identity,Name:`${personSent?.FirstName} ${personSent?.LastName}`},200);
+  };
+  const outcome=await invokeFlowRecordContract({root,route:root+'/actions/custom/flow/LiveCreation',plan:{source:'salesforce_live_flow_record_contract',supportsStoredResolution:false,targets:[{objectName:'Account',inputName:'personAccountRecord',outputName:'personAccountRecordId',markerField:'Name',fields}]},request,build:async(_,__,values)=>({values})});
+  expect(invoked).toBe(3);
+  expect('Name' in personSent).toBe(false);
+  expect(`${personSent.FirstName} ${personSent.LastName}`).toMatch(/^AS probe /);
+  expect(outcome.contextSchema?.verified).toBe(true);
+});

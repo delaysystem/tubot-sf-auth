@@ -1,12 +1,13 @@
 /** Exchanges Panel OAuth authorization codes using the supplied PKCE verifier. */
 public with sharing class PanelOAuthTokenExchangeService {
-    public static Map<String, Object> exchange(Map<String, Object> input) {
+    public static Map<String, Object> exchange(Map<String, Object> input, String panelBaseUrl) {
         HttpRequest request = new HttpRequest();
-        request.setEndpoint(PanelAuthSupportService.DEFAULT_PANEL_URL + '/api/oauth/token');
+        request.setEndpoint(panelBaseUrl + '/api/oauth/token');
         request.setMethod('POST');
         request.setHeader('Content-Type', 'application/json');
         request.setBody(JSON.serialize(new Map<String, Object>{
             'grant_type' => 'authorization_code',
+            'token_version' => 2,
             'code' => input.get('code'),
             'client_id' => input.get('clientId'),
             'redirect_uri' => input.get('redirectUri'),

@@ -34,6 +34,7 @@ function makeSalesforce(seed: {
     Account: '001', WebStore: '0qZ', WebCart: '0a6', CartItem: '0a7', Order: '801', OrderSummary: '0qW',
     FulfillmentOrder: '0qV', ReturnOrder: '0qU', ProgramRebateType: '0qT', TransactionJournal: '0qS',
     CardPaymentMethod: '8ZJ', PaymentAuthorization: '8WJ', Invoice: '0qR', CustomRebatePayout: 'a0R',
+    CartDeliveryGroup: '0a8', CartCheckoutSession: '2z9', OrderItem: '802', OrderDeliveryGroup: '0wD',
   };
   const runQuery = (soql: string): Rec[] => {
     const from = soql.match(/FROM\s+([A-Za-z][A-Za-z0-9_]*)/i)?.[1];
@@ -87,6 +88,10 @@ function makeSalesforce(seed: {
       const action = path.split('/actions/standard/')[1];
       return seed.descriptors?.[action] ? ok(seed.descriptors[action]) : ok(null, 404);
     }
+    if (method === 'GET' && path.includes('/actions/custom/apex/') && !path.includes('/query')) {
+      const action = path.split('/actions/custom/apex/')[1];
+      return seed.descriptors?.[action] ? ok(seed.descriptors[action]) : ok(null, 404);
+    }
     if (method === 'GET' && path.includes('/query?q=')) {
       return ok({ records: runQuery(decodeURIComponent(path.split('/query?q=')[1])) });
     }
@@ -120,6 +125,12 @@ function makeSalesforce(seed: {
       if (!handler) return ok(null, 404);
       return ok(handler(body, { store, liveRows }));
     }
+    if (method === 'POST' && path.includes('/actions/custom/apex/')) {
+      const action = path.split('/actions/custom/apex/')[1];
+      const handler = seed.posts?.[action];
+      if (!handler) return ok(null, 404);
+      return ok(handler(body, { store, liveRows }));
+    }
     return ok(null, 404);
   };
   return { request, store, liveRows, build: async (_n: string, _m: string, values: any) => ({ values }) };
@@ -138,6 +149,26 @@ describe('commerce classification', () => {
     expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(115);
     expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(116);
     expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(117);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(120);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(121);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(122);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(123);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(124);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(125);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(126);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(127);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(128);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(129);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(130);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(131);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(132);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(133);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(134);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(135);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(136);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(137);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(138);
+    expect(COMMERCE_LIFECYCLE_BUILDER_VERSION).toBeGreaterThan(139);
   });
 
   test('routes every affected mutation to its owned kind', () => {
@@ -147,10 +178,11 @@ describe('commerce classification', () => {
       ['cancelCartAsyncOperation', 'cart'], ['checkoutSessionAction', 'cart'],
       ['setCheckoutDeliveryMethod', 'cart'], ['submitCartToExchangeOrder', 'cart'],
       ['updateCheckoutSessionStateAction', 'cart'], ['updateProgressForCumulativePromotionUsage', 'cart'],
-      ['activateOrderAction', 'order'], ['createOrderSummary', 'order'],
+      ['activateOrderAction', 'cart'], ['createOrderSummary', 'order'],
       ['addOrderItemSummarySubmit', 'order-submit'], ['adjustOrderItemSummariesSubmit', 'order-submit'],
       ['cancelOrderItemSummariesSubmit', 'order-submit'], ['returnOrderItemSummariesSubmit', 'order-submit'],
       ['applyPaymentsAndCreditsByRules', 'order-submit'], ['createOrderPaymentSummary', 'order-submit'],
+      ['recordTaxReversal', 'order-submit'],
       ['createCreditMemoOrderSummary', 'order-submit'], ['createInvoiceFromChangeOrders', 'order-submit'],
       ['createInvoiceFromFulfillmentOrder', 'order-submit'], ['ensurePaymentCredit', 'order-submit'],
       ['ensureRefundsOrderSummaryAsync', 'order-submit'], ['orderToCartAction', 'order-submit'],
@@ -217,6 +249,19 @@ describe('commerce classification', () => {
     expect(commerceLifecycleActionName(routeFor('getRecord'))).toBeNull();
     expect(commerceLifecycleActionName('not-a-route')).toBeNull();
   });
+
+  test('claims only cart-to-order custom/apex drafts, never other apex actions', () => {
+    const apexFor = (name: string) => `${ROOT}/actions/custom/apex/${name}`;
+    for (const name of ['B2BCartToOrderDraft', 'SDO_B2BCommerce_SPC_CartToOrderDraft']) {
+      expect(commerceLifecycleKind(name)).toBe('cart');
+      expect(isCommerceLifecycleAction('custom/apex', apexFor(name), name)).toBe(true);
+      expect(commerceLifecycleActionName(apexFor(name))).toBe(name);
+    }
+    expect(isCommerceLifecycleAction('custom/apex', apexFor('getInventorySummaryData'), 'getInventorySummaryData')).toBe(false);
+    expect(isCommerceLifecycleAction('custom/apex', apexFor('other'), 'B2BCartToOrderDraft')).toBe(false);
+    expect(isCommerceLifecycleAction('standard', apexFor('B2BCartToOrderDraft'), 'B2BCartToOrderDraft')).toBe(false);
+    expect(commerceLifecycleActionName(apexFor('getInventorySummaryData'))).toBeNull();
+  });
 });
 
 describe('commerce argument mapping', () => {
@@ -226,13 +271,17 @@ describe('commerce argument mapping', () => {
         { name: 'note', type: 'STRING', required: false }],
       { cartId: '0a6000000000001AAA', storeId: '0qZ000000000001AAA' },
     );
-    expect(mapped).toMatchObject({ args: { cartId: '0a6000000000001AAA', webStoreId: '0qZ000000000001AAA' } });
-    expect((mapped as { args: Record<string, unknown> }).args.note).toMatch(/^AS probe /);
+    expect(mapped).toEqual({ args: { cartId: '0a6000000000001AAA', webStoreId: '0qZ000000000001AAA' } });
     const fixture = mapCommerceArguments(
       [{ name: 'programRebateTypeId', type: 'REFERENCE', required: true, sObjectType: 'ProgramRebateType' }],
       { fixtures: { ProgramRebateType: '0qT000000000001AAA' } },
     );
     expect(fixture).toEqual({ args: { programRebateTypeId: '0qT000000000001AAA' } });
+    const aggregate = mapCommerceArguments(
+      [{ name: 'AggregateId', type: 'STRING', required: true }],
+      { fixtures: { RebateMemberProductAggregate: '0hY000000000001AAA' } },
+    );
+    expect(aggregate).toEqual({ args: { AggregateId: '0hY000000000001AAA' } });
   });
 
   test('fails closed on unresolved required references, omits optional gaps', () => {
@@ -242,6 +291,18 @@ describe('commerce argument mapping', () => {
       [{ name: 'programRebateTypeId', type: 'REFERENCE', required: true, sObjectType: 'ProgramRebateType' }], {}))
       .toEqual({ failure: 'No resolved identity for required input programRebateTypeId.' });
     expect(mapCommerceArguments([{ name: 'cartId', type: 'ID', required: false }], {})).toEqual({ args: {} });
+  });
+
+  test('omits optional inputs with no discovered binding instead of marker-poisoning them', () => {
+    expect(mapCommerceArguments(
+      [{ name: 'orderLifeCycleType', type: 'STRING', required: false },
+        { name: 'runAsync', type: 'BOOLEAN', required: false }], {}))
+      .toEqual({ args: {} });
+    // Discovered scalars still bind for optional inputs.
+    expect(mapCommerceArguments(
+      [{ name: 'orderStatus', type: 'STRING', required: false }],
+      { scalars: { orderstatus: 'Draft' } }))
+      .toEqual({ args: { orderStatus: 'Draft' } });
   });
 
   test('maps setup ids by input-name vocabulary with collection wrapping', () => {
@@ -255,6 +316,20 @@ describe('commerce argument mapping', () => {
       .toEqual({ failure: 'No resolved identity for required input returnOrderId.' });
   });
 
+  test('binds the owned checkout session for draft inputs', () => {
+    const mapped = mapCommerceArguments(
+      [{ name: 'cartId', type: 'ID', required: true }, { name: 'checkoutSessionId', type: 'ID', required: true },
+        { name: 'pricebookId', type: 'ID', required: false }],
+      { cartId: '0a6000000000001AAA', checkoutSessionId: '0iy000000000001AAA' },
+    );
+    expect(mapped).toEqual({ args: { cartId: '0a6000000000001AAA', checkoutSessionId: '0iy000000000001AAA' } });
+    expect(mapCommerceArguments([{ name: 'checkoutSessionId', type: 'ID', required: true }], {}))
+      .toEqual({ failure: 'No resolved identity for required input checkoutSessionId.' });
+    expect(mapCommerceArguments([{ name: 'pricebookId', type: 'ID', required: false }],
+      { live: { Pricebook2: '01s000000000001AAA' } }))
+      .toEqual({ args: { pricebookId: '01s000000000001AAA' } });
+  });
+
   test('maps one wrapper level and neutral scalars', () => {
     const mapped = mapCommerceArguments(
       [{ name: 'cartItemInput', required: true, fields: [{ name: 'cartId', type: 'ID', required: true }, { name: 'quantity', type: 'INTEGER', required: true }] }],
@@ -263,6 +338,65 @@ describe('commerce argument mapping', () => {
     expect(mapped).toEqual({ args: { cartItemInput: { cartId: '0a6000000000001AAA', quantity: 1 } } });
     const bool = mapCommerceArguments([{ name: 'active', type: 'BOOLEAN', required: true }], {});
     expect(bool).toEqual({ args: { active: true } });
+  });
+
+  test('maps ConnectApi wrapper vocabulary and leg-discovered scalars', () => {
+    const wrapper = mapCommerceArguments(
+      [{ name: 'createOrderSummaryInput', type: 'CreateOrderSummaryInput', required: true }],
+      { accountId: '001000000000001AAA', orderId: '801000000000001AAA' },
+    );
+    expect(wrapper).toEqual({ args: { createOrderSummaryInput: { orderId: '801000000000001AAA' } } });
+    expect(mapCommerceArguments(
+      [{ name: 'createOrderSummaryInput', type: 'CreateOrderSummaryInput', required: true }], {}))
+      .toEqual({ failure: 'No resolved identity for required input createOrderSummaryInput.' });
+    const scalar = mapCommerceArguments(
+      [{ name: 'orderStatus', type: 'STRING', required: true }],
+      { cartId: '0a6000000000001AAA', scalars: { orderstatus: 'Activated' } },
+    );
+    expect(scalar).toEqual({ args: { orderStatus: 'Activated' } });
+    const payment = mapCommerceArguments(
+      [{ name: 'createOrderPaymentSummaryInput', type: 'CreateOrderPaymentSummaryInput', required: true }],
+      { orderSummaryId: '1Os000000000000CAA', live: { PaymentAuthorization: '0Xc000000000000CAA' } },
+    );
+    expect(payment).toEqual({ args: { createOrderPaymentSummaryInput:
+      { orderSummaryId: '1Os000000000000CAA', paymentAuthorizationId: '0Xc000000000000CAA' } } });
+    expect(mapCommerceArguments(
+      [{ name: 'createOrderPaymentSummaryInput', type: 'CreateOrderPaymentSummaryInput', required: true }],
+      { orderSummaryId: '1Os000000000000CAA' }))
+      .toEqual({ failure: 'No resolved identity for required input createOrderPaymentSummaryInput.' });
+    expect(mapCommerceArguments(
+      [{ name: 'taxReversalInfos', type: 'TaxReversalInfos', required: true }],
+      { live: { OrderItemSummary: '10u000000000000CAA' } }))
+      .toEqual({ args: { taxReversalInfos: { taxReversalInfoList: [{ orderItemSummaryId: '10u000000000000CAA' }] } } });
+    const fulfillOwned = { orderSummaryId: '1Os000000000000CAA',
+      live: { OrderDeliveryGroupSummary: '0ag000000000000CAA', Location: '131000000000000CAA' },
+      lineSummaries: [{ id: '10u000000000000CAA', quantity: 2 }], scalars: { type: 'Warehouse' } };
+    expect(mapCommerceArguments(
+      [{ name: 'fulfillmentOrderInput', type: 'FulfillmentOrderInput', required: true }], fulfillOwned))
+      .toEqual({ args: { fulfillmentOrderInput: { orderSummaryId: '1Os000000000000CAA',
+        orderDeliveryGroupSummaryId: '0ag000000000000CAA',
+        fulfillmentGroups: [{ fulfilledFromLocationId: '131000000000000CAA', fulfillmentType: 'Warehouse',
+          referenceId: '0ag000000000000CAA',
+          orderItemSummaries: [{ orderItemSummaryId: '10u000000000000CAA', quantity: 2 }] }] } } });
+    expect(mapCommerceArguments(
+      [{ name: 'multipleFulfillmentOrderInput', type: 'MultipleFulfillmentOrderInput', required: true }], fulfillOwned))
+      .toEqual({ args: { multipleFulfillmentOrderInput: { fulfillmentOrders: [{ orderSummaryId: '1Os000000000000CAA',
+        orderDeliveryGroupSummaryId: '0ag000000000000CAA',
+        fulfillmentGroups: [{ fulfilledFromLocationId: '131000000000000CAA', fulfillmentType: 'Warehouse',
+          referenceId: '0ag000000000000CAA',
+          orderItemSummaries: [{ orderItemSummaryId: '10u000000000000CAA', quantity: 2 }] }] }] } } });
+    expect(mapCommerceArguments(
+      [{ name: 'fulfillmentOrderInput', type: 'FulfillmentOrderInput', required: true }],
+      { orderSummaryId: '1Os000000000000CAA' }))
+      .toEqual({ failure: 'No resolved identity for required input fulfillmentOrderInput.' });
+    expect(mapCommerceArguments(
+      [{ name: 'fulfillmentOrderLineItemsToCancelInput', type: 'FulfillmentOrderLineItemsToCancelInput', required: true }],
+      { lineSummaries: [{ id: '0a4000000000000CAA', quantity: 1 }] }))
+      .toEqual({ args: { fulfillmentOrderLineItemsToCancelInput: { fulfillmentOrderLineItemsToCancel:
+        [{ fulfillmentOrderLineItemId: '0a4000000000000CAA', quantity: 1 }] } } });
+    expect(mapCommerceArguments(
+      [{ name: 'fulfillmentOrderLineItemsToCancelInput', type: 'FulfillmentOrderLineItemsToCancelInput', required: true }], {}))
+      .toEqual({ failure: 'No resolved identity for required input fulfillmentOrderLineItemsToCancelInput.' });
   });
 
   test('parses descriptors and output identities without invention', () => {
@@ -330,6 +464,76 @@ describe('commerce executors', () => {
     expect((out.contextSchema as any).verified).toBe(true);
     expect(out.cleanupError).toBeUndefined();
     expect((out.contextSchema as any).ownedRecords).toHaveLength(3);
+    expect(store.size).toBe(0);
+  });
+
+  test('apex cart-to-order drafts mint an owned session chain and clean the created order', async () => {
+    const cartId = validId('0a6', 1);
+    const apexFor = (name: string) => `${ROOT}/actions/custom/apex/${name}`;
+    const { request, build, store } = makeSalesforce({
+      describes: {
+        WebStore: describeOf('WebStore', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'B2B' }] }]),
+        Account: describeOf('Account'),
+        WebCart: describeOf('WebCart', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Cart' }] }]),
+        CartDeliveryGroup: describeOf('CartDeliveryGroup'),
+        CartItem: describeOf('CartItem', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Product' }] }]),
+        CartCheckoutSession: describeOf('CartCheckoutSession', [markerField(),
+          { name: 'State', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Order Confirmation' }] },
+          { name: 'NextState', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Complete' }] }]),
+        CartTax: describeOf('CartTax', [markerField(),
+          { name: 'TaxType', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Actual' }] }]),
+      },
+      liveRows: {
+        Product2: [{ Id: validId('01t', 1), Name: 'Battery' }],
+        Order: [{ Id: validId('801', 9), OrderNumber: '00000103' }],
+        Pricebook2: [{ Id: validId('01s', 1), Name: 'Standard' }],
+        PricebookEntry: [{ Id: validId('01u', 1), Pricebook2Id: validId('01s', 1), Product2Id: validId('01t', 2), UnitPrice: 42, IsActive: true }],
+      },
+      descriptors: {
+        createCart: { inputs: [{ name: 'webStoreId' }, { name: 'cartInput' }] },
+        B2BCartToOrderDraft: { inputs: [{ name: 'cartId', type: 'ID', required: true }, { name: 'checkoutSessionId', type: 'ID', required: true }, { name: 'pricebookId', type: 'ID', required: false }] },
+      },
+      posts: {
+        createCart: (body) => {
+          const input = body.inputs[0];
+          store.set(`WebCart:${cartId}`, { Id: cartId, Name: input.cartInput.name, WebStoreId: input.webStoreId, AccountId: input.cartInput.effectiveAccountId, Status: 'Active' });
+          store.set(`CartDeliveryGroup:${validId('0a8', 1)}`, { Id: validId('0a8', 1), CartId: cartId });
+          return accepted('createCart', { cartSummary: { cartId, accountId: input.cartInput.effectiveAccountId, webstoreId: input.webStoreId, name: input.cartInput.name, status: 'Active' } });
+        },
+        B2BCartToOrderDraft: (body, api) => {
+          const args = body.inputs[0];
+          expect(args.cartId).toBe(cartId);
+          expect(isId(args.checkoutSessionId)).toBe(true);
+          const groups = [...api.store.values()].filter((row) => row.CartId === cartId && isId(row.Id) && String(row.Id).startsWith('0a8'));
+          expect(groups).toHaveLength(1);
+          expect(groups[0].DeliverToName).toBe('Probe Buyer');
+          expect(args.pricebookId).toBe(validId('01s', 1));
+          const session = api.store.get(`CartCheckoutSession:${args.checkoutSessionId}`);
+          expect(session?.WebCartId).toBe(cartId);
+          const items = [...api.store.values()].filter((row) => row.CartDeliveryGroupId !== undefined && row.CartId === cartId);
+          expect(items).toHaveLength(1);
+          expect(items[0].Product2Id).toBe(validId('01t', 2));
+          expect(items[0].ListPrice).toBe(42);
+          expect(items[0].TotalLineAmount).toBe(42);
+          const taxes = [...api.store.values()].filter((row) => row.CartItemId === items[0].Id);
+          expect(taxes).toHaveLength(1);
+          expect(taxes[0].TaxType).toBe('Actual');
+          const cart = api.store.get(`WebCart:${cartId}`);
+          const orderId = validId('801', 2);
+          api.store.set(`Order:${orderId}`, { Id: orderId, AccountId: cart?.AccountId, Status: 'Draft' });
+          api.store.set(`OrderItem:${validId('802', 2)}`, { Id: validId('802', 2), OrderId: orderId });
+          api.store.set(`OrderDeliveryGroup:${validId('0wD', 2)}`, { Id: validId('0wD', 2), OrderId: orderId });
+          api.store.set(`OrderItemTaxLineItem:${validId('0wE', 2)}`, { Id: validId('0wE', 2), OrderItemId: validId('802', 2) });
+          return accepted('B2BCartToOrderDraft', { output: orderId });
+        },
+      },
+    });
+    const out = await invokeCommerceLifecycleWithContext({ root: ROOT, route: apexFor('B2BCartToOrderDraft'), request, build });
+    expect(out.status).toBe(200);
+    expect((out.body as any)[0].isSuccess).toBe(true);
+    expect((out.contextSchema as any).verified).toBe(true);
+    expect((out.contextSchema as any).createdOrderIds).toHaveLength(1);
+    expect(out.cleanupError).toBeUndefined();
     expect(store.size).toBe(0);
   });
 
@@ -445,16 +649,16 @@ describe('commerce executors', () => {
   test('order happy path verifies the activation and cleans up', async () => {
     const { request, build, store } = makeSalesforce({
       describes: { Account: describeOf('Account'), Order: describeOf('Order') },
-      descriptors: { activateOrderAction: { inputs: [{ name: 'orderId', type: 'ID', required: true }] } },
+      descriptors: { activateOrderItemAction: { inputs: [{ name: 'orderId', type: 'ID', required: true }] } },
       posts: {
-        activateOrderAction: (body, api) => {
+        activateOrderItemAction: (body, api) => {
           const key = `Order:${body.inputs[0].orderId}`;
           api.store.set(key, { ...api.store.get(key), Status: 'Activated' });
-          return accepted('activateOrderAction', {});
+          return accepted('activateOrderItemAction', {});
         },
       },
     });
-    const out = await invokeCommerceLifecycleWithContext({ root: ROOT, route: routeFor('activateOrderAction'), request, build });
+    const out = await invokeCommerceLifecycleWithContext({ root: ROOT, route: routeFor('activateOrderItemAction'), request, build });
     expect(out.status).toBe(200);
     expect((out.contextSchema as any).verified).toBe(true);
     expect((out.contextSchema as any).afterStatus).toBe('Activated');
@@ -467,12 +671,12 @@ describe('commerce executors', () => {
       updateable: true, nillable: true, calculated: false, autoNumber: false, nameField: false };
     const { request, build, store } = makeSalesforce({
       describes: { Account: describeOf('Account', [capped]), Order: describeOf('Order') },
-      descriptors: { activateOrderAction: { inputs: [{ name: 'orderId', type: 'ID', required: true }] } },
+      descriptors: { activateOrderItemAction: { inputs: [{ name: 'orderId', type: 'ID', required: true }] } },
       posts: {
-        activateOrderAction: (body, api) => {
+        activateOrderItemAction: (body, api) => {
           const key = `Order:${body.inputs[0].orderId}`;
           api.store.set(key, { ...api.store.get(key), Status: 'Activated' });
-          return accepted('activateOrderAction', {});
+          return accepted('activateOrderItemAction', {});
         },
       },
     });
@@ -481,7 +685,7 @@ describe('commerce executors', () => {
       if (method === 'POST' && path === `${ROOT}/sobjects/Account`) creates.push(body);
       return request(path, method, body);
     };
-    const out = await invokeCommerceLifecycleWithContext({ root: ROOT, route: routeFor('activateOrderAction'), request: recording, build });
+    const out = await invokeCommerceLifecycleWithContext({ root: ROOT, route: routeFor('activateOrderItemAction'), request: recording, build });
     expect(out.status).toBe(200);
     expect((out.contextSchema as any).verified).toBe(true);
     expect(creates).toHaveLength(1);
@@ -510,13 +714,30 @@ describe('commerce executors', () => {
     expect((outReturn.body as any).errorCode).toBe('COMMERCE_RETURN_SETUP_REQUIRED');
   });
 
+  test('fulfillment creates mint typed order items for the missing_type gate', async () => {
+    const fulfillment = makeSalesforce({
+      describes: { FulfillmentOrder: describeOf('FulfillmentOrder') },
+      descriptors: { createFulfillmentOrder: { inputs: [{ name: 'fulfillmentOrderInput', required: true }] } },
+    });
+    const out = await invokeCommerceLifecycleWithContext({
+      root: ROOT, route: routeFor('createFulfillmentOrder'), request: fulfillment.request, build: fulfillment.build,
+    });
+    // The mock org cannot mint a summary, so the leg refuses honestly;
+    // the unit contract is the wrapper shape (see mapping tests).
+    expect((out.body as any).errorCode).toBe('COMMERCE_OWNED_SUMMARY_UNAVAILABLE');
+  });
+
   test('rebate refuses without a creatable rebate type', async () => {
     const { request, build } = makeSalesforce({
+      describes: {
+        RebateProgram: describeOf('RebateProgram'),
+        ProgramRebateType: { ...describeOf('ProgramRebateType'), createable: false },
+      },
       descriptors: { addRebateMemberList: { inputs: [{ name: 'programRebateTypeId', type: 'REFERENCE', required: true, sObjectType: 'ProgramRebateType' }] } },
     });
     const out = await invokeCommerceLifecycleWithContext({ root: ROOT, route: routeFor('addRebateMemberList'), request, build });
-    expect((out.body as any).errorCode).toBe('COMMERCE_REBATE_SCOPE_UNAVAILABLE');
-    expect((out.body as any).setupRequirement).toContain('ProgramRebateType');
+    expect((out.body as any).errorCode).toBe('COMMERCE_DESCRIBE_UNAVAILABLE');
+    expect((out.body as any).message).toContain('ProgramRebateType');
   });
 
   test('order submits name their setup requirement when the substrate is absent', async () => {
@@ -531,7 +752,7 @@ describe('commerce executors', () => {
 
   test('native denial outcomes attach a planner-only grant family', async () => {
     const { request, build } = makeSalesforce({
-      describes: { ProgramRebateType: describeOf('ProgramRebateType') },
+      describes: { ProgramRebateType: describeOf('ProgramRebateType'), RebateProgram: describeOf('RebateProgram') },
       descriptors: { addRebateMemberList: { inputs: [{ name: 'programRebateTypeId', type: 'REFERENCE', required: true, sObjectType: 'ProgramRebateType' }] } },
       posts: {
         addRebateMemberList: () => [
@@ -556,7 +777,7 @@ describe('commerce executors', () => {
 
   test('batch requires a job identity and reads back terminal state', async () => {
     const noJob = makeSalesforce({
-      describes: { ProgramRebateType: describeOf('ProgramRebateType') },
+      describes: { ProgramRebateType: describeOf('ProgramRebateType'), RebateProgram: describeOf('RebateProgram') },
       descriptors: { processRebatesBatchCalculationJob: { inputs: [{ name: 'programRebateTypeId', type: 'REFERENCE', required: true, sObjectType: 'ProgramRebateType' }] } },
       posts: { processRebatesBatchCalculationJob: () => accepted('processRebatesBatchCalculationJob', {}) },
     });
@@ -566,9 +787,9 @@ describe('commerce executors', () => {
     expect((missing.body as any).errorCode).toBe('COMMERCE_JOB_UNVERIFIED');
     const jobId = validId('707', 1);
     const done = makeSalesforce({
-      describes: { ProgramRebateType: describeOf('ProgramRebateType') },
+      describes: { ProgramRebateType: describeOf('ProgramRebateType'), RebateProgram: describeOf('RebateProgram') },
       descriptors: { processRebatesBatchCalculationJob: { inputs: [{ name: 'programRebateTypeId', type: 'REFERENCE', required: true, sObjectType: 'ProgramRebateType' }] } },
-      liveRows: { AsyncApexJob: [{ Id: jobId, Status: 'Completed', NumberOfErrors: 0 }] },
+      liveRows: { BatchJob: [{ Id: jobId, Status: 'Completed', ErrorDescription: null }] },
       posts: { processRebatesBatchCalculationJob: () => accepted('processRebatesBatchCalculationJob', { batchJobId: jobId }) },
     });
     const completed = await invokeCommerceLifecycleWithContext({

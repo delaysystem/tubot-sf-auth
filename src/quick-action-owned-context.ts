@@ -8,9 +8,12 @@ import { resolveRequiredInputValue, type TargetField } from './skipped-standards
  * in-tree family version so stale searcher rows reselect): 126 seeds the
  * owned parent/context-fixture required references (Case.BusinessHoursId,
  * FeedItem.ParentId) from live lookups so Case/FeedItem quick actions
- * re-probe past OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED.
+ * re-probe past OWNED_CONTEXT_REQUIRED_REFERENCE_UNRESOLVED. 127 re-audits
+ * quick actions after cleanup-time owner reclaim (drifted fixtures delete).
+ * 128 re-audits with Person-Account-aware markers (self-compound Name kept
+ * and preferred; LastName members never picked).
  */
-export const QUICK_ACTION_BUILDER_VERSION = 126;
+export const QUICK_ACTION_BUILDER_VERSION = 128;
 type Row = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (value: unknown): value is Row => !!value && typeof value === 'object' && !Array.isArray(value);

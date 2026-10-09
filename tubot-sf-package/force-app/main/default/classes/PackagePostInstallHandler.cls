@@ -30,12 +30,16 @@ public without sharing class PackagePostInstallHandler implements System.Install
                 mcpConfig = new MCP_Config__c();
             }
             Boolean isModified = false;
+            if (String.isBlank(mcpConfig.Panel_Environment__c)) {
+                mcpConfig.Panel_Environment__c = PanelEnvironmentResolver.PRODUCTION;
+                isModified = true;
+            }
             if (String.isBlank(mcpConfig.Panel_Base_URL__c)) {
-                mcpConfig.Panel_Base_URL__c = PanelAuthSupportService.DEFAULT_PANEL_URL;
+                mcpConfig.Panel_Base_URL__c = PanelEnvironmentResolver.panelBaseUrl(mcpConfig);
                 isModified = true;
             }
             if (String.isBlank(mcpConfig.Panel_Client_Id__c)) {
-                mcpConfig.Panel_Client_Id__c = PanelAuthSupportService.DEFAULT_CLIENT_ID;
+                mcpConfig.Panel_Client_Id__c = PanelEnvironmentResolver.resolve(mcpConfig).Client_Id__c;
                 isModified = true;
             }
             if (isModified || mcpConfig.Id == null) {

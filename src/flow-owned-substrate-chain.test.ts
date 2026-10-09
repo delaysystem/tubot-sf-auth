@@ -11,6 +11,7 @@ import {
   inputDocumentsRecord,
   interviewFinished,
   invokeOwnedSubstrate,
+  isExactCreationCandidate,
   isExternalIdentityShaped,
   isProseShaped,
   isReadOnlyEvident,
@@ -34,6 +35,23 @@ const CONTACT_ID = "003000000000000AAA";
 
 const ok = (body: unknown = {}) => ({ status: 200, ok: true, body });
 const records = (rows: unknown[]) => ok({ records: rows });
+
+describe("isExactCreationCandidate", () => {
+  it("requires creation-verb proximity and rejects id-input echoes", () => {
+    // Verb-adjacent creation names the created rows.
+    expect(isExactCreationCandidate("ActionPlan",
+      "This flow creates an action plan for the care request", ["careRequestId"])).toBe(true);
+    // Pure prose nouns far from any verb are fuzzy, not exact.
+    expect(isExactCreationCandidate("Referral",
+      "Referral management orchestration with several configuration steps and no creation here", [])).toBe(false);
+    // Id-input echoes name pre-existing rows even beside a verb.
+    expect(isExactCreationCandidate("ClinicalServiceRequest",
+      "Creates a task for the clinical service request review", ["clinicalServiceRequestId"])).toBe(false);
+    // Equality-only: a more-specific child stays exact beside a parent input.
+    expect(isExactCreationCandidate("CaseProceedingParticipant",
+      "Creates a case proceeding participant record for tracking", ["caseProceedingId"])).toBe(true);
+  });
+});
 
 describe("reference stems and hints", () => {
   it("strips Hungarian prefixes before stem matching", () => {
@@ -296,6 +314,169 @@ describe("invokeOwnedSubstrate", () => {
     expect(posted).toHaveLength(2);
     expect(posted[0].ParentRecordId).toBeUndefined();
     expect(posted[1].ParentRecordId).toBe(ACCOUNT_ID);
+  });
+
+  it("completes Event fixtures with a forward slot for record-variable validation", async () => {
+    const EVENT_ID = "00U000000000000AAA";
+    const SLOT_DESCRIPTOR = {
+      description: "Reads the chosen slot from the passed event.",
+      inputs: [{ name: "objEvent", type: "SOBJECT", required: false, maxOccurs: 1, sObjectType: "Event" }],
+      outputs: [{ name: "ChooseOwn", type: "BOOLEAN" }, { name: "Flow__InterviewStatus", type: "PICKLIST" }],
+    };
+    const EVENT_DESCRIBE = {
+      name: "Event", createable: true, queryable: true, deletable: true,
+      fields: [
+        { name: "Subject", type: "string", createable: true, filterable: true, length: 255 },
+        { name: "ActivityDateTime", type: "datetime", createable: true },
+        { name: "DurationInMinutes", type: "int", createable: true },
+        { name: "Description", type: "string", createable: true, filterable: true, length: 255 },
+      ],
+    };
+    const posted: Record<string, unknown>[] = [];
+    const seenArgs: Array<Record<string, unknown>> = [];
+    const calls: string[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("t__Slot_Choose") && method === "GET" ? ok(SLOT_DESCRIPTOR) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "Event" }]) : null,
+      (path) => path.endsWith("/sobjects/Event/describe") ? ok(EVENT_DESCRIBE) : null,
+      (path, method, body) => {
+        if (path === `${ROOT}/sobjects/Event` && method === "POST") {
+          posted.push(body as Record<string, unknown>);
+          return { status: 201, ok: true, body: { id: EVENT_ID } };
+        }
+        return null;
+      },
+      (path, method) => {
+        if (path === `${ROOT}/sobjects/Event/${EVENT_ID}` && method === "GET") {
+          return ok({ Id: EVENT_ID, ...posted[0] });
+        }
+        return null;
+      },
+      (path, method, body) => {
+        if (path === ROUTE("t__Slot_Choose") && method === "POST") {
+          seenArgs.push((body as { inputs: Array<Record<string, unknown>> }).inputs[0]);
+          return ok([{ isSuccess: true, errors: [], outputValues: { ChooseOwn: false, Flow__InterviewStatus: "Finished" } }]);
+        }
+        return null;
+      },
+      (path, method, body) => {
+        if (path === `${ROOT}/composite/batch` && method === "POST") {
+          const reqs = (body as { batchRequests: Array<{ method: string; url: string }> }).batchRequests;
+          if (reqs.every((entry) => entry.method === "GET") && !calls.some((call) => call.includes("/composite/batch"))) {
+            return ok({ results: reqs.map(() => ({ statusCode: 200, result: { Id: EVENT_ID } })) });
+          }
+          return ok({ results: reqs.map((entry) => ({ statusCode: entry.method === "DELETE" ? 204 : 404 })) });
+        }
+        return null;
+      },
+    ], calls);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("t__Slot_Choose"),
+      plan: { kind: "owned_id_probe_via_auth", recordInputs: [{ inputName: "objEvent", objectName: "Event" }] },
+      integrationUserId: SELF, request, build,
+    });
+    expect(outcome.status).toBe(200);
+    expect(outcome.cleanupError).toBeUndefined();
+    expect(posted).toHaveLength(1);
+    expect(posted[0].Subject).toMatch(/^AS owned /);
+    expect(posted[0].DurationInMinutes).toBe(60);
+    expect(Date.parse(posted[0].ActivityDateTime as string)).toBeGreaterThan(Date.now());
+    expect((seenArgs[0].objEvent as Record<string, unknown>).DurationInMinutes).toBe(60);
+  });
+
+  it("enriches trigger-nulled mints best-effort when one parent is unmintable", async () => {
+    const SA_ID = "08p000000000000AAA";
+    const ACCOUNT_ID = "001000000000000AAA";
+    const APPT_DESCRIPTOR = {
+      description: "Updates the service appointment status.",
+      inputs: [{ name: "serviceAppointmentId", type: "STRING", required: false, maxOccurs: 1 }],
+      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }, { name: "Flow__InterviewGuid", type: "STRING" }],
+    };
+    const SA_DESCRIBE = {
+      name: "ServiceAppointment", createable: true, queryable: true, deletable: true,
+      fields: [
+        { name: "Description", type: "string", createable: true, filterable: true, length: 255 },
+        { name: "ParentRecordId", type: "reference", createable: true, nillable: true, referenceTo: ["Account"] },
+        { name: "WorkTypeId", type: "reference", createable: true, nillable: true, referenceTo: ["WorkType"] },
+      ],
+    };
+    const ACCOUNT_DESCRIBE = {
+      name: "Account", createable: true, queryable: true, deletable: true,
+      fields: [{ name: "Name", type: "string", createable: true, filterable: true, nameField: true, length: 255 }],
+    };
+    const WORKTYPE_DESCRIBE = {
+      name: "WorkType", createable: true, queryable: true, deletable: true,
+      fields: [{ name: "Name", type: "string", createable: true, filterable: true, nameField: true, length: 255 }],
+    };
+    const TRIGGER_NULL = {
+      status: 400, ok: false,
+      body: [{
+        message: "FSL.TR001_Service_BeforeInsert: execution of BeforeInsert\n\ncaused by: System.NullPointerException: Attempt to de-reference a null object\n\n(System Code)",
+        errorCode: "CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY",
+      }],
+    };
+    const posted: Record<string, unknown>[] = [];
+    const accountPosted: Record<string, unknown>[] = [];
+    const calls: string[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("t__UpdateAppt") && method === "GET" ? ok(APPT_DESCRIPTOR) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "ServiceAppointment" }]) : null,
+      (path) => path.endsWith("/sobjects/ServiceAppointment/describe") ? ok(SA_DESCRIBE) : null,
+      (path) => path.endsWith("/sobjects/Account/describe") ? ok(ACCOUNT_DESCRIBE) : null,
+      (path) => path.endsWith("/sobjects/WorkType/describe") ? ok(WORKTYPE_DESCRIBE) : null,
+      (path, method, body) => {
+        if (path === `${ROOT}/sobjects/ServiceAppointment` && method === "POST") {
+          posted.push(body as Record<string, unknown>);
+          return typeof (body as Record<string, unknown>).ParentRecordId === "string"
+            ? { status: 201, ok: true, body: { id: SA_ID } }
+            : TRIGGER_NULL;
+        }
+        return null;
+      },
+      (path, method, body) => {
+        if (path === `${ROOT}/sobjects/Account` && method === "POST") {
+          accountPosted.push(body as Record<string, unknown>);
+          return { status: 201, ok: true, body: { id: ACCOUNT_ID } };
+        }
+        return null;
+      },
+      (path, method) => path === `${ROOT}/sobjects/WorkType` && method === "POST"
+        ? { status: 403, ok: false, body: [{ message: "insufficient access", errorCode: "INSUFFICIENT_ACCESS" }] } : null,
+      (path, method) => path === `${ROOT}/sobjects/Account/${ACCOUNT_ID}` && method === "GET"
+        ? ok({ Id: ACCOUNT_ID, Name: accountPosted[0].Name }) : null,
+      (path, method) => {
+        if (path === `${ROOT}/sobjects/ServiceAppointment/${SA_ID}` && method === "GET") {
+          return ok({ Id: SA_ID, Description: posted[0].Description, ParentRecordId: ACCOUNT_ID });
+        }
+        return null;
+      },
+      (path, method) => path === ROUTE("t__UpdateAppt") && method === "POST"
+        ? ok([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }]) : null,
+      (path, method, body) => {
+        if (path === `${ROOT}/composite/batch` && method === "POST") {
+          const reqs = (body as { batchRequests: Array<{ method: string; url: string }> }).batchRequests;
+          if (reqs.every((entry) => entry.method === "GET") && !calls.some((call) => call.includes("/composite/batch"))) {
+            return ok({
+              results: reqs.map((entry) => ({
+                statusCode: 200,
+                result: { Id: entry.url.includes("/sobjects/Account/") ? ACCOUNT_ID : SA_ID },
+              })),
+            });
+          }
+          return ok({ results: reqs.map((entry) => ({ statusCode: entry.method === "DELETE" ? 204 : 404 })) });
+        }
+        return null;
+      },
+    ], calls);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("t__UpdateAppt"), plan: { kind: "owned_id_probe_via_auth", idInputs: ["serviceAppointmentId"] },
+      integrationUserId: SELF, request, build,
+    });
+    expect(outcome.status).toBe(200);
+    expect(outcome.cleanupError).toBeUndefined();
+    expect(posted).toHaveLength(2);
+    expect(posted[1].ParentRecordId).toBe(ACCOUNT_ID);
+    expect(posted[1].WorkTypeId).toBeUndefined();
   });
 
   it("refuses invalid routes, plans, and identities without org calls", async () => {
@@ -762,6 +943,209 @@ describe("invokeOwnedSubstrate", () => {
     expect(args.recipientIds).toEqual([SELF]);
     expect(args.notificationId).toBe(TYPE_ID);
     expect(args.serviceAppointmentId).toBe(SA_ID);
+  });
+
+  it("retains strong setup references and never pre-poisons the type sample", async () => {
+    // FSAA__AA_Custom_NotificationFlow shape: the searcher lists every
+    // reference input in idInputs, including notificationId. Ranking must
+    // exempt the type input (the live CustomNotificationType sample binds
+    // downstream) and must retain the strong ServiceResource hit (borrowed
+    // live row) instead of substituting a weaker fixtureable object.
+    const notify = {
+      description: "Sends the appointment notification.",
+      inputs: [
+        { name: "recipientIds", type: "STRING", required: false, maxOccurs: 2000 },
+        { name: "notificationId", type: "STRING", required: false, maxOccurs: 1 },
+        { name: "serviceResourceId", type: "STRING", required: false, maxOccurs: 1 },
+      ],
+      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }],
+    };
+    const resourceDescribe = {
+      name: "ServiceResource", createable: true, queryable: true, deletable: false,
+      fields: [{ name: "Name", type: "string", createable: true, filterable: true, length: 80 }],
+    };
+    const RES_ID = "0Hn000000000000EAA";
+    const TYPE_ID = "0ML000000000000EAA";
+    const invoked: unknown[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("t__NotifyRes") && method === "GET" ? ok(notify) : null,
+      (path) => path.includes("CustomNotificationType") && path.includes("EntityDefinition")
+        ? records([{ QualifiedApiName: "CustomNotificationType" }]) : null,
+      (path) => path.includes("CustomNotificationType") && path.includes("LIMIT")
+        ? records([{ Id: TYPE_ID }]) : null,
+      (path) => path.includes("/query") && path.includes("ServiceResource") && !path.includes("QualifiedApiName")
+        ? records([{ Id: RES_ID }]) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "ServiceResource" }]) : null,
+      (path) => path.endsWith("/sobjects/ServiceResource/describe") ? ok(resourceDescribe) : null,
+      (path, method, body) => {
+        if (path === ROUTE("t__NotifyRes") && method === "POST") {
+          invoked.push(body);
+          return ok([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }]);
+        }
+        return null;
+      },
+    ], []);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("t__NotifyRes"),
+      plan: { kind: "notification_self_via_auth", recipientInputs: ["recipientIds"],
+        idInputs: ["notificationId", "serviceResourceId"] },
+      integrationUserId: SELF, request, build,
+    });
+    expect(outcome.status).toBe(200);
+    const args = (invoked[0] as { inputs: Array<Record<string, unknown>> }).inputs[0];
+    expect(args.serviceResourceId).toBe(RES_ID);
+    expect(args.notificationId).toBe(TYPE_ID);
+    expect(args.recipientIds).toEqual([SELF]);
+  });
+
+  it("refuses strong non-setup misses honestly instead of substituting", async () => {
+    const lookup = {
+      description: "Looks up the territory record.",
+      inputs: [{ name: "serviceTerritoryId", type: "STRING", required: false, maxOccurs: 1 }],
+      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }],
+    };
+    const territoryDescribe = {
+      name: "ServiceTerritory", createable: true, queryable: true, deletable: false,
+      fields: [{ name: "Name", type: "string", createable: true, filterable: true, length: 80 }],
+    };
+    const invoked: unknown[] = [];
+    const posted: unknown[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("t__LookupTerr") && method === "GET" ? ok(lookup) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "ServiceTerritory" }]) : null,
+      (path) => path.endsWith("/sobjects/ServiceTerritory/describe") ? ok(territoryDescribe) : null,
+      (path, method, body) => {
+        if (path.includes("/sobjects/") && method === "POST" && !path.includes("/actions/")) {
+          posted.push(body);
+          return { status: 201, ok: true, body: { id: CASE_ID } };
+        }
+        return null;
+      },
+      (path, method, body) => {
+        if (path === ROUTE("t__LookupTerr") && method === "POST") {
+          invoked.push(body);
+          return ok([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }]);
+        }
+        return null;
+      },
+    ], []);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("t__LookupTerr"),
+      plan: { kind: "owned_id_probe_via_auth", idInputs: ["serviceTerritoryId"] },
+      integrationUserId: SELF, request, build,
+    });
+    expect(outcome.status).toBe(422);
+    expect((outcome.body as { errorCode: string }).errorCode).toBe("FLOW_RECORD_CONTEXT_UNAVAILABLE");
+    expect(invoked).toHaveLength(0);
+    expect(posted).toHaveLength(0);
+  });
+
+  it("binds an operator conversation instead of refusing unmintable references", async () => {
+    const convoId = "0dw000000000001AAA";
+    const lookup = {
+      description: "Posts analysis for the conversation record.",
+      inputs: [{ name: "conversationID", type: "STRING", required: false, maxOccurs: 1 }],
+      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }],
+    };
+    const convoDescribe = {
+      name: "Conversation", createable: false, queryable: true, deletable: false,
+      fields: [{ name: "Id", type: "id" }],
+    };
+    const invoked: unknown[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("x__PostConvo") && method === "GET" ? ok(lookup) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "Conversation" }]) : null,
+      (path) => path.endsWith("/sobjects/Conversation/describe") ? ok(convoDescribe) : null,
+      (path) => path === `${ROOT}/sobjects/Conversation/${convoId}` ? ok({ Id: convoId }) : null,
+      (path, method, body) => {
+        if (path === ROUTE("x__PostConvo") && method === "POST") {
+          invoked.push(body);
+          return ok([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }]);
+        }
+        return null;
+      },
+    ], []);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("x__PostConvo"),
+      plan: { kind: "owned_id_probe_via_auth", idInputs: ["conversationID"], operatorConversationId: convoId },
+      integrationUserId: SELF, request, build,
+    });
+    expect(invoked).toHaveLength(1);
+    const args = (invoked[0] as { inputs: Array<Record<string, unknown>> }).inputs[0];
+    expect(args.conversationID).toBe(convoId);
+    expect(outcome.contextSchema).toMatchObject({ operatorConversationInputs: ["conversationID"] });
+  });
+
+  it("refuses unmintable references without an operator conversation", async () => {
+    const lookup = {
+      description: "Posts analysis for the conversation record.",
+      inputs: [{ name: "conversationID", type: "STRING", required: false, maxOccurs: 1 }],
+      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }],
+    };
+    const convoDescribe = {
+      name: "Conversation", createable: false, queryable: true, deletable: false,
+      fields: [{ name: "Id", type: "id" }],
+    };
+    const invoked: unknown[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("x__PostConvo") && method === "GET" ? ok(lookup) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "Conversation" }]) : null,
+      (path) => path.endsWith("/sobjects/Conversation/describe") ? ok(convoDescribe) : null,
+      (path, method, body) => {
+        if (path === ROUTE("x__PostConvo") && method === "POST") {
+          invoked.push(body);
+          return ok([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }]);
+        }
+        return null;
+      },
+    ], []);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("x__PostConvo"),
+      plan: { kind: "owned_id_probe_via_auth", idInputs: ["conversationID"] },
+      integrationUserId: SELF, request, build,
+    });
+    expect((outcome.body as { errorCode: string }).errorCode).toBe("FLOW_RECORD_CONTEXT_UNAVAILABLE");
+    expect(invoked).toHaveLength(0);
+  });
+
+  it("wraps retained setup ids for collection inputs", async () => {
+    const notify = {
+      description: "Sends the appointment notification.",
+      inputs: [
+        { name: "recipientIds", type: "STRING", required: false, maxOccurs: 2000 },
+        { name: "serviceResourceIds", type: "STRING", required: false, maxOccurs: 2000 },
+      ],
+      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }],
+    };
+    const resourceDescribe = {
+      name: "ServiceResource", createable: true, queryable: true, deletable: false,
+      fields: [{ name: "Name", type: "string", createable: true, filterable: true, length: 80 }],
+    };
+    const RES_ID = "0Hn000000000000EAA";
+    const invoked: unknown[] = [];
+    const request = transport([
+      (path, method) => path === ROUTE("t__NotifyResList") && method === "GET" ? ok(notify) : null,
+      (path) => path.includes("/query") && path.includes("ServiceResource") && !path.includes("QualifiedApiName")
+        ? records([{ Id: RES_ID }]) : null,
+      (path) => path.includes("QualifiedApiName") ? records([{ QualifiedApiName: "ServiceResource" }]) : null,
+      (path) => path.endsWith("/sobjects/ServiceResource/describe") ? ok(resourceDescribe) : null,
+      (path, method, body) => {
+        if (path === ROUTE("t__NotifyResList") && method === "POST") {
+          invoked.push(body);
+          return ok([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }]);
+        }
+        return null;
+      },
+    ], []);
+    const outcome = await invokeOwnedSubstrate({
+      root: ROOT, route: ROUTE("t__NotifyResList"),
+      plan: { kind: "notification_self_via_auth", recipientInputs: ["recipientIds"],
+        idInputs: ["serviceResourceIds"] },
+      integrationUserId: SELF, request, build,
+    });
+    expect(outcome.status).toBe(200);
+    const args = (invoked[0] as { inputs: Array<Record<string, unknown>> }).inputs[0];
+    expect(args.serviceResourceIds).toEqual([RES_ID]);
   });
 
   it("falls back to an owned Case fixture for bare record ids when allowed", async () => {
@@ -1819,7 +2203,10 @@ describe("invokeOwnedSubstrate", () => {
         if (query.includes("FROM ReturnOrderLineItem WHERE CreatedDate")) return records([{ Id: LINE_ID }]);
         if (query.includes("KeyPrefix")) return records([{ QualifiedApiName: "ReturnOrder" }]);
         if (query.includes("ReturnOrderLineItem")) {
-          return records([{ QualifiedApiName: "ReturnOrder" }, { QualifiedApiName: "ReturnOrderLineItem" }]);
+          // The exact IN list also names the input stem, which the live
+          // catalog resolves alongside the description joins.
+          return records([{ QualifiedApiName: "ReturnOrder" }, { QualifiedApiName: "ReturnOrderLineItem" },
+            ...(query.includes("'Case'") ? [{ QualifiedApiName: "Case" }] : [])]);
         }
         if (query.includes("QualifiedApiName")) return records([{ QualifiedApiName: "Case" }]);
         return null;

@@ -1,0 +1,9 @@
+suppressions:
+  main/default/objects/Tubot_API_Channel__c/fields/Connection_Key__c.field-meta.xml:
+    - rule_selector: pmd:ProtectSensitiveData
+      max_suppressed_violations: 1
+      reason: >-
+        False positive: this legacy external-ID field stores only the composite
+        Salesforce channel ID and integration-user ID for idempotent upsert;
+        it contains no credential or authentication token and is retained for
+        managed-package compatibility.

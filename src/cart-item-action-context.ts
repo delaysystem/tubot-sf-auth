@@ -56,7 +56,8 @@ export async function invokeCartItemMutation(input: {
   build: (name: string, marker: string, values: Value) => Promise<{ values: Value } | { failure: Result }>;
 }): Promise<{status: number; body: any; cleanupError?: string; contextSchema?: Value}> {
   const {root,request} = input, action = input.route.split('/').at(-1)!;
-  const fail = (errorCode: string, message: string): Result => ({status:422,ok:false,body:{errorCode,message}});
+  const fail = (errorCode: string, message: string, extra?: Value): Result =>
+    ({status:422,ok:false,body:{errorCode,message,...(extra??{})}});
   if (!CART_ITEM_MUTATION_ACTIONS.includes(action)) return fail('CART_ACTION_INVALID','A supported discovered native cart item route is required.');
   const described = await batchDescribe(request, root, [...CART_ITEM_MUTATION_OBJECTS], [...new Set(['createCart', 'addCartItem', action])]);
   if (!described) return fail('CART_DESCRIBE_UNAVAILABLE','Live object and action describes could not be read.');
@@ -284,7 +285,11 @@ export async function invokeCartItemMutation(input: {
         const addInputs={inputs:[Object.fromEntries(Object.entries(itemArgs).filter(([name])=>addNames.has(name)))]};
         // updateCartItem probes still add their item through the live add route first.
         const added=await request(action==='addCartItem'?input.route:root+'/actions/standard/addCartItem','POST',addInputs);
-        const items=await find('CartItem',`CartId='${cartId}'`,'Id,CartId,CartDeliveryGroupId,Product2Id,Quantity');
+        let items=await find('CartItem',`CartId='${cartId}'`,'Id,CartId,CartDeliveryGroupId,Product2Id,Quantity');
+        // Lifecycle mismatch: the native write can settle after the outcome
+        // returns; one bounded re-read before declaring unverified.
+        if(items.length!==1){await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs??1500));
+          items=await find('CartItem',`CartId='${cartId}'`,'Id,CartId,CartDeliveryGroupId,Product2Id,Quantity');}
         nativeAddEvidence={status:added.status,bodyKind:added.body===null?'null':Array.isArray(added.body)?'array':typeof added.body,
           outcomeCount:Array.isArray(added.body)?added.body.length:null,successFlags:Array.isArray(added.body)?added.body.map((v: Value)=>v?.isSuccess===true):[],
           outputKeys:Array.isArray(added.body)?added.body.flatMap((v: Value)=>Object.keys(v?.outputValues??{}).filter(k=>/^[A-Za-z][A-Za-z0-9_]*$/.test(k))):[],
@@ -292,7 +297,9 @@ export async function invokeCartItemMutation(input: {
         if(added.ok&&(added.body===null||Array.isArray(added.body)&&added.body.length===0))return fail('CART_ACTION_OUTCOME_MISSING','Salesforce returned no native cart item outcome for the owned cart and product; no mutation is counted as successful.');
         if(!successful(added))return mapHostname(added);
         if(items.length!==1||!id(items[0]?.Id)||items[0]?.CartId!==cartId||items[0]?.Product2Id!==productId||Number(items[0]?.Quantity)!==Number(ADD_QUANTITY))
-          return fail('CART_ITEM_UNVERIFIED','Native item creation did not return one actual cart item with the owned cart and product.');
+          return fail('CART_ITEM_UNVERIFIED','Native item creation did not return one actual cart item with the owned cart and product.',
+            {actualItemCount:items.length,actual:items.map(item=>({Id:item?.Id,CartId:item?.CartId,Product2Id:item?.Product2Id,Quantity:item?.Quantity})),
+              expected:{CartId:cartId,Product2Id:productId,Quantity:ADD_QUANTITY}});
         const outputItem=added.body[0].outputValues?.cartItem;
         const outputIds=outputItem&&typeof outputItem==='object'?Object.entries(outputItem).filter(([k,v])=>/id$/i.test(k)&&id(v)).map(([,v])=>v):[];
         if(outputIds.length&&!outputIds.includes(items[0].Id))return fail('CART_ITEM_UNVERIFIED','The native item outcome identity does not match the actual cart item.');

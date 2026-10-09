@@ -45,6 +45,7 @@ async function run(mode='normal'){
           const stored={objectName:name,Id:identities[name],...body};
           if(name==='Account'&&!stored.Name&&typeof body.LastName==='string')stored.Name=body.LastName;
           rows.set(identities[name],stored);return ok({id:mode==='wrong_store_response'&&name==='WebStore'?existingId:identities[name]},201);}
+        if(method==='DELETE'){if(mode==='cleanup_rejection')return ok([],403);const deleted=rows.delete(path.split('/').at(-1)!);return deleted?ok(null,204):ok([],404);}
         const row=rows.get(path.split('/').at(-1)!);return row?ok(row):ok([],404);
       }
       if(method==='GET')return ok({inputs:[{name:'webstoreId'},{name:'accountId'}],outputs:[{name:'RegisterGuestBuyerOutput'}]});

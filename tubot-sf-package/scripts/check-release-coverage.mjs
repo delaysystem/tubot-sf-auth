@@ -62,7 +62,13 @@ try {
     for (const fileName of await readdir(classesDir)) {
         if (!fileName.endsWith('.cls') || fileName.startsWith('IGNORE_') || isIgnoredClass(fileName)) { continue; }
         const source = await readFile(join(classesDir, fileName), 'utf8');
-        const declaration = source.match(/\bclass\s+([A-Za-z][A-Za-z0-9_]*)/i);
+        // Match an Apex declaration at the start of a line. A broad `class`
+        // word search can mistake documentation such as "class is retained"
+        // for the declaration and then ask Salesforce to run a test named
+        // `is`.
+        const declaration = source.match(
+            /^[\t ]*(?:@[A-Za-z][A-Za-z0-9_.]*(?:\([^)]*\))?[\t ]*)*(?:(?:global|public|private|protected|virtual|abstract|with|without|inherited|sharing|override|static)\s+)*class\s+([A-Za-z][A-Za-z0-9_]*)\b/im
+        );
         if (!declaration) { continue; }
         if (/@IsTest\b/i.test(source)) { testNames.push(declaration[1]); }
         else { packageClassNames.push(declaration[1]); }
@@ -146,16 +152,18 @@ try {
         testsRun: Number(summary?.testsRan ?? 0),
         testClasses: testNames.sort(),
         packageCoveragePercent: Number.isFinite(coveragePercent) ? coveragePercent : null,
+        packageCoveredLines,
+        packageTotalLines,
         coverageMetric: 'Weighted coverage of distributable package Apex classes',
         classCoverage,
-        requiredPackageCoveragePercent: 75,
+        requiredPackageCoveragePercent: 78,
         packagedTriggers: triggerCoverage,
         requiredTriggerCoveragePercent: 100
     };
     console.log(JSON.stringify(report, null, 2));
 
     const hasFailedTests = report.outcome !== 'Passed' || Number(summary?.failing ?? 0) > 0 || report.testsRun === 0;
-    const hasCoverageFailure = !Number.isFinite(coveragePercent) || coveragePercent < 75;
+    const hasCoverageFailure = !Number.isFinite(coveragePercent) || coveragePercent < 78;
     const hasTriggerFailure = triggerCoverage.some(item => item.totalLines === 0 || item.coveredLines !== item.totalLines);
     if (hasFailedTests || hasCoverageFailure || hasTriggerFailure) {
         console.error('Apex release coverage gates failed.');

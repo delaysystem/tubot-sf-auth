@@ -1,5 +1,12 @@
 /*
 !/force-app/
+!/extra-app/
+!/extra-app/**
+!/extra-omni-metadata/
+!/extra-omni-metadata/**
+!/package.json
+!/package-lock.json
+!/jest.config.js
 !/sfdx-project.json
 !/deploy_package.sh
 !/setup_salesforce_channel_auth.sh
@@ -8,6 +15,10 @@
 !/SALESFORCE_CHANNEL_AUTH.md
 !/scripts/
 !/security-review/
+!/create_messaging_scratch.sh
+!/setup_messaging_omnichannel.sh
+!/setup_omni_supervisor.sh
+!/config/
 !/.forceignore
 !/.gitignore
 !/tests/

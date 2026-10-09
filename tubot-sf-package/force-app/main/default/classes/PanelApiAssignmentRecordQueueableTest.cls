@@ -15,7 +15,7 @@ private class PanelApiAssignmentRecordQueueableTest {
 
     private static Id apiPermissionSetId() {
         Id psId = PanelTestPermissionHelper.resolvePermissionSetId(
-            PanelSalesforceChannelService.PERMISSION_SET
+            PanelSalesforceChannelSupportService.PERMISSION_SET
         );
         System.assertNotEquals(null, psId, 'The API permission set must exist.');
         return psId;

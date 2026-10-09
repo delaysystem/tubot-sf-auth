@@ -97,8 +97,12 @@ async function deployDir(options, projectDir, sourceDir) {
 
 async function checkState(options, namespacedApp) {
     const apps = await queryOrg(options, `SELECT Id FROM ExternalClientApplication WHERE DeveloperName = '${APP_NAME}' LIMIT 1`);
-    const sets = await queryOrg(options, `SELECT Id FROM PermissionSet WHERE Name = '${PREAUTH_SET_NAME}' AND NamespacePrefix = null LIMIT 1`);
-    return { appInstalled: apps.length > 0, preAuthSetExists: sets.length > 0 };
+    const sets = await queryOrg(options, `SELECT Id, NamespacePrefix FROM PermissionSet WHERE Name = '${PREAUTH_SET_NAME}' LIMIT 100`);
+    const expectedNamespace = namespacedApp.endsWith(`__${APP_NAME}`)
+        ? namespacedApp.slice(0, -(`__${APP_NAME}`).length)
+        : '';
+    const preAuthSetExists = sets.some((set) => !set.NamespacePrefix || set.NamespacePrefix === expectedNamespace);
+    return { appInstalled: apps.length > 0, preAuthSetExists };
 }
 
 async function discoverPoliciesName(options, namespacedApp, workDir) {
@@ -127,7 +131,13 @@ async function verifyPolicies(options, namespacedApp, workDir, policiesName) {
     if (!body.includes('<permittedUsersPolicyType>AdminApprovedPreAuthorized</permittedUsersPolicyType>')) {
         throw new Error('Policies verification failed: permitted-users type is not admin-approved.');
     }
-    if (!body.includes(`<commaSeparatedPermissionSet>${PREAUTH_SET_NAME}</commaSeparatedPermissionSet>`)) {
+    const expectedNamespace = namespacedApp.endsWith(`__${APP_NAME}`)
+        ? namespacedApp.slice(0, -(`__${APP_NAME}`).length)
+        : '';
+    const expectedNames = new Set([PREAUTH_SET_NAME, ...(expectedNamespace ? [`${expectedNamespace}__${PREAUTH_SET_NAME}`] : [])]);
+    const permissionSetValue = body.match(/<commaSeparatedPermissionSet>(.*?)<\/commaSeparatedPermissionSet>/)?.[1] ?? '';
+    const permissionSets = permissionSetValue.split(',').map((name) => name.trim());
+    if (!permissionSets.some((name) => expectedNames.has(name))) {
         throw new Error('Policies verification failed: pre-auth permission set is missing.');
     }
 }

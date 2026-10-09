@@ -1,3 +1,4 @@
+import { isCompoundParent, isNameMarkerField } from "./describe-marker-field";
 import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
 import { quickActionFailurePlanners, quickActionRouteTerminal } from "./quick-action-owned-context";
 import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
@@ -15,8 +16,11 @@ type Result = { status: number; ok: boolean; body: any };
  * vocabulary-seed fallback (record actions reselect for target discovery).
  * 128: searcher-side live-catalog top-up generalized to every record
  * action (chatterPost reselects for target discovery).
+ * 129: Person-Account-aware markers (self-compound Name kept and
+ * preferred; LastName members never picked) so parent and related
+ * fixtures create past "bad field names" on every Person-Account org.
  */
-export const REFERENCE_QUICK_ACTION_BUILDER_VERSION = 128;
+export const REFERENCE_QUICK_ACTION_BUILDER_VERSION = 129;
 const record = (v: any): v is Value => v !== null && typeof v === "object" && !Array.isArray(v);
 const safe = (v: any): v is string => typeof v === "string" && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(v);
 const id = (v: any): v is string => typeof v === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -40,8 +44,8 @@ export async function invokeReferenceQuickAction(input: {
     return { status: 403, body: { errorCode: "QUICK_ACTION_PARENT_PERMISSIONS_REQUIRED", message: "The disposable reference parent needs create/read/delete access.",
       setupRequirement: `${input.parent} create/read/delete access for the execution user.` } };
   const candidates = parentFields.filter(f => safe(f.name) && f.createable === true && f.filterable === true &&
-    f.calculated !== true && f.autoNumber !== true && f.type === "string" && f.length >= 24 && !parentFields.some(c => c.compoundFieldName === f.name));
-  const markerField = candidates.find(f => f.nameField) ?? candidates.find(f => f.nillable === false) ?? candidates[0];
+    f.calculated !== true && f.autoNumber !== true && f.type === "string" && f.length >= 24 && !isCompoundParent(parentFields, f));
+  const markerField = candidates.find(isNameMarkerField) ?? candidates.find(f => f.nillable === false) ?? candidates[0];
   if (!markerField) return { ...failure("QUICK_ACTION_PARENT_MARKER_UNAVAILABLE", "The live parent has no writable, queryable ownership marker."), contextSchema: { source: "salesforce_live_reference_context_discovery", parentContextObject: input.parent, fields: parentFields.filter(f => ["string", "textarea", "combobox"].includes(f.type)).slice(0, 40).map(f => ({ name: f.name, type: f.type, createable: f.createable, filterable: f.filterable, calculated: f.calculated, autoNumber: f.autoNumber, nameField: f.nameField, nillable: f.nillable, length: f.length, compoundFieldName: f.compoundFieldName })) } };
   const marker = `AS probe ${crypto.randomUUID()}`.slice(0, markerField.length);
   // Required parent references (Case.BusinessHoursId) seed from live
@@ -97,8 +101,8 @@ export async function invokeReferenceQuickAction(input: {
         referenceAttempts.push(attempt);
         if (!schema.ok || schema.body?.createable !== true || schema.body?.deletable !== true) continue;
         const relatedFields: Value[] = schema.body.fields?.filter(record) ?? [];
-        const relatedMarkers = relatedFields.filter(f => safe(f.name) && f.createable === true && f.filterable === true && f.type === "string" && f.length >= 24 && f.calculated !== true && f.autoNumber !== true && !relatedFields.some(c => c.compoundFieldName === f.name));
-        const name = relatedMarkers.find(f => f.nameField && !f.compoundFieldName) ?? relatedMarkers.find(f => f.nillable === false) ?? relatedMarkers[0];
+        const relatedMarkers = relatedFields.filter(f => safe(f.name) && f.createable === true && f.filterable === true && f.type === "string" && f.length >= 24 && f.calculated !== true && f.autoNumber !== true && !isCompoundParent(relatedFields, f));
+        const name = relatedMarkers.find(isNameMarkerField) ?? relatedMarkers.find(f => f.nillable === false) ?? relatedMarkers[0];
         attempt.markerAvailable = Boolean(name);
         if (!name) continue;
         const relatedMarker = `AS probe ${crypto.randomUUID()}`.slice(0, name.length ?? 80);

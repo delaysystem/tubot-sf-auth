@@ -361,6 +361,68 @@ test("scoped inspection permits Organization timezone and NamedCredential discov
     [{ method: "POST", path: tz }])).rejects.toThrow("invalid_api_path");
 });
 
+test("scoped inspection permits swarm candidate and open-swarm exclusion reads", async () => {
+  const candidates = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id FROM Account LIMIT 8");
+  const active = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT RelatedRecordId FROM Swarm WHERE Status != 'Closed' LIMIT 200");
+  mockSalesforce({
+    ["/services/data/v67.0/query"]: ((_init: unknown, url: URL) => {
+      const q = url.searchParams.get("q") ?? "";
+      return Response.json(q.includes("RelatedRecordId")
+        ? { records: [{ RelatedRecordId: "001xx0000000001AAA" }] }
+        : { records: [{ Id: "001xx0000000002AAA" }] });
+    }) as never,
+  });
+  const orgId = "00D" + "0".repeat(12);
+  const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
+  const ref = { teamId: "team", orgId, channelId: "channel" };
+  const result = await entrypoint.inspectSalesforce(ref,
+    [{ method: "GET", path: candidates }, { method: "GET", path: active }]);
+  expect(result.map(item => item.status)).toEqual([200, 200]);
+  const wide = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id FROM Account LIMIT 9");
+  const otherObject = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT RelatedRecordId FROM Case WHERE Status != 'Closed' LIMIT 200");
+  const otherFilter = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT RelatedRecordId FROM Swarm LIMIT 200");
+  for (const path of [wide, otherObject, otherFilter]) {
+    await expect(entrypoint.inspectSalesforce(ref,
+      [{ method: "GET", path }])).rejects.toThrow("invalid_api_path");
+  }
+});
+
+test("scoped inspection permits operator conversation resolution reads", async () => {
+  const convo = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id FROM Conversation WHERE ConversationIdentifier = '34702549-48b7-4069-bfb0-220ef3997664' LIMIT 1");
+  const session = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id, SessionKey FROM MessagingSession WHERE ConversationId = '0dwg5000000xMcPAAU' LIMIT 1");
+  mockSalesforce({
+    ["/services/data/v67.0/query"]: ((_init: unknown, url: URL) => {
+      const q = url.searchParams.get("q") ?? "";
+      return Response.json(q.includes("ConversationIdentifier")
+        ? { records: [{ Id: "0dwg5000000xMcPAAU" }] }
+        : { records: [{ Id: "0Mwg50000028FDdCAM", SessionKey: "k" }] });
+    }) as never,
+  });
+  const orgId = "00D" + "0".repeat(12);
+  const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
+  const ref = { teamId: "team", orgId, channelId: "channel" };
+  const result = await entrypoint.inspectSalesforce(ref,
+    [{ method: "GET", path: convo }, { method: "GET", path: session }]);
+  expect(result.map(item => item.status)).toEqual([200, 200]);
+  const noLimit = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id FROM Conversation WHERE ConversationIdentifier = '34702549-48b7-4069-bfb0-220ef3997664'");
+  const injected = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id FROM Conversation WHERE ConversationIdentifier = 'x' OR Name LIKE '%25' LIMIT 1");
+  const otherField = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT Id, Body FROM MessagingSession WHERE ConversationId = '0dwg5000000xMcPAAU' LIMIT 1");
+  for (const path of [noLimit, injected, otherField]) {
+    await expect(entrypoint.inspectSalesforce(ref,
+      [{ method: "GET", path }])).rejects.toThrow("invalid_api_path");
+  }
+});
+
 test("scoped inspection permits exact read-only Quick Action definitions", async () => {
   const path="/services/data/v67.0/sobjects/Case/quickActions/NewChildCase/describe";
   mockSalesforce({[path]:{type:"Create",targetParentField:"ParentId"}});
@@ -465,8 +527,20 @@ test("scoped action inspection permits only read-only single-record sample queri
   }, {
     method: "GET",
     path: "/services/data/v67.0/query?q=SELECT%20Id%20FROM%20ContentDocument%20WHERE%20FileType%20IN%20('AMR','AU','FLAC','M4A','MP3','MP4','MPEG','MPGA','OGG','OGA','WAV','WAVE','WEBM')%20LIMIT%201",
+  }, {
+    method: "GET",
+    path: "/services/data/v67.0/query?q=SELECT%20Id%2C%20Subject%20FROM%20Case%20LIMIT%203",
+  }, {
+    method: "GET",
+    path: "/services/data/v67.0/query?q=SELECT%20Id%2C%20Quantity%20FROM%20OrderItemSummary%20WHERE%20OrderSummaryId%20%3D%20'0qW000000000001AAA'%20LIMIT%205",
+  }, {
+    method: "GET",
+    path: "/services/data/v67.0/query?q=SELECT%20Reason%20FROM%20OrderItemSummaryChangeReason%20LIMIT%205",
   }]);
   expect(result).toEqual([
+    { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
+    { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
+    { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
     { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
     { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
     { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
@@ -490,7 +564,7 @@ test("scoped action inspection permits only read-only single-record sample queri
   } catch { rejected = true; }
   expect(rejected).toBe(true);
   expect(seen.filter((s) => s.url.pathname === "/services/data/v67.0/composite/batch")).toHaveLength(1);
-  expect(seen).toHaveLength(5);
+  expect(seen).toHaveLength(8);
 });
 
 test("registration returns safe diagnostics for rejected ECA credentials", async () => {
@@ -1657,6 +1731,68 @@ test("Flow context derives lookup inputs from active metadata, verifies fixture 
   expect(JSON.parse(String(invoked?.body)).inputs[0].lookupInput).toBe(email);
 });
 
+test("Flow record enrichment retries with minted parents when one candidate is unmintable", async () => {
+  const root = "/services/data/v67.0";
+  const route = `${root}/actions/custom/flow/TenantAppt`;
+  const SA_ID = "08p000000000001AAA";
+  const ACCOUNT_ID = "001000000000001AAA";
+  const saPosted: Record<string, unknown>[] = [];
+  let accountName = "";
+  let saDeleted = false;
+  let accountDeleted = false;
+  const NPE = [{ message: "FSL.TR001_Service_BeforeInsert: execution of BeforeInsert\n\ncaused by: System.NullPointerException: Attempt to de-reference a null object\n\n(System Code)", errorCode: "CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY", fields: [] }];
+  const seen = mockSalesforce({
+    [route]: init => init?.method === "POST"
+      ? Response.json([{ isSuccess: true, errors: [], outputValues: { Flow__InterviewStatus: "Finished" } }])
+      : Response.json({ description: "Updates the appointment.",
+        inputs: [{ name: "objSA", type: "SOBJECT", required: false, maxOccurs: 1, sObjectType: "ServiceAppointment" }],
+        outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST" }] }),
+    [`${root}/query`]: () => Response.json({ records: [{ QualifiedApiName: "ServiceAppointment" }] }),
+    [`${root}/sobjects/ServiceAppointment/describe`]: { createable: true, queryable: true, deletable: true, fields: [
+      { name: "EarliestStartTime", type: "datetime", createable: true, nillable: false },
+      { name: "DueDate", type: "datetime", createable: true, nillable: false },
+      { name: "ParentRecordId", type: "reference", createable: true, updateable: true, nillable: true, referenceTo: ["Account"] },
+      { name: "WorkTypeId", type: "reference", createable: true, nillable: true, referenceTo: ["WorkType"] },
+    ] },
+    [`${root}/sobjects/ServiceAppointment`]: init => {
+      const payload = JSON.parse(String(init?.body));
+      saPosted.push(payload);
+      return typeof payload.ParentRecordId === "string"
+        ? Response.json({ id: SA_ID, success: true }, { status: 201 })
+        : Response.json(NPE, { status: 400 });
+    },
+    [`${root}/sobjects/ServiceAppointment/${SA_ID}`]: init => {
+      if (init?.method === "DELETE") { saDeleted = true; return new Response(null, { status: 204 }); }
+      return saDeleted ? Response.json([{ message: "x", errorCode: "ENTITY_IS_DELETED" }], { status: 404 })
+        : Response.json({ Id: SA_ID, ...saPosted[saPosted.length - 1] });
+    },
+    [`${root}/sobjects/Account/describe`]: { createable: true, queryable: true, deletable: true, fields: [
+      { name: "Name", type: "string", createable: true, nillable: false, length: 255 },
+    ] },
+    [`${root}/sobjects/Account`]: init => { accountName = JSON.parse(String(init?.body)).Name; return Response.json({ id: ACCOUNT_ID, success: true }, { status: 201 }); },
+    [`${root}/sobjects/Account/${ACCOUNT_ID}`]: init => {
+      if (init?.method === "DELETE") { accountDeleted = true; return new Response(null, { status: 204 }); }
+      return accountDeleted ? Response.json([{ message: "x", errorCode: "ENTITY_IS_DELETED" }], { status: 404 })
+        : Response.json({ Id: ACCOUNT_ID, Name: accountName });
+    },
+    [`${root}/sobjects/WorkType/describe`]: { createable: true, queryable: true, deletable: true, fields: [
+      { name: "Name", type: "string", createable: true, nillable: false, length: 255 },
+    ] },
+    [`${root}/sobjects/WorkType`]: () => Response.json([{ message: "insufficient access", errorCode: "INSUFFICIENT_ACCESS" }], { status: 403 }),
+  });
+  const result = await new TubotSfAuthEntrypoint(null, await fixture()).invokeFlowWithContext(
+    { teamId: "team", orgId, channelId: "channel" }, { apiVersion: "67.0", route, arguments: {} });
+  expect(result.status).toBe(200);
+  expect(result.cleanupError).toBeUndefined();
+  expect(saPosted).toHaveLength(2);
+  expect(saPosted[1].ParentRecordId).toBe(ACCOUNT_ID);
+  expect(saPosted[1].WorkTypeId).toBeUndefined();
+  const invoked = seen.find(item => item.url.pathname === route && item.method === "POST");
+  expect(JSON.parse(String(invoked?.body)).inputs[0].objSA.ParentRecordId).toBe(ACCOUNT_ID);
+  expect(saDeleted).toBe(true);
+  expect(accountDeleted).toBe(true);
+});
+
 test("verification context uses a discovered real producer and the delivered inbox code", async () => {
   const root = "/services/data/v67.0";
   const route = `${root}/actions/custom/flow/Pkg__VerifyCode`;
@@ -1900,11 +2036,12 @@ test("Flow record input fixtures come from the live catalog and are deleted afte
       }
       return Response.json({ records: [] });
     },
-    [`${root}/sobjects/Tenant_Record__c/describe`]: { createable: true, queryable: true, deletable: true, fields: [{ name: "Name", type: "string", nillable: false, createable: true }] },
+    [`${root}/sobjects/Tenant_Record__c/describe`]: { createable: true, queryable: true, deletable: true, fields: [{ name: "Name", type: "string", nillable: false, createable: true, updateable: true }] },
     [`${root}/sobjects/Tenant_Record__c`]: init => { name = JSON.parse(String(init?.body)).Name; return Response.json({ id, success: true }, { status: 201 }); },
     [`${root}/sobjects/Tenant_Record__c/${id}`]: init => {
       if (init?.method === "DELETE") { deleted = true; return new Response(null, { status: 204 }); }
-      return deleted ? Response.json([{ errorCode: "NOT_FOUND" }], { status: 404 }) : Response.json({ Id: id, Name: name });
+      return deleted ? Response.json([{ errorCode: "NOT_FOUND" }], { status: 404 }) : Response.json({ Id: id, Name: name,
+        CreatedDate: "2026-10-07T00:00:00.000+0000", CreatedById: "005000000000000AAA", SystemModstamp: "2026-10-07T00:00:00.000+0000" });
     },
   });
   const result = await new TubotSfAuthEntrypoint(null, await fixture()).invokeFlowWithContext(
@@ -1919,6 +2056,75 @@ test("Flow record input fixtures come from the live catalog and are deleted afte
     (item.url.searchParams.get("q") ?? "").includes("FROM EntityDefinition"))).toBe(true);
   expect(seen.some(item => item.url.pathname === `${root}/sobjects/`)).toBe(false);
   expect(seen.at(-1)?.method).toBe("GET");
+});
+
+test("Flow recordId scalar binds the owned fixture instead of passing caller identity", async () => {
+  const root = "/services/data/v67.0";
+  const route = `${root}/actions/custom/flow/TenantBrief`;
+  const id = "a01000000000001AAA";
+  let name = ""; let deleted = false;
+  const seen = mockSalesforce({
+    [route]: init => init?.method === "POST" ? Response.json([{ isSuccess: true, errors: null, outputValues: {} }])
+      : Response.json({ inputs: [{ name: "subjectRecord", type: "SOBJECT", sObjectType: "Tenant_Record__c", maxOccurs: 1 },
+        { name: "recordId", type: "STRING", maxOccurs: 1 }] }),
+    [`${root}/query`]: (_init, url) => {
+      const q = url.searchParams.get("q") ?? "";
+      if (q.includes("FROM EntityDefinition") && q.includes("Tenant_Record__c")) {
+        return Response.json({ records: [{ QualifiedApiName: "Tenant_Record__c" }] });
+      }
+      return Response.json({ records: [] });
+    },
+    [`${root}/sobjects/Tenant_Record__c/describe`]: { createable: true, queryable: true, deletable: true, fields: [{ name: "Name", type: "string", nillable: false, createable: true, updateable: true }] },
+    [`${root}/sobjects/Tenant_Record__c`]: init => { name = JSON.parse(String(init?.body)).Name; return Response.json({ id, success: true }, { status: 201 }); },
+    [`${root}/sobjects/Tenant_Record__c/${id}`]: init => {
+      if (init?.method === "DELETE") { deleted = true; return new Response(null, { status: 204 }); }
+      return deleted ? Response.json([{ errorCode: "NOT_FOUND" }], { status: 404 }) : Response.json({ Id: id, Name: name });
+    },
+  });
+  // A caller-supplied foreign identity in recordId must neither refuse the
+  // probe nor reach the interview: it rebinds to the owned fixture id.
+  const result = await new TubotSfAuthEntrypoint(null, await fixture()).invokeFlowWithContext(
+    { teamId: "team", orgId, channelId: "channel" }, { apiVersion: "67.0", route, arguments: { recordId: "a01000000000099AAA" } });
+  expect(result.status).toBe(200);
+  expect(result.cleanupError).toBeUndefined();
+  const invocation = seen.find(item => item.url.pathname === route && item.method === "POST");
+  expect(JSON.parse(String(invocation?.body)).inputs[0].recordId).toBe(id);
+  expect(deleted).toBe(true);
+});
+
+test("Flow attested synthesis skips the foreign-identity scan; unattested does not", async () => {
+  const root = "/services/data/v67.0";
+  const route = `${root}/actions/custom/flow/TenantUpdateBrief`;
+  const id = "a01000000000001AAA";
+  let name = "";
+  const seen = mockSalesforce({
+    [route]: init => init?.method === "POST" ? Response.json([{ isSuccess: true, errors: null, outputValues: {} }])
+      : Response.json({ inputs: [{ name: "subjectRecord", type: "SOBJECT", sObjectType: "Tenant_Record__c", maxOccurs: 1 },
+        { name: "noteId", type: "STRING", maxOccurs: 1 }] }),
+    [`${root}/query`]: (_init, url) => {
+      const q = url.searchParams.get("q") ?? "";
+      if (q.includes("FROM EntityDefinition") && q.includes("Tenant_Record__c")) {
+        return Response.json({ records: [{ QualifiedApiName: "Tenant_Record__c" }] });
+      }
+      return Response.json({ records: [] });
+    },
+    [`${root}/sobjects/Tenant_Record__c/describe`]: { createable: true, queryable: true, deletable: true, fields: [{ name: "Name", type: "string", nillable: false, createable: true, updateable: true }] },
+    [`${root}/sobjects/Tenant_Record__c`]: init => { name = JSON.parse(String(init?.body)).Name; return Response.json({ id, success: true }, { status: 201 }); },
+    [`${root}/sobjects/Tenant_Record__c/${id}`]: init =>
+      init?.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json({ Id: id, Name: name }),
+  });
+  const entry = async () => new TubotSfAuthEntrypoint(null, await fixture());
+  const attested = await (await entry()).invokeFlowWithContext(
+    { teamId: "team", orgId, channelId: "channel" },
+    { apiVersion: "67.0", route, arguments: { noteId: "a02000000000001AAA" }, argumentsSynthetic: true });
+  expect(attested.status).toBe(200);
+  const invocation = seen.find(item => item.url.pathname === route && item.method === "POST");
+  expect(JSON.parse(String(invocation?.body)).inputs[0].noteId).toBe("a02000000000001AAA");
+  const refused = await (await entry()).invokeFlowWithContext(
+    { teamId: "team", orgId, channelId: "channel" },
+    { apiVersion: "67.0", route, arguments: { noteId: "a02000000000001AAA" } });
+  expect(refused.status).toBe(422);
+  expect((refused.body as any).errorCode).toBe("FLOW_RECORD_LIVE_INPUT_REFUSED");
 });
 
 test("Flow record fixtures refuse undeletable targets before minting anything", async () => {
@@ -2041,8 +2247,12 @@ test("Mutating flow fixtures mint owned parents and never borrow live rows", asy
     [`${root}/query`]: (_init, url) => {
       const q = url.searchParams.get("q") ?? "";
       if (q.includes("FROM EntityDefinition")) return Response.json({ records: [{ QualifiedApiName: "Tenant_Case__c" }] });
-      // A live row exists, but the mutating flow must never bind it.
-      if (q.includes("FROM Tenant_Hours__c")) return Response.json({ records: [{ Id: liveHoursId }] });
+      // Tenant_Hours__c has no IsDefault column, so setup-default lookups
+      // match nothing; a live row exists, but the mutating flow must never
+      // bind it.
+      if (q.includes("FROM Tenant_Hours__c")) {
+        return Response.json({ records: q.includes("IsDefault") ? [] : [{ Id: liveHoursId }] });
+      }
       return Response.json({ records: [] });
     },
     [`${root}/sobjects/Tenant_Case__c/describe`]: { createable: true, queryable: true, deletable: true, fields: [
@@ -2070,9 +2280,11 @@ test("Mutating flow fixtures mint owned parents and never borrow live rows", asy
   // Owned mint, not the live row.
   expect(childPosted.HoursId).toBe(parentId);
   expect(childPosted.HoursId).not.toBe(liveHoursId);
-  // No live row was ever read for binding (only the schema catalog ran).
+  // No customer row was ever read for binding: only IsDefault-filtered
+  // setup lookups (which matched nothing) plus the schema catalog ran.
   expect(seen.some(item => item.url.pathname === `${root}/query` &&
-    (item.url.searchParams.get("q") ?? "").includes("FROM Tenant_Hours__c"))).toBe(false);
+    (item.url.searchParams.get("q") ?? "").includes("FROM Tenant_Hours__c") &&
+    !(item.url.searchParams.get("q") ?? "").includes("IsDefault"))).toBe(false);
   expect(result.contextSchema).toMatchObject({ source: "salesforce_live_flow_record_inputs", ownedReferencesOnly: true });
   expect(deleted).toEqual(["child", "parent"]);
 });
@@ -2087,8 +2299,10 @@ test("Mutating flow with unmintable references refuses without borrowing or post
       const q = url.searchParams.get("q") ?? "";
       if (q.includes("FROM EntityDefinition")) return Response.json({ records: [{ QualifiedApiName: "Tenant_Case__c" }] });
       // Live rows exist on both polymorphic targets; neither may be read.
-      if (q.includes("FROM Tenant_A__c")) return Response.json({ records: [{ Id: "001000000000011AAA" }] });
-      if (q.includes("FROM Tenant_B__c")) return Response.json({ records: [{ Id: "001000000000012AAA" }] });
+      // Neither target has an IsDefault column, so setup-default lookups
+      // match nothing.
+      if (q.includes("FROM Tenant_A__c")) return Response.json({ records: q.includes("IsDefault") ? [] : [{ Id: "001000000000011AAA" }] });
+      if (q.includes("FROM Tenant_B__c")) return Response.json({ records: q.includes("IsDefault") ? [] : [{ Id: "001000000000012AAA" }] });
       return Response.json({ records: [] });
     },
     [`${root}/sobjects/Tenant_Case__c/describe`]: { createable: true, queryable: true, deletable: true, fields: [
@@ -2103,7 +2317,8 @@ test("Mutating flow with unmintable references refuses without borrowing or post
   // Honest refusal: no fixture created, no flow invoked, no live row read.
   expect(seen.every(item => item.method !== "POST")).toBe(true);
   expect(seen.some(item => item.url.pathname === `${root}/query` &&
-    /(FROM Tenant_A__c|FROM Tenant_B__c)/.test(item.url.searchParams.get("q") ?? ""))).toBe(false);
+    /(FROM Tenant_A__c|FROM Tenant_B__c)/.test(item.url.searchParams.get("q") ?? "") &&
+    !(item.url.searchParams.get("q") ?? "").includes("IsDefault"))).toBe(false);
   expect(result.contextSchema).toMatchObject({ source: "salesforce_live_flow_record_inputs", ownedReferencesOnly: true });
 });
 

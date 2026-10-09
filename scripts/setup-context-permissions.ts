@@ -43,6 +43,7 @@ const GRANT_FAMILIES = new Set([
   "action-access",
   "package-data",
   "field-access",
+  "flow-access",
 ]);
 const OPS = new Set(["create", "read", "edit", "update", "delete"]);
 
@@ -53,7 +54,8 @@ export type ParsedGrant =
   | { family: "feature-access" }
   | { family: "action-access" }
   | { family: "package-data" }
-  | { family: "field-access"; object: string; field: string };
+  | { family: "field-access"; object: string; field: string }
+  | { family: "flow-access"; namespace: string | null; flow: string };
 
 export type Ops = { create: boolean; read: boolean; edit: boolean; delete: boolean };
 export const FULL_CRUD: Ops = { create: true, read: true, edit: true, delete: true };
@@ -71,6 +73,7 @@ export type SetupOperation =
   | { op: "ensure-permset"; permset: string }
   | { op: "object-permissions"; object: string; ops: Ops }
   | { op: "field-permissions"; object: string; field: string }
+  | { op: "flow-access"; namespace: string | null; flow: string }
   | { op: "assign"; user: string }
   | { op: "manual"; title: string; detail: string };
 
@@ -84,7 +87,8 @@ const usage = (): string =>
     "  --api-version VER     Tooling API version, e.g. 67.0 (default 67.0).",
     "  --grant SPEC          Repeatable. SPEC is one of:",
     "                          object-crud:Object[:op,op]  (default ops: full CRUD)",
-    "                          field-access:Object.Field",
+    "                          field-access:Object.Field\n" +
+    "                          flow-access:[Namespace.]FlowDeveloperName  (auto: SetupEntityAccess run grant)",
     "                          record-access[:Object]      (manual: sharing/ownership)",
     "                          cross-reference[:Object]    (manual: parent-row access)",
     "                          feature-access              (manual: admin resolves)",
@@ -117,6 +121,12 @@ export function parseGrant(spec: unknown): ParsedGrant {
       throw new Error(`field-access needs Object.Field: "${spec.slice(0, 80)}".`);
     }
     return { family, object, field };
+  }
+  if (family === "flow-access") {
+    const parts = (rest ?? "").split(".");
+    if (parts.length === 1 && parts[0] && IDENTIFIER.test(parts[0])) return { family, namespace: null, flow: parts[0] };
+    if (parts.length === 2 && parts[0] && parts[1] && IDENTIFIER.test(parts[0]) && IDENTIFIER.test(parts[1])) return { family, namespace: parts[0], flow: parts[1] };
+    throw new Error(`flow-access needs [Namespace.]Flow: "${spec.slice(0, 80)}".`);
   }
   if (family === "record-access" || family === "cross-reference") {
     if (rest !== undefined && !IDENTIFIER.test(rest)) throw new Error(`Invalid object name: "${spec.slice(0, 80)}".`);
@@ -182,6 +192,11 @@ export function planSetup(options: SetupOptions): SetupOperation[] {
       if (seen.has(key)) continue;
       seen.add(key);
       plan.push({ op: "field-permissions", object: grant.object, field: grant.field });
+    } else if (grant.family === "flow-access") {
+      const key = `flow:${grant.namespace ?? ""}.${grant.flow}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      plan.push({ op: "flow-access", namespace: grant.namespace, flow: grant.flow });
     } else if (grant.family === "record-access") {
       plan.push({
         op: "manual", title: "record-access",
@@ -224,6 +239,7 @@ export function renderPlan(plan: SetupOperation[], options: SetupOptions): strin
       if (entry.op === "ensure-permset") return `  [auto] ensure permission set ${entry.permset} exists`;
       if (entry.op === "object-permissions") return `  [auto] ${entry.object} object permissions: ${opsText(entry.ops)}`;
       if (entry.op === "field-permissions") return `  [auto] ${entry.object}.${entry.field} field permissions: read,edit`;
+      if (entry.op === "flow-access") return `  [auto] ${(entry.namespace ? `${entry.namespace}.` : "") + entry.flow} flow access: run grant via SetupEntityAccess`;
       if (entry.op === "assign") return `  [auto] assign ${options.permset} to the execution user`;
       return `  [manual] ${entry.title}: ${entry.detail}`;
     }),
@@ -258,6 +274,8 @@ function fail(step: string, result: SfResult): never {
 
 const tooling = (apiVersion: string, suffix: string): string =>
   `/services/data/v${apiVersion}/tooling${suffix}`;
+const dataApi = (apiVersion: string, suffix: string): string =>
+  `/services/data/v${apiVersion}${suffix}`;
 
 async function executePlan(plan: SetupOperation[], options: SetupOptions): Promise<void> {
   const org = ["--target-org", options.targetOrg];
@@ -315,6 +333,27 @@ async function executePlan(plan: SetupOperation[], options: SetupOptions): Promi
         console.log(`created ${entry.object}.${entry.field} field permissions (read,edit)`);
       } else {
         console.log(`field permissions ${entry.object}.${entry.field} already present`);
+      }
+    }
+    if (entry.op === "flow-access") {
+      const label = `${entry.namespace ? `${entry.namespace}.` : ""}${entry.flow}`;
+      const defs = query(`SELECT Id FROM FlowDefinition WHERE DeveloperName = '${entry.flow}' AND ` +
+        (entry.namespace ? `NamespacePrefix = '${entry.namespace}'` : "NamespacePrefix = null") + " LIMIT 1");
+      const defId = typeof defs[0]?.Id === "string" ? defs[0].Id : null;
+      if (!defId) throw new Error(`flow access ${label}: no live FlowDefinition matched; refusing to grant blindly.`);
+      const grants = (() => {
+        const done = api("GET", `${dataApi(options.apiVersion, "/query")}?q=${encodeURIComponent(
+          `SELECT Id FROM SetupEntityAccess WHERE ParentId = '${permsetId}' AND SetupEntityId = '${defId}' LIMIT 1`)}`);
+        if (!done.ok || !Array.isArray(done.json?.records)) fail("setup entity access query", done);
+        return done.json.records;
+      })();
+      if (!grants[0]?.Id) {
+        const created = api("POST", dataApi(options.apiVersion, "/sobjects/SetupEntityAccess"),
+          { ParentId: permsetId, SetupEntityId: defId });
+        if (!created.ok) fail(`flow access ${label}`, created);
+        console.log(`granted ${label} flow access via SetupEntityAccess`);
+      } else {
+        console.log(`flow access ${label} already present`);
       }
     }
   }

@@ -4,7 +4,8 @@ type Result = { status: number; ok: boolean; body: any };
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
 const successful = (r: Result) => r.ok && Array.isArray(r.body) && r.body.length === 1 && r.body[0]?.isSuccess === true && !r.body[0].errors?.length;
 export const PAYMENT_AUTH_ACTIONS = ['authorizePayment'];
-export const PAYMENT_AUTH_LIFECYCLE_BUILDER_VERSION = 86;
+/** 87: guard-blocked verdicts defer until after parent deletes null the survivor lookups. */
+export const PAYMENT_AUTH_LIFECYCLE_BUILDER_VERSION = 87;
 
 /** Live-proven recipe: returns-payments lane (test2+test1empty 2026-10-03).
  *  Surviving shape: { accountId, amount: 1, currencyIsoCode, paymentGatewayId,
@@ -55,6 +56,7 @@ export async function invokePaymentAuthorizationWithContext(input: {
   let accountId: string|undefined, methodId: string|undefined, outcome: Result = fail('PAYMENT_AUTH_CONTEXT_UNAVAILABLE','The owned payment lifecycle could not be verified.');
   let cleanupError: string|undefined;
   const residue: Array<{objectName:string;id:string;status:string;unlinked:boolean;markerCommented:boolean}> = [];
+  const pendingGuards: string[] = [];
   const capture = (objectName: string, value: string) => {if(!owned.some(v=>v.id===value))owned.push({objectName,id:value});};
   try {
     outcome = await (async()=>{
@@ -110,21 +112,13 @@ export async function invokePaymentAuthorizationWithContext(input: {
             await request(root+'/sobjects/PaymentAuthorization/'+authId,'PATCH',{AccountId:null});
             retired = (await request(root+'/sobjects/PaymentAuthorization/'+authId,'DELETE')).ok;
           }
-          // Guard-blocked survivors are neutralized, not deleted: the platform
-          // refuses deletion in every status (live-verified), so prove the
-          // terminal state by readback (Canceled + both lookups nulled +
-          // marker comment) and report the survivor as structured residue.
-          // Absence after refused deletes still counts as cleaned; anything
-          // else keeps the fail-closed cleanup error.
+          // Guard-blocked survivors defer their verdict until after the
+          // parent deletes below null the survivor lookups; absence now
+          // still counts as cleaned.
           if (!retired) {
             const reread = await request(root+'/sobjects/PaymentAuthorization/'+authId);
             if (reread.status === 404) retired = true;
-            else {
-              const neutralized = reread.ok && reread.body?.Status === 'Canceled' && reread.body?.AccountId == null &&
-                reread.body?.PaymentMethodId == null && reread.body?.Comments === marker;
-              if (neutralized) residue.push({objectName:'PaymentAuthorization',id:authId,status:'Canceled',unlinked:true,markerCommented:true});
-              else cleanupError ??= `PaymentAuthorization ${authId} is guard-blocked (Canceled, unlinked, marker-commented); platform refuses deletion in every status.`;
-            }
+            else pendingGuards.push(authId);
           }
         }
         if (methodId) {
@@ -134,6 +128,20 @@ export async function invokePaymentAuthorizationWithContext(input: {
         }
         const acctGone = await request(root+'/sobjects/Account/'+accountId,'DELETE');
         if (!acctGone.ok) cleanupError ??= 'Owned account cleanup failed.';
+        // Deferred guard verdicts: the platform refuses deletion in every
+        // status (live-verified), so prove the terminal state by readback
+        // (Canceled + both lookups nulled + marker comment) and report the
+        // survivor as structured residue. Absence after refused deletes
+        // still counts as cleaned; anything else keeps the fail-closed
+        // cleanup error.
+        for (const authId of pendingGuards) {
+          const reread = await request(root+'/sobjects/PaymentAuthorization/'+authId);
+          if (reread.status === 404) continue;
+          const neutralized = reread.ok && reread.body?.Status === 'Canceled' && reread.body?.AccountId == null &&
+            reread.body?.PaymentMethodId == null && reread.body?.Comments === marker;
+          if (neutralized) residue.push({objectName:'PaymentAuthorization',id:authId,status:'Canceled',unlinked:true,markerCommented:true});
+          else cleanupError ??= `PaymentAuthorization ${authId} is guard-blocked (Canceled, unlinked, marker-commented); platform refuses deletion in every status.`;
+        }
       }
     } catch { cleanupError ??= 'Owned payment cleanup could not be independently read back.'; }
     const swept = await cleanupOwnedContext({root,request,records:owned,order:['CardPaymentMethod','Account'],scopes:[

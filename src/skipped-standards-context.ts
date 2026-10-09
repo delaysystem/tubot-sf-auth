@@ -48,6 +48,7 @@ export type DescriptorField = {
   name: string;
   type?: string | null;
   required?: boolean | null;
+  description?: string | null;
 };
 
 export type MarkerSelection = { name: string; length: number };

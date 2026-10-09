@@ -64,7 +64,7 @@ export const TRIGGER_NULL_CANDIDATE_CAP = 8;
 const OBJECT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
 const TRIGGER_NULL_SIGNATURE =
-  /execution of (?:BeforeInsert|BeforeUpdate|AfterInsert|AfterUpdate) caused by: System\.NullPointerException/;
+  /execution of (?:BeforeInsert|BeforeUpdate|AfterInsert|AfterUpdate)\s+caused by:\s+System\.NullPointerException/;
 
 /**
  * True when an insert outcome carries the trigger-null signature: HTTP 400

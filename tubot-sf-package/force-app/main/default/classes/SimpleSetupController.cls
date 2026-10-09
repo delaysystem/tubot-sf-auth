@@ -2,11 +2,9 @@
  * @description AuraEnabled entry points for Simple Setup: the guided,
  * session-free in-app replacement for the Python post-install wizard.
  * The UI calls runStep sequentially (user -> channel -> eca -> finalize ->
- * finalize-register); every step is synchronous (DML/SOQL plus, at
- * registration time only, Panel callouts), so no polling step exists. Both
- * OAuth clients ship in the package; the admin runs the policies CLI command
- * once per org (no secrets, no Setup clicks), and Panel mints short-lived
- * JWT tokens only for pre-authorized users. The org never handles secrets.
+ * finalize-register). ECA preparation uses DML, followed by a separate
+ * setup-scoped OAuth popup and outcome poll. The manual Setup UI path is
+ * an alternative; final registration verifies the live JWT grant.
  * All methods require the settings-admin permission.
  */
 public with sharing class SimpleSetupController {
@@ -36,6 +34,25 @@ public with sharing class SimpleSetupController {
     }
     private class FinalizeRegisterStepHandler implements StepHandler {
         public Map<String, Object> run(Map<String, Object> input) { return SimpleSetupStepRunner.runFinalizeRegisterStep(input); }
+    }
+
+    /** @description Separate transaction: no permission-set DML precedes this callout. */
+    @AuraEnabled
+    public static Map<String, Object> initiateEcaAuthorization() {
+        return SimpleSetupEcaStep.initiate();
+    }
+
+    /** @description Polls only the non-sensitive setup outcome. */
+    @AuraEnabled
+    public static Map<String, Object> pollEcaAuthorization(String state) {
+        return SimpleSetupEcaStep.outcome(state);
+    }
+
+    /** @description Manual and popup paths both verify the selected user's pre-auth membership. */
+    @AuraEnabled
+    public static Map<String, Object> checkEcaAuthorization(String userId) {
+        PanelAuthSupportService.requireSettingsAdmin();
+        return SimpleSetupEcaStep.checkMembership((Id) userId);
     }
 
     /**

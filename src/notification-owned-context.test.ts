@@ -55,7 +55,7 @@ test('send acceptance and license gates read the envelope only', () => {
   expect(notificationLicenseBlocked(ok)).toBe(false);
 });
 
-type HarnessOptions = { postError?: unknown; deleteStuck?: boolean; buildMismatch?: boolean };
+type HarnessOptions = { postError?: unknown; deleteStuck?: boolean; buildMismatch?: boolean; caseDescribeDenied?: boolean };
 function harness(options: HarnessOptions = {}) {
   let fixture: any = null;
   let caseFixture: any = null;
@@ -72,6 +72,7 @@ function harness(options: HarnessOptions = {}) {
       return result({ createable: true, deletable: true, queryable: true, fields: [{ name: 'Name' }] });
     }
     if (path === `${ROOT}/sobjects/Case/describe`) {
+      if (options.caseDescribeDenied) return result({ errorCode: 'NOT_FOUND' }, 404);
       return result({ createable: true, deletable: true, queryable: true, fields: [{ name: 'Subject' }] });
     }
     if (path === `${ROOT}/sobjects/Opportunity` && method === 'POST') {
@@ -128,6 +129,17 @@ test('owned lifecycle sends to the live recipient about the owned fixture', asyn
   expect(post).toHaveLength(1);
   // Fixture deleted and absence verified.
   expect(h.calls.some((c) => c.path === `${ROOT}/sobjects/Opportunity/${OWNED_ID}` && c.method === 'DELETE')).toBe(true);
+});
+
+test('skipped Case fallback records which gate did not fire', async () => {
+  const h = harness({ postError: [{ isSuccess: false, errors: [{ message: 'Invalid parameter value for: recordId' }] }], caseDescribeDenied: true });
+  const outcome = await invokeNotificationWithContext({
+    root: ROOT, route: ROUTE, recipientUserId: RECIPIENT, request: h.request, build: h.build,
+  });
+  expect(outcome.contextSchema?.verified).toBe(false);
+  expect(outcome.contextSchema?.fallbackSkipped).toBe('case-schema');
+  expect(outcome.contextSchema?.fallbackFixture).toBeUndefined();
+  expect(outcome.cleanupError).toBeUndefined();
 });
 
 test('record id rejection reads only the rejection signal', () => {

@@ -183,6 +183,7 @@ describe("planFlowFaultRepair", () => {
       "INTEGRATION_PROCEDURE_INPUT_UNAVAILABLE",
       "VENDOR_EMPTY_RESULT_FAULT",
       "MODEL_INFERENCE_UNAVAILABLE",
+      "UDD_TARGET_ENTITY_UNRESOLVABLE",
     ];
     for (const code of terminal) {
       const plan = planFlowFaultRepair(fault(code, { retryable: false }));
@@ -828,7 +829,8 @@ describe("reshape-inputs repair", () => {
         attempts: 0,
       });
     }
-    expect(calls).toBe(0);
+    // One descriptor read per code to rule out scalar re-probe; no POST.
+    expect(calls).toBe(2);
   });
 
   test("reshapes without prior args park before the descriptor read", async () => {

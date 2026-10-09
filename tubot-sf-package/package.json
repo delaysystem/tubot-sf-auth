@@ -1,0 +1,10 @@
+{
+  "name": "tubot-sf-extra",
+  "private": true,
+  "scripts": {
+    "test:lwc": "sfdx-lwc-jest -- --runInBand"
+  },
+  "devDependencies": {
+    "@salesforce/sfdx-lwc-jest": "^7.9.0"
+  }
+}

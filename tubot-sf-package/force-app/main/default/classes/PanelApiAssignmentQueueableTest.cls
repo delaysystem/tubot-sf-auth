@@ -53,7 +53,7 @@ private class PanelApiAssignmentQueueableTest {
         List<PermissionSetAssignment> assignments = [
             SELECT PermissionSet.NamespacePrefix FROM PermissionSetAssignment
             WHERE AssigneeId = :target.Id
-            AND PermissionSet.Name = :PanelSalesforceChannelService.PERMISSION_SET
+            AND PermissionSet.Name = :PanelSalesforceChannelSupportService.PERMISSION_SET
         ];
         System.assertEquals(1, assignments.size(), 'Exactly one API-read copy should be assigned.');
         System.assertEquals(

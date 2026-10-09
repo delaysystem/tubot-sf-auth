@@ -4,7 +4,26 @@ Candidate: TuBot **1.2.0.2** (`04tg5000000F489AAC`), released,
 verified 2026-10-06. AppExchange approval is issued by Salesforce after its
 security review.
 
-## Static analysis
+## Latest package release
+
+TuBot **1.5.0.5** (`04tg5000000FG1FAAW`) was promoted on 2026-10-08 with
+**75% packaged Apex coverage** and `HasPassedCodeCoverageCheck=true`. The
+package installed successfully in the `tubot-setup-subscriber` scratch org;
+blind readback confirmed the installed version, the inactive Axiom Remote
+Site, and the absence of the BT Servant Remote Site. This release is not yet
+approved for an AppExchange listing; Salesforce Security Review remains
+pending.
+
+The OAuth storage schema audit found no `code`, `access_token`, or
+`refresh_token` columns. The setup table had zero rows at audit time, so this
+does not constitute a post-callback storage audit. The real Panel-authenticated
+audit still needs a completed OAuth callback in a connected test org.
+
+The current 1.5.0 source check, including the Axiom removal attempt and the
+latest Code Analyzer report, is documented in
+[Axiom removal and Code Analyzer verification](axiom-removal-code-analyzer-check.md).
+
+## Static analysis for released 1.2.0.2
 
 Salesforce Code Analyzer (Recommended rules, documented suppressions
 honored) against `./force-app`, matching the package bundle via
@@ -72,40 +91,34 @@ the [blind CLI install verification](package-install-verification.json).
 All Panel traffic goes to `https://panel.tubot.lat`: authenticated API
 callouts via the `Panel_Named_Credential` (External Credential auth), and
 the OAuth login/profile exchange via raw callouts allowlisted in the
-`Panel_Tubot` remote site. Subscriber orgs approve these third-party hosts
-at install time:
-
-- `panel.tubot.lat` — Panel API (active). This is the only third-party
-  host in the package: the deprecated Axiom remote site and the WhatsApp
-  gateway CSP trusted site were deleted from source in 1.4.0.6 (neither
-  ever shipped in a released version, so no removal entitlement was
-  needed) and verified absent from a live subscriber install.
+`Panel_Tubot` remote site. The active Panel endpoint is `panel.tubot.lat`.
+The released package also contains the inactive `Axiom_API` Remote Site.
+Salesforce rejected removal during 2GP version creation because it is in the
+package lineage, so 1.5.0.5 retains it inactive. A Partner Community case is
+required to request metadata-removal entitlement before removing it in a later
+version. The BT Servant Remote Site source file is prefixed `IGNORE_` and
+excluded by `.forceignore`. An inactive BT Servant CSP trusted-site component
+remains in source for upgrade compatibility; packaged code has no callout to
+that host.
 
 Active Panel tokens live only in External Credentials. The legacy
 `Panel_Access_Token__c`, `Panel_Refresh_Token__c`, and `Api_Token__c` fields
 are retained empty and unwritten (see below).
 
-## Retained deprecated components
+## Retained legacy metadata
 
-Second-generation managed packages cannot delete components shipped in a
-released version without a Salesforce Partner entitlement (1.1.0.4 and
-1.0.0.16 are released). These originals were removed from the live
-implementation but ship as inert stubs until the metadata-removal
-entitlement is granted:
+The unused Apex stubs, disabled feature endpoints, old setup screens, and
+retired REST controller have been removed from the current source. A managed
+package upgrade may still require Salesforce Partner approval to delete
+components already present in released versions. The archived pre-cleanup
+implementations remain in `archive/pre-appexchange-cleanup/`.
 
-- 9 empty Apex classes (Omni setup cluster, disabled-endpoint controllers,
-  Axiom telemetry service, FLS initializer) + 3 empty test classes.
-- `HeaderCustomController` keeps its `global` REST surface, still returning
-  HTTP 410 for every call.
+The current source still retains metadata that has not been removed from a
+released package:
+
+- `Axiom_API` Remote Site, inactive in the released package.
+- Inactive BT Servant CSP trusted site retained for upgrade compatibility.
 - 3 legacy token fields, never read or written by packaged code.
-
-(Removed from this list in 1.4.0.6: the `Axiom_API` remote site and the
-WhatsApp gateway CSP trusted site — both deleted outright after confirming
-no released version contains them.)
-
-Each stub is documented in-source. File a Partner Community case for the
-removal entitlement, then delete them in a later version. The archived
-originals live in `archive/pre-appexchange-cleanup/`.
 
 ## Repeatable checks
 

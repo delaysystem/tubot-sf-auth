@@ -10,6 +10,10 @@
  *   fixtures synthesized with only a Name marker carry a null Email and the
  *   managed flow faults with UNKNOWN_EXCEPTION. Completing a createable
  *   Email field with an undeliverable probe address fixes the whole family.
+ * - Event fixtures synthesized with only a Subject marker fault at insert:
+ *   the org requires ActivityDateTime + DurationInMinutes
+ *   (REQUIRED_FIELD_MISSING). Completing a forward slot fixes scheduling
+ *   flows that validate those fields on the passed record variable.
  *
  * Zero-hardcoding contract: shapes are detected from live descriptor
  * vocabulary only. Probe identities always use the undeliverable
@@ -89,4 +93,28 @@ export function personIdentityCompletion(
     ...values,
     Email: `flow-probe-${crypto.randomUUID()}@${UNDELIVERABLE_DOMAIN}`,
   };
+}
+
+/** Complete a disposable Event fixture with a forward slot. Returns the
+ * values unchanged unless the object is Event and the live describe
+ * exposes createable slot fields the values leave empty. Pure: never
+ * touches org state. */
+export function eventSlotCompletion(
+  objectName: string,
+  fields: FixtureField[],
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  if (objectName !== "Event") return values;
+  const want = (name: string): boolean => {
+    const field = fields.find((entry) => entry.name === name && entry.createable === true);
+    if (!field) return false;
+    const current = values[name];
+    return current == null || current === "";
+  };
+  const completed = { ...values };
+  if (want("DurationInMinutes")) completed.DurationInMinutes = 60;
+  if (want("ActivityDateTime")) {
+    completed.ActivityDateTime = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+  }
+  return completed;
 }

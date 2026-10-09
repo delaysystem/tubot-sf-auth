@@ -1,3 +1,4 @@
+import { isNameMarkerField, isPersonContactField } from './describe-marker-field';
 import { describeFlowUpdateContract } from './flow-update-contract';
 import { describeFlowScalarCreationContract } from './flow-scalar-creation-contract';
 import { reclaimFixtureOwnerForDelete } from './fixture-owner-reclaim';
@@ -25,8 +26,8 @@ export async function describeFlowRecordContract(input: { root: string; descript
     const schema = await input.request(`${input.root}/sobjects/${contract.objectName}/describe`);
     if (!schema.ok || !Array.isArray(schema.body?.fields)) return schema;
     const fields = schema.body.fields.filter(record);
-    const choices = fields.filter((f: Value) => f.createable && f.filterable && f.type === 'string' && f.length >= 48 && !f.calculated && !f.autoNumber);
-    const marker = choices.find((f: Value) => f.nameField) ?? choices.find((f: Value) => !f.nillable) ?? choices[0];
+    const choices = fields.filter((f: Value) => f.createable && f.filterable && f.type === 'string' && f.length >= 48 && !f.calculated && !f.autoNumber && !isPersonContactField(f));
+    const marker = choices.find(isNameMarkerField) ?? choices.find((f: Value) => !f.nillable) ?? choices[0];
     if (!marker || !schema.body.createable || !schema.body.deletable || !schema.body.queryable) return { status: 403, body: { errorCode: 'FLOW_RECORD_CONTRACT_PERMISSIONS_REQUIRED', message: `Live ${contract.objectName} creation, query, deletion and ownership-marker access are required; automatically run setup:context-permissions --auto-record-contracts during org provisioning.` } };
     targets.push({ ...contract, fixtureAccessReady: true, markerField: marker.name, fields });
   }
@@ -41,6 +42,8 @@ export async function invokeFlowRecordContract(input: { root: string; route: str
   const targets = Array.isArray(plan.targets) ? plan.targets.filter(record) : [];
   if (plan.source !== 'salesforce_live_flow_record_contract' || !targets.length || targets.length > 3 || targets.some(t => ![t.objectName, t.inputName, t.outputName, t.markerField].every(identifier))) return { status: 422, body: { errorCode: 'FLOW_RECORD_CONTRACT_INVALID', message: 'A discovered typed Flow record contract is required.' } };
   const marker = `AS probe ${crypto.randomUUID()}`, args: Value = {}, owned: Array<{ objectName: string; id: string }> = [];
+  const sparseInputs: Value = {};
+  const identityKeys: Value = {};
   const verificationRecordIds: string[] = [], markers: Value = {};
   let resolutionMode = "unsaved_record_creation";
   let outcome: Result = { status: 422, ok: false, body: { errorCode: 'FLOW_RECORD_CONTRACT_CONTEXT_UNAVAILABLE', message: 'Owned record input values could not be prepared.' } }, verified = false, cleanupError: string | undefined;
@@ -58,16 +61,92 @@ export async function invokeFlowRecordContract(input: { root: string; route: str
         // even though the public contract marks its record field optional.
         // Supply unique synthetic values only for live writable email fields.
         const identityFields = plan.supportsStoredResolution === true ? Object.fromEntries((target.fields ?? [])
-          .filter((f: Value) => identifier(f.name) && f.type === 'email' && f.createable && !f.calculated && !f.autoNumber)
+          .filter((f: Value) => identifier(f.name) && f.type === 'email' && f.createable && !f.calculated && !f.autoNumber && !isPersonContactField(f))
           .slice(0, 4).map((f: Value) => [f.name, `probe-${crypto.randomUUID()}@example.invalid`])) : {};
         const built = await input.build(target.objectName, marker, { ...identityFields, [target.markerField]: marker });
         if ('failure' in built) return built.failure;
+        identityKeys[target.inputName] = Object.keys(identityFields);
         // Explicit-null RecordTypeId faults interviews (verified A/B); the platform defaults the record type when omitted.
-        const nulls = Object.fromEntries((target.fields ?? []).filter((f: Value) => f.createable && f.nillable === true && !f.defaultedOnCreate && !f.calculated && !f.autoNumber && f.name !== 'RecordTypeId').map((f: Value) => [f.name, null]));
+        // Person-Contact (`__pc`) fields are likewise never nulled: even explicit nulls 400 "bad field names"
+        // on the business-record inserts these fixtures always are.
+        const nulls = Object.fromEntries((target.fields ?? []).filter((f: Value) => f.createable && f.nillable === true && !f.defaultedOnCreate && !f.calculated && !f.autoNumber && f.name !== 'RecordTypeId' && !isPersonContactField(f)).map((f: Value) => [f.name, null]));
         args[target.inputName] = { ...nulls, ...built.values, attributes: { type: target.objectName } };
+        sparseInputs[target.inputName] = { ...built.values, attributes: { type: target.objectName } };
         markers[target.objectName] = target.markerField;
       }
       let invoked = await request(input.route, 'POST', { inputs: [args] });
+      // Dense explicit-null records can poison flows that bridge the record
+      // to a second object (live evidence: a Contact record's nulled person
+      // fields fault the flow's business-Account insert, while the same
+      // sparse record succeeds). The execution identity only ever sees the
+      // generic interview fault, so the single sparse retry is keyed on
+      // that fault plus the presence of suspect compound-member nulls —
+      // never on detail text. Required + marker + identity values only.
+      const faultTexts: string[] = [];
+      const collectFaults = (node: unknown): void => {
+        if (typeof node === 'string') faultTexts.push(node);
+        else if (Array.isArray(node)) node.forEach(collectFaults);
+        else if (record(node)) Object.values(node).forEach(collectFaults);
+      };
+      collectFaults(invoked.body);
+      const interviewFaulted = !invoked.ok && faultTexts.some(text => /executing a flow interview/i.test(text));
+      const riskyNulls = targets.some(t => (t.fields ?? []).some((f: Value) => f.createable && f.nillable === true &&
+        !f.defaultedOnCreate && !f.calculated && !f.autoNumber && typeof f.compoundFieldName === 'string' && f.compoundFieldName !== f.name));
+      if (interviewFaulted && riskyNulls) {
+        for (const target of targets) args[target.inputName] = sparseInputs[target.inputName];
+        invoked = await request(input.route, 'POST', { inputs: [args] });
+      }
+      // Second subtraction: synthetic identity emails can poison the same
+      // bridges (live evidence: a Contact identity email reaches the
+      // flow's business-Account insert as PersonEmail). When the sparse
+      // shape still faults the interview generically, retry once minimal:
+      // required + marker values only, identity emails stripped.
+      const sparseFaults: string[] = [];
+      const collectSparse = (node: unknown): void => {
+        if (typeof node === 'string') sparseFaults.push(node);
+        else if (Array.isArray(node)) node.forEach(collectSparse);
+        else if (record(node)) Object.values(node).forEach(collectSparse);
+      };
+      collectSparse(invoked.body);
+      const sparseFaulted = !invoked.ok && sparseFaults.some(text => /executing a flow interview/i.test(text));
+      const hasIdentity = targets.some(t => (identityKeys[t.inputName] ?? []).length > 0);
+      if (sparseFaulted && hasIdentity) {
+        for (const target of targets) {
+          const minimal = { ...sparseInputs[target.inputName] };
+          for (const key of identityKeys[target.inputName] ?? []) delete minimal[key];
+          args[target.inputName] = minimal;
+        }
+        invoked = await request(input.route, 'POST', { inputs: [args] });
+      }
+      // Last shape: Person-Account-creating flows need person names instead
+      // of the Name compound (live evidence: FirstName+LastName with no
+      // Name succeeds where every Name shape faults). Person orgs only,
+      // Account targets only: the marker splits across the name pair so
+      // the computed Name still carries the full ownership marker.
+      const personFaults: string[] = [];
+      const collectPerson = (node: unknown): void => {
+        if (typeof node === 'string') personFaults.push(node);
+        else if (Array.isArray(node)) node.forEach(collectPerson);
+        else if (record(node)) Object.values(node).forEach(collectPerson);
+      };
+      collectPerson(invoked.body);
+      const minimalFaulted = !invoked.ok && personFaults.some(text => /executing a flow interview/i.test(text));
+      const personTargets = targets.filter(t => t.objectName === 'Account' &&
+        (t.fields ?? []).some((f: Value) => f.name === 'Name' && f.compoundFieldName === 'Name'));
+      if (minimalFaulted && personTargets.length > 0) {
+        for (const target of personTargets) {
+          const parts = marker.split(' ');
+          const personShape: Value = { attributes: { type: target.objectName } };
+          for (const [key, value] of Object.entries(sparseInputs[target.inputName] ?? {})) {
+            if (key === 'Name' || key === 'attributes' || (identityKeys[target.inputName] ?? []).includes(key)) continue;
+            personShape[key] = value;
+          }
+          personShape.FirstName = parts[0];
+          personShape.LastName = parts.slice(1).join(' ');
+          args[target.inputName] = personShape;
+        }
+        invoked = await request(input.route, 'POST', { inputs: [args] });
+      }
       const initialAccepted = invoked.ok && Array.isArray(invoked.body) && invoked.body.length === 1 && invoked.body[0]?.isSuccess === true && !invoked.body[0]?.errors?.length;
       // These live contracts explicitly support retrieval as well as creation. If an
       // unsaved input is rejected without partial mutations, materialize owned records
@@ -156,8 +235,8 @@ export async function describeFlowReferenceContract(input: { root: string; route
   }
   const schema = await input.request(input.root + '/sobjects/' + parent.sObjectType + '/describe');
   if (!schema.ok || !Array.isArray(schema.body?.fields)) return schema;
-  const markers = schema.body.fields.filter((f: Value) => f.createable && f.filterable && f.type === 'string' && f.length >= 48 && !f.calculated && !f.autoNumber);
-  const marker = markers.find((f: Value) => f.nameField) ?? markers.find((f: Value) => !f.nillable) ?? markers.find((f: Value) => f.name === 'Subject' || f.name === 'Title') ?? markers[0];
+  const markers = schema.body.fields.filter((f: Value) => f.createable && f.filterable && f.type === 'string' && f.length >= 48 && !f.calculated && !f.autoNumber && !isPersonContactField(f));
+  const marker = markers.find(isNameMarkerField) ?? markers.find((f: Value) => !f.nillable) ?? markers.find((f: Value) => f.name === 'Subject' || f.name === 'Title') ?? markers[0];
   if (!marker) return fail('The typed parent exposes no writable ownership marker.');
   return { status: 200, body: { discovered: true }, contextSchema: { source: 'salesforce_live_flow_reference_contract',
     fixtures: [{ inputName: parent.name, objectName: parent.sObjectType, fields: schema.body.fields, markerField: marker.name, collection: false, fixtureAccessReady: schema.body.createable === true && schema.body.queryable === true && schema.body.deletable === true }],
@@ -184,8 +263,8 @@ export async function describeFlowChildContract(input: { root: string; route: st
   const childStem = relationship.childSObject.startsWith(parent.sObjectType) ? relationship.childSObject.slice(parent.sObjectType.length) : relationship.childSObject;
   const bodyField = textFields.find((f: Value) => f.name.toLowerCase() === (childStem + 'Body').toLowerCase()) ?? (textFields.length === 1 ? textFields[0] : undefined);
   if (!reference || !reference.createable || !bodyField) return fail('The live child needs one writable text body and its actual writable parent reference.');
-  const markers = schema.body.fields.filter((f: Value) => f.createable && f.filterable && f.type === 'string' && f.length >= 48 && !f.calculated && !f.autoNumber);
-  const marker = markers.find((f: Value) => f.nameField) ?? markers.find((f: Value) => !f.nillable) ?? markers.find((f: Value) => f.name === 'Subject' || f.name === 'Title') ?? markers[0];
+  const markers = schema.body.fields.filter((f: Value) => f.createable && f.filterable && f.type === 'string' && f.length >= 48 && !f.calculated && !f.autoNumber && !isPersonContactField(f));
+  const marker = markers.find(isNameMarkerField) ?? markers.find((f: Value) => !f.nillable) ?? markers.find((f: Value) => f.name === 'Subject' || f.name === 'Title') ?? markers[0];
   if (!marker) return fail('The live parent has no writable ownership marker.');
   return { status: 200, body: { discovered: true }, contextSchema: { source: 'salesforce_live_flow_child_contract',
     fixtures: [{ inputName: parent.name, objectName: parent.sObjectType, fields: schema.body.fields, markerField: marker.name, collection: false, fixtureAccessReady: schema.body.createable === true && schema.body.queryable === true && schema.body.deletable === true }],

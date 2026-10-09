@@ -1,3 +1,7 @@
+import { createOwnedStoreBuyer } from "./create-owned-store-buyer";
+import { provisionOwnedBuyerAccount } from "./owned-buyer-account";
+import { discoverFlowActionScalarInput } from "./flow-action-scalar-input";
+import { ownedOrderChildScopes, restoreOwnedOrderDrafts } from "./owned-order-child-scopes";
 /**
  * Commerce owned-lifecycle contexts (Auth side).
  *
@@ -29,8 +33,62 @@ type Build = (name: string, marker: string, values: Value) => Promise<{ values: 
 /** Family builder version: owned commerce lifecycles + read exemptions (re-audits skipped rows).
  * 119: cart calculators run reads against a live owned cart (cart-read
  * kind) instead of binding stale cleaned-cart ids; buyer chains span all
- * store groups with partial-chain cleanup. */
-export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 119;
+ * store groups with partial-chain cleanup.
+ * 120: rebate scopes seed RebateProgramId (borrow else owned mint) with live
+ * Custom recipe; faults unmasked; cleanup-time owner reclaim on payauth legs.
+ * 121: custom/apex cart-to-order drafts run the cart lifecycle with an owned
+ * checkout-session chain (delivery group + priced item + session) instead
+ * of parking on liveCartCheckoutSessionId; created order children clean up.
+ * 122: draft chains resolve product + unit price FROM the bound live
+ * pricebook's entries (the SDO apex rejects list prices that disagree
+ * with the PricebookEntry); the adopted auto delivery group is enriched.
+ * 123: the SDO draft shape also mints a CartTax row per item (its tax
+ * block null-derefs without one) and captures created tax line items.
+ * 124: ConnectApi wrapper vocabulary (createOrderSummaryInput carries the
+ * owned orderId); activateOrderAction runs the cart leg with a discovered
+ * Order status; legs may bind scalar vocabulary via owned.scalars.
+ * 125: summary actions activate the owned order first (live pricebook +
+ * owned product line, read-back proof) since the native refuses drafts.
+ * 126: the activation chain assigns an owned delivery group pre-activation
+ * (native MISSING_ARGUMENT without it); the summary fallback queries
+ * OriginalOrderId; cleanup reduces the order to Draft first.
+ * 127: activateOrderAction provisions the session chain and flips the
+ * owned session to Active (the native refuses session-less carts).
+ * 128: the owned cart advances to Checkout first (the native integrates
+ * checkout-phase carts only).
+ * 129: activation arms the session with an owned Draft order (product
+ * line), a non-null next state, and binds orderStatus to Draft (current
+ * status); the flip is read-back verified and reduced on cleanup.
+ * 130: optional inputs with no discovered binding are omitted (neutral
+ * markers poison validated vocabularies and force optional booleans).
+ * 131: the activation order assigns an owned delivery group (native
+ * MISSING_ARGUMENT without it); orderStatus binds Activated (target).
+ * 132: activation captures its minted summary for ordered cleanup
+ * (summary delete, then Draft reduction, then the chain) and preserves
+ * the summary-delete error instead of overwriting it.
+ * 133: the submit mint activates its owned order (the summary native
+ * refuses drafts) and the submit binds accountId (minted, else the live
+ * summary's); cleanup reduces and orders the activation chain.
+ * 134: declared nextState binds the Complete transition (presence-only
+ * validation, read-back verified on the owned session).
+ * 135: wrapper builders compose multi-child envelopes (payment summaries
+ * link an owned authorization the submit mints); payment rows verify by
+ * before/after snapshot and clean in dependency order.
+ * 136: tax reversals route to the submit family with a per-item envelope;
+ * reversal entries verify by order-tax-line snapshot and clean first.
+ * 137: the summary mint is shared (submit + fulfillment); fulfillment
+ * mints an owned summary, discovers its live group/line rows (quantities
+ * flow in) plus the fulfill-from location, and builds the proved wrapper
+ * vocabulary (single trio; plural wraps via `fulfillmentOrders`).
+ * 138: fulfillment creates fail fast as platform-uncallable (superseded
+ * by 139: the gate reads line data, not wrapper shape).
+ * 139: fulfillment wrapper drops top-level `type` (binder GACK); the
+ * group carries fulfillmentType + referenceId, and owned order items
+ * mint with Type so summary lines satisfy the missing_type gate.
+ * 140: owned summaries delete automation-attached fulfillment children
+ * first (all four legs); fulfillment creates gate on typed lines with
+ * available quantity; cancel setups direct-insert an owned order+line. */
+export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 160;
 
 export type CommerceLifecycleKind =
   | 'payment-auth' | 'cart' | 'cart-read' | 'order' | 'order-submit' | 'fulfillment' | 'return' | 'rebate' | 'loyalty' | 'batch';
@@ -38,6 +96,7 @@ export type CommerceReadKind = 'cart-read' | 'pricing-read' | 'routing-read' | '
 
 const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_.]{0,127}$/;
 const STANDARD_ROUTE = /^\/services\/data\/v\d+(?:\.\d+)?\/actions\/standard\/([A-Za-z][A-Za-z0-9_.]{0,127})$/;
+const CUSTOM_APEX_ROUTE = /^\/services\/data\/v\d+(?:\.\d+)?\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_.]{0,127})$/;
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const OBJECT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
@@ -102,11 +161,18 @@ export function commerceLifecycleKind(actionName: string): CommerceLifecycleKind
   if (has('authorize') && has('payment')) return 'payment-auth';
   if (/OrderItemSummar/i.test(actionName) && has('add', 'adjust', 'cancel', 'return', 'submit')) return 'order-submit';
   if (has('ensure') && (has('payment') || has('refund') || has('refunds'))) return 'order-submit';
+  // Tax reversals post against the acted-on summary's item summaries.
+  if (has('tax') && has('reversal')) return 'order-submit';
   if (has('apply') && (has('payment') || has('payments'))) return 'order-submit';
   if (/ordertocart/i.test(actionName)) return 'order-submit';
   if (has('create') && /orderpayment/i.test(actionName)) return 'order-submit';
   if (/invoice/i.test(actionName) && has('create', 'from')) return 'order-submit';
   if (/creditmemo/i.test(actionName) && has('create', 'order')) return 'order-submit';
+  // activateOrderAction declares cartId + orderStatus (no orderId): it runs
+  // against an owned cart, not the order leg (which provisions no cart).
+  // Narrow to this exact action; sibling activate+order verbs keep the
+  // order leg until their descriptors prove otherwise.
+  if (/^activateorderaction$/i.test(actionName)) return 'cart';
   if (has('activate') && has('order') && !/summary/i.test(actionName)) return 'order';
   if (/^create/i.test(actionName) && /ordersummary$/i.test(actionName) && !/item|payment|credit|invoice/i.test(actionName)) return 'order';
   if (has('fulfillment') && !has('capacity')) return 'fulfillment';
@@ -123,14 +189,26 @@ export function commerceLifecycleKind(actionName: string): CommerceLifecycleKind
 
 /** True when the action needs the owned commerce lifecycle. */
 export function isCommerceLifecycleAction(actionType: string, route: string, actionName = ''): boolean {
-  return standardTailed(actionType, route, actionName) && commerceLifecycleKind(actionName) !== null;
+  if (standardTailed(actionType, route, actionName)) return commerceLifecycleKind(actionName) !== null;
+  // Custom/apex cart-to-order drafts (B2BCartToOrderDraft family): the
+  // generic apex path can only bind live ids, but the draft apex reads
+  // the cart's delivery group + items and rewrites the session row, so a
+  // live session would be hijacked. Vocabulary-cut to cart-to-order only;
+  // every other apex action keeps its existing lane.
+  if (actionType !== 'custom/apex' || typeof actionName !== 'string' || !ACTION_NAME.test(actionName)) return false;
+  const match = typeof route === 'string' ? route.match(CUSTOM_APEX_ROUTE) : null;
+  return match !== null && match[1] === actionName && /carttoorder/i.test(actionName) &&
+    commerceLifecycleKind(actionName) === 'cart';
 }
 
-/** Action tail from a standard route; null unless the tail carries a commerce lifecycle kind. */
+/** Action tail from a standard or draft-apex route; null unless the tail carries a commerce lifecycle kind. */
 export function commerceLifecycleActionName(route: string): string | null {
-  const match = typeof route === 'string' ? route.match(STANDARD_ROUTE) : null;
-  const name = match?.[1] ?? null;
-  return name !== null && commerceLifecycleKind(name) !== null ? name : null;
+  if (typeof route !== 'string') return null;
+  const standard = route.match(STANDARD_ROUTE)?.[1] ?? null;
+  if (standard !== null) return commerceLifecycleKind(standard) !== null ? standard : null;
+  const apex = route.match(CUSTOM_APEX_ROUTE)?.[1] ?? null;
+  if (apex === null) return null;
+  return /carttoorder/i.test(apex) && commerceLifecycleKind(apex) === 'cart' ? apex : null;
 }
 
 const id = (v: any): v is string => typeof v === 'string' && SF_ID.test(v);
@@ -191,12 +269,57 @@ function targetFieldsOf(schema: unknown): TargetField[] {
 
 export type CommerceOwnedIds = {
   storeId?: string; accountId?: string; cartId?: string; orderId?: string; orderSummaryId?: string;
-  journalId?: string;
+  journalId?: string; checkoutSessionId?: string;
   /** Owned fixture id by object API name for descriptor-declared sObjectType inputs. */
   fixtures?: Record<string, string>;
   /** Live setup ids by object API name (gateways, delivery methods, parents). Never invented. */
   live?: Record<string, string>;
+  /** Discovered platform scalar vocabulary (enum codes, status values), keyed by lowercase input name. */
+  scalars?: Record<string, string>;
+  /** Acted-on summary's live line rows (fulfillment quantities flow through). Never invented. */
+  lineSummaries?: Array<{ id: string; quantity: number }>;
 };
+
+/**
+ * ConnectApi representation wrappers whose live descriptor carries no
+ * nested fields (Tooling is blind to platform ConnectApi namespaces).
+ * Each member composes its required children from owned context with
+ * platform vocabulary, oracle-verified per member with non-mutating
+ * validation probes before listing here. A builder returns undefined
+ * when any piece is missing (honest mapper failure, never invention).
+ */
+const WRAPPER_BUILDERS: Array<{ pattern: RegExp; build: (owned: CommerceOwnedIds) => Record<string, unknown> | undefined }> = [
+  { pattern: /^createordersummaryinput$/, build: (owned) => owned.orderId ? { orderId: owned.orderId } : undefined },
+  // Payment summaries link the acted-on summary to an authorization the
+  // leg minted (oracle: orderSummaryId + paymentAuthorizationId both
+  // required; paymentIds alternate shape not bound).
+  { pattern: /^createorderpaymentsummaryinput$/, build: (owned) =>
+    owned.orderSummaryId && owned.live?.PaymentAuthorization
+      ? { orderSummaryId: owned.orderSummaryId, paymentAuthorizationId: owned.live.PaymentAuthorization }
+      : undefined },
+  // Tax reversals post a per-item list (oracle: taxReversalInfoList of
+  // {orderItemSummaryId}; shape-validated, bogus ids pass validation).
+  { pattern: /^taxreversalinfos$/, build: (owned) =>
+    owned.live?.OrderItemSummary
+      ? { taxReversalInfoList: [{ orderItemSummaryId: owned.live.OrderItemSummary }] }
+      : undefined },
+  { pattern: /^fulfillmentorderinput$/, build: (owned) => buildFulfillmentOrderInput(owned) },
+  { pattern: /^multiplefulfillmentorderinput$/, build: (owned) => {
+    const single = buildFulfillmentOrderInput(owned);
+    // Empty-wrapper discovery proved the plural list key is
+    // `fulfillmentOrders` (every other key is rejected as an unknown
+    // flow variable); one owned element suffices for the probe.
+    return single ? { fulfillmentOrders: [single] } : undefined;
+  } },
+  // Cancel lists owned fulfillment lines (live proof: Quantity 1->0;
+  // the wrapper must be present — omitting it null-derefs the binder).
+  { pattern: /^fulfillmentorderlineitemstocancelinput$/, build: (owned) => {
+    const lines = (owned.lineSummaries ?? []).filter((row) => id(row.id) && row.quantity > 0);
+    return lines.length
+      ? { fulfillmentOrderLineItemsToCancel: lines.map((row) => ({ fulfillmentOrderLineItemId: row.id, quantity: row.quantity })) }
+      : undefined;
+  } },
+];
 
 const KNOWN_ID_INPUTS: Array<{ pattern: RegExp; pick: (owned: CommerceOwnedIds) => string | undefined; missing: string }> = [
   { pattern: /^(activeorcartid|cartid|cartstateorid)$/, pick: (owned) => owned.cartId, missing: 'liveCartId' },
@@ -205,6 +328,7 @@ const KNOWN_ID_INPUTS: Array<{ pattern: RegExp; pick: (owned: CommerceOwnedIds) 
   { pattern: /^orderid$/, pick: (owned) => owned.orderId, missing: 'liveOrderId' },
   { pattern: /^ordersummaryid$/, pick: (owned) => owned.orderSummaryId, missing: 'liveOrderSummaryId' },
   { pattern: /^(journalid|transactionjournalid)$/, pick: (owned) => owned.journalId, missing: 'liveTransactionJournalId' },
+  { pattern: /^checkoutsessionid$/, pick: (owned) => owned.checkoutSessionId, missing: 'liveCheckoutSessionId' },
 ];
 
 /** Setup/live fixture ids by input-name vocabulary (fixtures win over live setup). */
@@ -215,7 +339,10 @@ const NAMED_FIXTURE_INPUTS: Array<{ pattern: RegExp; objectType: string }> = [
   { pattern: /^(deliverymethodid|orderdeliverymethodid)$/, objectType: 'OrderDeliveryMethod' },
   { pattern: /^(productid|product2id)$/, objectType: 'Product2' },
   { pattern: /^pricebookentryid$/, objectType: 'PricebookEntry' },
+  { pattern: /^pricebookid$/, objectType: 'Pricebook2' },
   { pattern: /^programrebatetypeids?$/, objectType: 'ProgramRebateType' },
+  { pattern: /^aggregateids?$/, objectType: 'RebateMemberProductAggregate' },
+  { pattern: /^calcdefinitionids?$/, objectType: 'BatchCalcJobDefinition' },
   { pattern: /^(cartasyncoperationid|asyncoperationid)$/, objectType: 'CartAsyncOperation' },
 ];
 
@@ -269,10 +396,31 @@ export function mapCommerceArguments(
       if (input.required === true) failures.push(`No resolved values for required input ${input.name}.`);
       return undefined;
     }
+    if (!Array.isArray(input.fields) || !input.fields.length) {
+      const wrapper = WRAPPER_BUILDERS.find((entry) => entry.pattern.test(lower));
+      if (wrapper) {
+        const value = wrapper.build(owned);
+        if (value === undefined) {
+          if (input.required === true) failures.push(`No resolved identity for required input ${input.name}.`);
+          return undefined;
+        }
+        return input.isCollection === true ? [value] : value;
+      }
+    }
     if (/csv|document/i.test(input.name) && input.required === true) {
       failures.push(`No owned payload for required input ${input.name}.`);
       return undefined;
     }
+    // Leg-discovered scalar vocabulary (enum codes, status values) binds by
+    // lowercase input name before the neutral fallback; undiscovered names
+    // keep the honest failure below.
+    const scalar = owned.scalars?.[lower];
+    if (scalar !== undefined) return input.isCollection === true ? [scalar] : scalar;
+    // Optional inputs with no discovered binding are omitted: the neutral
+    // marker poisons validated vocabularies (live proof: a marker-bound
+    // optional orderLifeCycleType faults the native) and forces optional
+    // booleans on. Natives cannot fail on omitted optionals.
+    if (input.required !== true) return undefined;
     const neutral = resolveRequiredInputValue({ name: input.name, type: input.type ?? null, required: input.required ?? null }, []);
     if (neutral === undefined) {
       if (input.required === true) failures.push(`No discovered live value for required input ${input.name}.`);
@@ -286,6 +434,171 @@ export function mapCommerceArguments(
   }
   if (failures.length) return { failure: failures[0] };
   return { args };
+}
+
+/**
+ * Activates an owned order for summary creation: the native requires an
+ * active order, and activation requires a product line ("An order must
+ * have at least one product" — live platform fault). The order takes the
+ * live standard pricebook, mints one owned OrderItem at the live list
+ * price, then transitions to Activated with a read-back proof. Every gap
+ * is an explicit failure; nothing is invented.
+ */
+async function activateOwnedOrder(input: {
+  request: Request; build: Build; root: string; orderId: string; marker: string;
+  capture: (objectName: string, value: string) => void;
+}): Promise<{ ok: true; itemScope: CommerceScope; groupScope: CommerceScope } | { failure: Result }> {
+  const { request, root } = input;
+  let entry: { Id: string; Pricebook2Id: string; UnitPrice: number } | null = null;
+  try {
+    const result = await request(root + '/query?q=' + encodeURIComponent(
+      'SELECT Id, Pricebook2Id, UnitPrice FROM PricebookEntry WHERE Pricebook2.IsStandard=true AND IsActive=true LIMIT 1'));
+    const row = result.ok && record(result.body) && Array.isArray(result.body.records)
+      ? result.body.records.find(record) : null;
+    if (row && id(row.Id) && id(row.Pricebook2Id) && typeof row.UnitPrice === 'number') {
+      entry = { Id: row.Id, Pricebook2Id: row.Pricebook2Id, UnitPrice: row.UnitPrice };
+    }
+  } catch { /* fall through to the honest failure */ }
+  if (!entry) return { failure: fail('COMMERCE_PRODUCT_SUBSTRATE_ABSENT',
+    'No active standard pricebook entry exists for the owned order; activation needs a product.') };
+  const priced = await request(root + '/sobjects/Order/' + input.orderId, 'PATCH', { Pricebook2Id: entry.Pricebook2Id });
+  if (!priced.ok) return { failure: fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+    'The owned order would not take the live standard pricebook.', { upstreamOutcome: priced.body }) };
+  const item = await createOwnedFixture({ request, build: input.build, root, objectType: 'OrderItem', marker: input.marker,
+    values: { OrderId: input.orderId, PricebookEntryId: entry.Id, Quantity: 1, UnitPrice: entry.UnitPrice,
+      TotalLineAmount: entry.UnitPrice,
+      // Summary lines inherit the item Type; null Type trips the
+      // fulfillment service's missing_type gate (TypeCode auto-derives;
+      // it is not insertable).
+      Type: 'Order Product' }, capture: input.capture });
+  if ('failure' in item) return { failure: fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+    'The owned order product line could not be created.', { upstreamOutcome: item.failure.body }) };
+  // The delivery group must exist (and bind the line) while the order is
+  // still a draft: the platform refuses group writes on activated orders,
+  // and the summary native faults MISSING_ARGUMENT without the assignment.
+  const deliveryMethod = await discoverLiveSetupId(request, root, 'OrderDeliveryMethod');
+  if (!deliveryMethod) return { failure: fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+    'No live order delivery method exists for the owned delivery group.') };
+  const group = await createOwnedFixture({ request, build: input.build, root, objectType: 'OrderDeliveryGroup', marker: input.marker,
+    values: { OrderId: input.orderId, OrderDeliveryMethodId: deliveryMethod }, capture: input.capture });
+  if ('failure' in group) return { failure: fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+    'The owned order delivery group could not be created.', { upstreamOutcome: group.failure.body }) };
+  const assigned = await request(root + '/sobjects/OrderItem/' + item.id, 'PATCH', { OrderDeliveryGroupId: group.id });
+  if (!assigned.ok) return { failure: fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+    'The owned order line would not take the delivery group.', { upstreamOutcome: assigned.body }) };
+  const activated = await request(root + '/sobjects/Order/' + input.orderId, 'PATCH', { Status: 'Activated' });
+  const reread = await request(root + '/sobjects/Order/' + input.orderId);
+  if (!activated.ok || !reread.ok || !record(reread.body) || reread.body.Status !== 'Activated') {
+    return { failure: fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+      'The owned order could not be activated.', { upstreamOutcome: activated.body }) };
+  }
+  return { ok: true, itemScope: markerScope('OrderItem', item.markerField, item.storedMarker),
+    groupScope: markerScope('OrderDeliveryGroup', group.markerField, group.storedMarker) };
+}
+
+/**
+ * Builds the single fulfillment-order wrapper. The shape mirrors the
+ * platform's own fulfillment flow: top-level summary/group ids plus
+ * fulfillmentGroups; each group carries the fulfill-from location, the
+ * fulfillmentType token, a referenceId, and the acted-on summary's live
+ * lines (quantities flow through). Never a top-level `type`. The plural
+ * builder wraps one element.
+ */
+function buildFulfillmentOrderInput(owned: CommerceOwnedIds): Record<string, unknown> | undefined {
+  const summary = owned.orderSummaryId;
+  const group = owned.live?.OrderDeliveryGroupSummary;
+  const location = owned.live?.Location;
+  const lines = (owned.lineSummaries ?? [])
+    .filter((row) => id(row.id) && row.quantity > 0)
+    .map((row) => ({ orderItemSummaryId: row.id, quantity: row.quantity }));
+  if (!summary || !group || !location || !lines.length) return undefined;
+  return {
+    orderSummaryId: summary, orderDeliveryGroupSummaryId: group,
+    // No top-level `type`: it is not a FulfillmentOrderInputRepresentation
+    // field and GACKs the binder (even as null). Type vocabulary lives
+    // on the group (per the platform's own fulfillment flow) and on the
+    // summary lines' Type/TypeCode data (minted typed via the item).
+    fulfillmentGroups: [{
+      fulfilledFromLocationId: location,
+      ...(typeof owned.scalars?.type === 'string' ? { fulfillmentType: owned.scalars.type } : {}),
+      referenceId: group,
+      orderItemSummaries: lines,
+    }],
+  };
+}
+
+/**
+ * Mints an owned OrderSummary through the native chain: owned Account +
+ * Order, activation (pricebook, product line with total, delivery group),
+ * then the native create-summary action. Returns null when any step
+ * fails so callers run their own fallback (destructive actions refuse
+ * live rows; others may read a live summary). Captures and scopes every
+ * owned row it creates; callers own the activated order's Draft
+ * reduction and the summary's direct deletion in their finally blocks.
+ */
+async function mintOwnedOrderSummary(input: {
+  request: Request; build: Build; root: string; marker: string;
+  capture: (objectName: string, value: string) => void;
+  scopes: CommerceScope[];
+}): Promise<{ orderSummaryId: string; accountId: string; orderId: string; activatedOrderId: string } | null> {
+  const { request, build, root, marker, capture, scopes } = input;
+  const mintDescriptor = await request(root + '/actions/standard/createOrderSummary').catch(() => null);
+  if (!mintDescriptor?.ok || !record(mintDescriptor.body) || !Array.isArray(mintDescriptor.body.inputs)) return null;
+  const account = await createOwnedFixture({ request, build, root, objectType: 'Account', marker, values: { Name: marker }, capture });
+  if ('failure' in account) return null;
+  scopes.push(markerScope('Account', account.markerField, account.storedMarker));
+  const order = await createOwnedFixture({ request, build, root, objectType: 'Order', marker, values: { AccountId: account.id }, capture });
+  if ('failure' in order) return null;
+  scopes.push(markerScope('Order', order.markerField, order.storedMarker));
+  const activated = await activateOwnedOrder({ request, build, root, orderId: order.id, marker, capture });
+  if ('failure' in activated) return null;
+  scopes.push(activated.itemScope, activated.groupScope);
+  const mapped = mapCommerceArguments(commerceDescriptorInputs(mintDescriptor.body), { accountId: account.id, orderId: order.id });
+  if ('failure' in mapped) return null;
+  const minted = await request(root + '/actions/standard/createOrderSummary', 'POST', { inputs: [mapped.args] });
+  const mintedId = outputIdentities(minted.body, /ordersummaryid$/i)[0] ??
+    (await queryIds(request, root, `SELECT Id FROM OrderSummary WHERE OriginalOrderId='${order.id}' LIMIT 1`))[0];
+  if (!nativeAccepted(minted) || !mintedId) return null;
+  const reread = await request(root + '/sobjects/OrderSummary/' + mintedId);
+  if (!reread.ok) return null;
+  capture('OrderSummary', mintedId);
+  return { orderSummaryId: mintedId, accountId: account.id, orderId: order.id, activatedOrderId: order.id };
+}
+
+/**
+ * Discovers the fulfillment type token: the fulfill-from location's
+ * LocationType intersected with the live FulfillmentOrder Type picklist.
+ * Unbound when either side is missing (callers omit the token then).
+ */
+async function discoverFulfillmentType(request: Request, root: string, fulfillmentSchemaBody: unknown, locationId: string): Promise<string | undefined> {
+  try {
+    const locationRow = await request(root + '/sobjects/Location/' + locationId + '?fields=LocationType');
+    const locationType = locationRow.ok && record(locationRow.body) ? locationRow.body.LocationType : undefined;
+    const fields = record(fulfillmentSchemaBody) && Array.isArray(fulfillmentSchemaBody.fields) ? fulfillmentSchemaBody.fields : [];
+    const typeField = fields.find((field) => record(field) && field.name === 'Type');
+    const activeTypes = record(typeField) && Array.isArray(typeField.picklistValues)
+      ? typeField.picklistValues.filter(record).filter((entry) => entry.active).map((entry) => entry.value) : [];
+    if (typeof locationType === 'string' && activeTypes.includes(locationType)) return locationType;
+  } catch { /* type stays unbound; the service error surfaces honestly */ }
+  return undefined;
+}
+
+/**
+ * Deletes an owned OrderSummary after removing its fulfillment-order
+ * children. Org allocation automation may attach fulfillment rows to a
+ * freshly minted summary within seconds, and those children block the
+ * summary delete; they go first (their line items cascade). Returns an
+ * error message when anything refuses, undefined on full removal.
+ */
+async function deleteOwnedSummary(request: Request, root: string, summaryId: string): Promise<string | undefined> {
+  const children = await queryIds(request, root, `SELECT Id FROM FulfillmentOrder WHERE OrderSummaryId='${summaryId}' LIMIT 25`);
+  for (const childId of children) {
+    const childGone = await request(root + '/sobjects/FulfillmentOrder/' + childId, 'DELETE').catch(() => null);
+    if (!childGone?.ok) return `FulfillmentOrder ${childId} could not be removed; platform natives may refuse deletion.`;
+  }
+  const gone = await request(root + '/sobjects/OrderSummary/' + summaryId, 'DELETE').catch(() => null);
+  if (!gone?.ok) return `OrderSummary ${summaryId} could not be removed; platform natives may refuse deletion.`;
+  return undefined;
 }
 
 /** First-column ids from a live SOQL query; throws nothing, filters to well-formed ids. */
@@ -302,6 +615,21 @@ async function discoverLiveSetupId(request: Request, root: string, objectType: s
   if (!OBJECT_NAME.test(objectType)) return null;
   const rows = await queryIds(request, root, `SELECT Id FROM ${objectType}${predicate ? ` WHERE ${predicate}` : ''} LIMIT 1`);
   return rows.length === 1 ? rows[0] : null;
+}
+
+/** Active picklist value for a field: preferred live token else first active; null when none exists. */
+async function discoverPicklistValue(request: Request, root: string, objectType: string, fieldName: string, prefer: RegExp): Promise<string | null> {
+  if (!OBJECT_NAME.test(objectType) || !OBJECT_NAME.test(fieldName)) return null;
+  try {
+    const described = await request(root + '/sobjects/' + objectType + '/describe');
+    if (!described.ok || !record(described.body) || !Array.isArray(described.body.fields)) return null;
+    const field = described.body.fields.filter(record).find((entry) => entry.name === fieldName);
+    const values = Array.isArray(field?.picklistValues) ? field.picklistValues.filter(record)
+      .filter((entry) => entry.active === true && typeof entry.value === 'string')
+      .map((entry) => entry.value as string) : [];
+    if (!values.length) return null;
+    return values.find((value) => prefer.test(value)) ?? values[0];
+  } catch { return null; }
 }
 
 /** Reference field on a child schema pointing at one of the parent types; null when undiscoverable. */
@@ -360,10 +688,12 @@ async function cleanupCommerceFixtures(input: {
   request: Request; root: string; marker: string; owned: OwnedRecord[];
   order: string[]; scopes: CommerceScope[];
 }): Promise<string | undefined> {
+  const restoreError = await restoreOwnedOrderDrafts(input.root, input.owned, input.scopes, input.request);
   const cleaned = await cleanupOwnedContext({
-    root: input.root, request: input.request, records: input.owned, order: input.order, scopes: input.scopes,
+    root: input.root, request: input.request, records: input.owned, order: input.order,
+    scopes: [...input.scopes, ...ownedOrderChildScopes(input.owned)],
   }).catch(() => null);
-  return cleaned?.cleanupError;
+  return restoreError ?? cleaned?.cleanupError;
 }
 
 /** Buyer-chain scopes for reuse-path provisioned storefronts (member proven via the owned buyer). */
@@ -390,7 +720,7 @@ async function provisionOwnedCart(input: {
   request: Request; build: Build; root: string; marker: string;
 }): Promise<OwnedCart | { failure: Result }> {
   const { request, build, root, marker } = input;
-  const described = await batchDescribe(request, root, ['WebStore', 'Account', 'WebCart'], ['createCart']);
+  const described = await batchDescribe(request, root, ['WebStore', 'Account', 'WebCart', 'BuyerAccount'], ['createCart']);
   if (!described) return { failure: fail('COMMERCE_DESCRIBE_UNAVAILABLE', 'Live object and cart-creation describes could not be read.') };
   const { schemas, descriptors } = described;
   for (const name of ['WebStore', 'Account', 'WebCart']) {
@@ -412,8 +742,11 @@ async function provisionOwnedCart(input: {
   let provisioned: { storeId: string; groupIds: string[] } | null = null;
   const found = await discoverProvisionedStorefront(request, root);
   if (found) {
-    const groupIds = await discoverStoreBuyerGroups(request, root, found.storeId);
-    if (groupIds.length) provisioned = { storeId: found.storeId, groupIds };
+    const membership = await request(root + '/sobjects/BuyerGroupMember/describe');
+    if (membership.ok && membership.body?.createable === true && membership.body?.deletable === true) {
+      const groupIds = await discoverStoreBuyerGroups(request, root, found.storeId);
+      if (groupIds.length) provisioned = { storeId: found.storeId, groupIds };
+    }
   }
   let last = fail('COMMERCE_STOREFRONT_UNAVAILABLE', 'No live store type supported the owned cart lifecycle.');
   const attempts: Array<{ kind: 'reuse'; storeId: string; groupIds: string[] } | { kind: 'mint'; type: string }> = [
@@ -442,20 +775,11 @@ async function provisionOwnedCart(input: {
           if ('failure' in chain) return { failure: chain.failure };
           accountId = chain.ids.accountId; resolved.accountId = accountId;
         } else {
-          const store = await build('WebStore', marker, { Name: marker, Type: attempt.type });
-          if ('failure' in store) return { failure: store.failure };
-          const createdStore = await request(root + '/sobjects/WebStore', 'POST', store.values);
-          if (!createdStore.ok || !id(createdStore.body?.id)) return { failure: createdStore };
-          storeId = createdStore.body.id; capture('WebStore', storeId); storeType = attempt.type;
-          const storeRead = await request(root + '/sobjects/WebStore/' + storeId);
-          if (!storeRead.ok || storeRead.body?.Name !== marker) return { failure: fail('COMMERCE_STORE_UNVERIFIED', 'Actual owned store readback failed.') };
-          const buyer = await build('Account', marker, { Name: marker });
-          if ('failure' in buyer) return { failure: buyer.failure };
-          const createdBuyer = await request(root + '/sobjects/Account', 'POST', buyer.values);
-          if (!createdBuyer.ok || !id(createdBuyer.body?.id)) return { failure: createdBuyer };
-          accountId = createdBuyer.body.id; capture('Account', accountId); resolved.accountId = accountId;
-          const buyerRead = await request(root + '/sobjects/Account/' + accountId);
-          if (!buyerRead.ok || buyerRead.body?.Name !== marker) return { failure: fail('COMMERCE_BUYER_UNVERIFIED', 'Actual owned buyer readback failed.') };
+          const pair = await createOwnedStoreBuyer({ root, marker, storeType: attempt.type, request, build, capture });
+          if ('failure' in pair) return pair;
+          storeId = pair.storeId; accountId = pair.accountId; storeType = attempt.type; resolved.accountId = accountId;
+          const enabledBuyer = await provisionOwnedBuyerAccount({ root, marker, accountId, request, build, capture });
+          if ("failure" in enabledBuyer) return enabledBuyer;
         }
         const created = await request(root + '/actions/standard/createCart', 'POST',
           { inputs: [{ webStoreId: storeId, cartInput: { name: marker, type: cartType, effectiveAccountId: accountId } }] });
@@ -490,6 +814,111 @@ async function provisionOwnedCart(input: {
     }
   }
   return { failure: last };
+}
+
+/**
+ * Owned checkout-session chain for cart-to-order drafts: delivery group
+ * (DeliverTo names map to the order group), one priced item, and a
+ * session row. Product and parent order are live setup rows (never
+ * invented); picklist-typed session/item fields resolve from the live
+ * describe with preferred tokens. Every gap is an explicit failure.
+ */
+async function provisionDraftSessionChain(input: {
+  request: Request; build: Build; root: string; marker: string; cartId: string;
+  capture: (objectName: string, value: string) => void;
+  needsPricebook: boolean; needsCartTax: boolean;
+}): Promise<{ sessionId: string; scopes: CommerceScope[]; pricebookId?: string } | { failure: Result }> {
+  const { request, build, root, marker, cartId, capture } = input;
+  // Native createCart auto-provisions one DeliverTo-less delivery group
+  // and the draft apex reads groups[0], so a second minted group would
+  // lose the race. Adopt the auto group (owned by cart parentage) and
+  // enrich its DeliverTo names; mint only when none exists.
+  const groupScopes: CommerceScope[] = [
+    { objectName: 'CartDeliveryGroup', equals: { CartId: cartId }, ownedParents: [{ field: 'CartId', objectName: 'WebCart' }] },
+  ];
+  const existingGroups = await queryIds(request, root, `SELECT Id FROM CartDeliveryGroup WHERE CartId='${cartId}' LIMIT 2`);
+  let groupId: string;
+  if (existingGroups.length === 1) {
+    groupId = existingGroups[0];
+    const enriched = await request(root + '/sobjects/CartDeliveryGroup/' + groupId, 'PATCH',
+      { DeliverToName: 'Probe Buyer', DeliverToFirstName: 'Probe', DeliverToLastName: 'Buyer' });
+    if (!enriched.ok) return { failure: enriched };
+    const reread = await request(root + '/sobjects/CartDeliveryGroup/' + groupId);
+    if (!reread.ok || !record(reread.body) || reread.body.DeliverToName !== 'Probe Buyer') {
+      return { failure: fail('COMMERCE_FIXTURE_UNVERIFIED', 'Actual owned delivery group enrichment readback failed.') };
+    }
+    capture('CartDeliveryGroup', groupId);
+  } else if (existingGroups.length === 0) {
+    const group = await createOwnedFixture({
+      request, build, root, objectType: 'CartDeliveryGroup', marker, capture,
+      values: { CartId: cartId, DeliverToName: 'Probe Buyer', DeliverToFirstName: 'Probe', DeliverToLastName: 'Buyer' },
+    });
+    if ('failure' in group) return group;
+    groupId = group.id;
+  } else {
+    return { failure: fail('COMMERCE_FIXTURE_AMBIGUOUS', 'The owned cart carries multiple delivery groups; the draft target is ambiguous.') };
+  }
+  // Pricebook-consistent pricing: the SDO apex rejects order products
+  // whose list price disagrees with the PricebookEntry, so resolve the
+  // product + unit price FROM the bound live pricebook's entries. The
+  // base draft (no pricebook input) keeps any live product + 10s.
+  let productId: string | null = null;
+  let unitPrice = 10;
+  let pricebookId: string | undefined;
+  if (input.needsPricebook) {
+    const book = await discoverLiveSetupId(request, root, 'Pricebook2');
+    if (book) {
+      const entries = await request(root + '/query?q=' + encodeURIComponent(
+        `SELECT Product2Id, UnitPrice FROM PricebookEntry WHERE Pricebook2Id='${book}' AND IsActive=true LIMIT 5`));
+      const hit = entries.ok && record(entries.body) && Array.isArray(entries.body.records)
+        ? entries.body.records.filter(record).find((row) => id(row.Product2Id) && typeof row.UnitPrice === 'number') : undefined;
+      if (hit) { productId = hit.Product2Id as string; unitPrice = hit.UnitPrice as number; pricebookId = book; }
+    }
+    if (!productId || !pricebookId) {
+      return { failure: fail('COMMERCE_PRODUCT_SUBSTRATE_ABSENT', 'No live pricebook entry exists to price the owned draft item consistently; provision catalog substrate before retrying.') };
+    }
+  } else {
+    productId = await discoverLiveSetupId(request, root, 'Product2');
+    if (!productId) return { failure: fail('COMMERCE_PRODUCT_SUBSTRATE_ABSENT', 'No live product exists to price the owned draft item; provision catalog substrate before retrying.') };
+  }
+  const itemType = await discoverPicklistValue(request, root, 'CartItem', 'Type', /product/i);
+  const item = await createOwnedFixture({
+    request, build, root, objectType: 'CartItem', marker, capture,
+    values: { CartId: cartId, CartDeliveryGroupId: groupId, Product2Id: productId, Quantity: 1, SalesPrice: unitPrice, ListPrice: unitPrice, TotalLineAmount: unitPrice, ...(itemType ? { Type: itemType } : {}) },
+  });
+  if ('failure' in item) return item;
+  // The SDO tax block maps CartTax by item id and dereferences Name
+  // unguarded, so the SDO shape mints one zero tax row per owned item.
+  let taxScope: CommerceScope | null = null;
+  if (input.needsCartTax) {
+    const taxType = await discoverPicklistValue(request, root, 'CartTax', 'TaxType', /actual/i);
+    if (!taxType) return { failure: fail('COMMERCE_TAX_SUBSTRATE_ABSENT', 'The live CartTax type picklist exposes no active value; provision tax substrate before retrying.') };
+    const tax = await createOwnedFixture({
+      request, build, root, objectType: 'CartTax', marker, capture,
+      values: { CartItemId: item.id, TaxType: taxType, TaxCalculationDate: new Date().toISOString().slice(0, 10), Amount: 0, TaxRate: 0 },
+    });
+    if ('failure' in tax) return tax;
+    taxScope = markerScope('CartTax', tax.markerField, tax.storedMarker);
+  }
+  const parentOrderId = await discoverLiveSetupId(request, root, 'Order');
+  if (!parentOrderId) return { failure: fail('COMMERCE_ORDER_SUBSTRATE_ABSENT', 'No live order exists to seed the owned checkout session; provision order substrate before retrying.') };
+  const state = await discoverPicklistValue(request, root, 'CartCheckoutSession', 'State', /order confirmation/i);
+  const nextState = await discoverPicklistValue(request, root, 'CartCheckoutSession', 'NextState', /complete/i);
+  const session = await createOwnedFixture({
+    request, build, root, objectType: 'CartCheckoutSession', marker, capture,
+    values: { WebCartId: cartId, OrderId: parentOrderId, IsArchived: false, ...(state ? { State: state } : {}), ...(nextState ? { NextState: nextState } : {}) },
+  });
+  if ('failure' in session) return session;
+  return {
+    sessionId: session.id,
+    ...(pricebookId ? { pricebookId } : {}),
+    scopes: [
+      ...groupScopes,
+      markerScope('CartItem', item.markerField, item.storedMarker),
+      ...(taxScope ? [taxScope] : []),
+      markerScope('CartCheckoutSession', session.markerField, session.storedMarker),
+    ],
+  };
 }
 
 /** Output identities whose keys match the vocabulary; values must be well-formed ids. */
@@ -552,12 +981,21 @@ async function runCartLifecycle(input: CommerceExecutorInput): Promise<CommerceO
   if ('failure' in cart) return done(cart.failure, { verified: false });
   const owned: OwnedRecord[] = [...cart.owned];
   const capture = (objectName: string, value: string) => { if (!owned.some((entry) => entry.id === value)) owned.push({ objectName, id: value }); };
+  const chainScopes: CommerceScope[] = [];
+  const checkoutScopes: CommerceScope[] = [];
   let cleanupError: string | undefined;
   let outcome: Result = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned cart lifecycle did not complete.');
   let verified = false, extra: Value = {};
+  let activateOrderId: string | undefined;
+  let activateSummaryId: string | undefined;
   try {
     outcome = await (async (): Promise<Result> => {
       const ownedIds: CommerceOwnedIds = { storeId: cart.storeId, accountId: cart.accountId, cartId: cart.cartId };
+      if (inputs.some(field => field.name.toLowerCase() === "initialstate")) {
+        const state = await discoverFlowActionScalarInput(root, action, "initialState", request);
+        if (!state) return fail("COMMERCE_CHECKOUT_STATE_UNAVAILABLE", "No active Flow provides a live initialState binding for the checkout action.");
+        ownedIds.scalars = { initialstate: state };
+      }
       if (/add/i.test(action) && /item/i.test(action)) {
         const product = await discoverCartProduct(request, root, cart.storeId);
         if (!product) return fail('COMMERCE_PRODUCT_SUBSTRATE_ABSENT',
@@ -575,6 +1013,121 @@ async function runCartLifecycle(input: CommerceExecutorInput): Promise<CommerceO
           'No live async operation exists for the owned cart; nothing was cancelled.');
         ownedIds.live = { ...(ownedIds.live ?? {}), CartAsyncOperation: op };
       }
+      // Cart-to-order drafts (custom/apex): the apex reads the cart's
+      // delivery group (DeliverTo names map to the order group), its
+      // priced items, and rewrites the passed session row, so the probe
+      // mints an owned chain (blind-verified recipe) instead of binding
+      // live rows it would then mutate. Triggered by the declared
+      // checkoutSessionId input, never by name alone.
+      // The chain's pricebook (when it resolved one) is the only
+      // binding consistent with the owned item's list price; a second
+      // LIMIT 1 discovery could disagree.
+      let chainPricebookId: string | undefined;
+      // activateOrderAction declares no session input but the native refuses
+      // without an active CartCheckoutSession on the cart, so the chain is
+      // provisioned for the action itself (base shape: no pricebook, no tax;
+      // the session is flipped to the live-observed Active state since the
+      // State picklist is undescribed and undiscoverable).
+      const needsSession = inputs.some((field) => field.name.toLowerCase() === 'checkoutsessionid') ||
+        /^activateorderaction$/i.test(action);
+      if (needsSession) {
+        // The SDO draft shape (declares pricebookId) also requires the
+        // CartTax substrate its tax block dereferences; the base shape
+        // needs neither.
+        const sdoShape = inputs.some((field) => field.name.toLowerCase() === 'pricebookid');
+        const chain = await provisionDraftSessionChain({ request, build, root, marker, cartId: cart.cartId, capture,
+          needsPricebook: sdoShape, needsCartTax: sdoShape });
+        if ('failure' in chain) return chain.failure;
+        ownedIds.checkoutSessionId = chain.sessionId;
+        chainPricebookId = chain.pricebookId;
+        chainScopes.push(...chain.scopes);
+        if (/^activateorderaction$/i.test(action)) {
+          // The native integrates only checkout-phase carts ("Integration
+          // for cart with status ACTIVE is not supported"), so the owned
+          // cart advances to the live Checkout status first.
+          const checkout = await request(root + '/sobjects/WebCart/' + cart.cartId, 'PATCH', { Status: 'Checkout' });
+          const rereadCart = await request(root + '/sobjects/WebCart/' + cart.cartId);
+          if (!checkout.ok || !rereadCart.ok || !record(rereadCart.body) || rereadCart.body.Status !== 'Checkout') {
+            return fail('COMMERCE_CART_UNAVAILABLE', 'The owned cart could not advance to checkout.', { upstreamOutcome: checkout.body });
+          }
+          // The native activates the session's order (a live row would be
+          // mutated, so the session is repointed at an owned Draft order
+          // with a product line), requires a non-null next state (any
+          // value passes; null faults "invalid nextState value"), and
+          // reads orderStatus as the CURRENT status to transition from.
+          const activateAccount = await createOwnedFixture({ request, build, root, objectType: 'Account', marker, values: { Name: marker }, capture });
+          if ('failure' in activateAccount) return activateAccount.failure;
+          chainScopes.push(markerScope('Account', activateAccount.markerField, activateAccount.storedMarker));
+          const activateOrder = await createOwnedFixture({ request, build, root, objectType: 'Order', marker, values: { AccountId: activateAccount.id }, capture });
+          if ('failure' in activateOrder) return activateOrder.failure;
+          chainScopes.push(markerScope('Order', activateOrder.markerField, activateOrder.storedMarker));
+          let activateEntry: { Id: string; Pricebook2Id: string; UnitPrice: number } | null = null;
+          try {
+            const found = await request(root + '/query?q=' + encodeURIComponent(
+              'SELECT Id, Pricebook2Id, UnitPrice FROM PricebookEntry WHERE Pricebook2.IsStandard=true AND IsActive=true LIMIT 1'));
+            const row = found.ok && record(found.body) && Array.isArray(found.body.records)
+              ? found.body.records.find(record) : null;
+            if (row && id(row.Id) && id(row.Pricebook2Id) && typeof row.UnitPrice === 'number') {
+              activateEntry = { Id: row.Id, Pricebook2Id: row.Pricebook2Id, UnitPrice: row.UnitPrice };
+            }
+          } catch { /* honest failure below */ }
+          if (!activateEntry) return fail('COMMERCE_PRODUCT_SUBSTRATE_ABSENT',
+            'No active standard pricebook entry exists for the owned activation order.');
+          const activatePriced = await request(root + '/sobjects/Order/' + activateOrder.id, 'PATCH', { Pricebook2Id: activateEntry.Pricebook2Id });
+          if (!activatePriced.ok) return fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+            'The owned activation order would not take the live standard pricebook.', { upstreamOutcome: activatePriced.body });
+          const activateItem = await createOwnedFixture({ request, build, root, objectType: 'OrderItem', marker,
+            values: { OrderId: activateOrder.id, PricebookEntryId: activateEntry.Id, Quantity: 1,
+              UnitPrice: activateEntry.UnitPrice, TotalLineAmount: activateEntry.UnitPrice }, capture });
+          if ('failure' in activateItem) return fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+            'The owned activation order line could not be created.', { upstreamOutcome: activateItem.failure.body });
+          const activateMethod = await discoverLiveSetupId(request, root, 'OrderDeliveryMethod');
+          if (!activateMethod) return fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+            'No live order delivery method exists for the owned activation order.');
+          const activateGroup = await createOwnedFixture({ request, build, root, objectType: 'OrderDeliveryGroup', marker,
+            values: { OrderId: activateOrder.id, OrderDeliveryMethodId: activateMethod }, capture });
+          if ('failure' in activateGroup) return fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+            'The owned activation delivery group could not be created.', { upstreamOutcome: activateGroup.failure.body });
+          const activateAssigned = await request(root + '/sobjects/OrderItem/' + activateItem.id, 'PATCH', { OrderDeliveryGroupId: activateGroup.id });
+          if (!activateAssigned.ok) return fail('COMMERCE_ORDER_ACTIVATION_UNAVAILABLE',
+            'The owned activation line would not take the delivery group.', { upstreamOutcome: activateAssigned.body });
+          chainScopes.push(markerScope('OrderDeliveryGroup', activateGroup.markerField, activateGroup.storedMarker));
+          chainScopes.push(markerScope('OrderItem', activateItem.markerField, activateItem.storedMarker));
+          chainScopes.push({ objectName: 'OrderItem', equals: { OrderId: activateOrder.id },
+            ownedParents: [{ field: 'OrderId', objectName: 'Order' }] });
+          activateOrderId = activateOrder.id;
+          const active = await request(root + '/sobjects/CartCheckoutSession/' + chain.sessionId, 'PATCH',
+            { State: 'Active', NextState: 'Complete', OrderId: activateOrder.id });
+          const rereadSession = await request(root + '/sobjects/CartCheckoutSession/' + chain.sessionId);
+          if (!active.ok || !rereadSession.ok || !record(rereadSession.body) || rereadSession.body.State !== 'Active' ||
+            rereadSession.body.NextState !== 'Complete' || rereadSession.body.OrderId !== activateOrder.id) {
+            return fail('COMMERCE_SESSION_UNAVAILABLE', 'The owned checkout session could not be armed for activation.', { upstreamOutcome: active.body });
+          }
+        }
+      }
+      // Declared pricebooks bind live: the SDO draft dereferences its
+      // optional pricebookId vendor-side, so omission faults. Absence
+      // leaves the input unset (optional omits, required fails closed).
+      if (inputs.some((field) => field.name.toLowerCase() === 'pricebookid')) {
+        const pricebookId = chainPricebookId ?? await discoverLiveSetupId(request, root, 'Pricebook2');
+        if (pricebookId) ownedIds.live = { ...(ownedIds.live ?? {}), Pricebook2: pricebookId };
+      }
+      // Declared orderStatus (activateOrderAction) binds the live
+      // Activated status: the native reads it as the TARGET status
+      // (Draft/bogus fault INVALID_API_INPUT; only Activated passes, and
+      // the owned order must be Draft so the transition exists). Absence
+      // leaves the honest mapper failure in place.
+      if (inputs.some((field) => field.name.toLowerCase() === 'orderstatus')) {
+        const status = await discoverPicklistValue(request, root, 'Order', 'Status', /activated/i);
+        if (status) ownedIds.scalars = { ...(ownedIds.scalars ?? {}), orderstatus: status };
+      }
+      // Declared nextState binds the Complete transition: the native
+      // validates presence only (live proof: even a bogus string is
+      // accepted and written through), and the write is read-back
+      // verified below, so the binding is evidence-anchored.
+      if (inputs.some((field) => field.name.toLowerCase() === 'nextstate')) {
+        ownedIds.scalars = { ...(ownedIds.scalars ?? {}), nextstate: 'Complete' };
+      }
       const mapped = mapCommerceArguments(inputs, ownedIds);
       if ('failure' in mapped) return fail('COMMERCE_INPUT_UNAVAILABLE', mapped.failure);
       const invoked = await request(route, 'POST', { inputs: [mapped.args] });
@@ -582,6 +1135,30 @@ async function runCartLifecycle(input: CommerceExecutorInput): Promise<CommerceO
         return fail('COMMERCE_ACTION_OUTCOME_MISSING', 'Salesforce returned no native outcome; no mutation is counted as successful.');
       }
       if (!nativeAccepted(invoked)) return invoked;
+      if (/^updatecheckoutsessionstateaction$/i.test(action)) {
+        const transitioned = await queryIds(request, root,
+          `SELECT Id FROM CartCheckoutSession WHERE WebCartId='${cart.cartId}' AND NextState='Complete' LIMIT 1`);
+        if (!transitioned.length) {
+          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no owned session transition.', { upstreamOutcome: invoked.body });
+        }
+        extra = { transitionedSessionId: transitioned[0] };
+      }
+      if (/^activateorderaction$/i.test(action) && activateOrderId) {
+        const flipped = await request(root + '/sobjects/Order/' + activateOrderId);
+        const flippedStatus = flipped.ok && record(flipped.body) ? flipped.body.Status : undefined;
+        if (flippedStatus !== 'Activated') {
+          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no owned order activation.', { upstreamOutcome: invoked.body });
+        }
+        // Activation mints an OrderSummary (+item summaries) that blocks
+        // line deletion until removed; capture it for ordered cleanup.
+        const createdSummaryId = (await queryIds(request, root,
+          `SELECT Id FROM OrderSummary WHERE OriginalOrderId='${activateOrderId}' LIMIT 1`))[0];
+        if (createdSummaryId) {
+          activateSummaryId = createdSummaryId;
+          capture('OrderSummary', createdSummaryId);
+        }
+        extra = { activatedOrderId: activateOrderId };
+      }
       const reread = await request(root + '/sobjects/WebCart/' + cart.cartId);
       const intact = reread.ok && record(reread.body) && reread.body.Name === marker;
       if (/add/i.test(action) && /item/i.test(action)) {
@@ -594,7 +1171,20 @@ async function runCartLifecycle(input: CommerceExecutorInput): Promise<CommerceO
         const existing = orderIds.length ? orderIds : await queryIds(request, root, `SELECT Id FROM Order WHERE AccountId='${cart.accountId}' LIMIT 5`);
         if (!existing.length) return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no verifiable order.', { upstreamOutcome: invoked.body });
         for (const orderId of existing.slice(0, 5)) capture('Order', orderId);
-        extra = { createdOrderIds: existing.slice(0, 5) };
+        // Draft-created children (items + delivery groups + tax lines)
+        // must be captured for deletion; scopes alone never discover rows.
+        const createdOrderItemIds: string[] = [];
+        for (const orderId of existing.slice(0, 5)) {
+          for (const itemId of await queryIds(request, root, `SELECT Id FROM OrderItem WHERE OrderId='${orderId}' LIMIT 25`)) {
+            capture('OrderItem', itemId);
+            createdOrderItemIds.push(itemId);
+          }
+          for (const groupId of await queryIds(request, root, `SELECT Id FROM OrderDeliveryGroup WHERE OrderId='${orderId}' LIMIT 25`)) capture('OrderDeliveryGroup', groupId);
+        }
+        for (const orderItemId of createdOrderItemIds.slice(0, 25)) {
+          for (const taxId of await queryIds(request, root, `SELECT Id FROM OrderItemTaxLineItem WHERE OrderItemId='${orderItemId}' LIMIT 10`)) capture('OrderItemTaxLineItem', taxId);
+        }
+        extra = { createdOrderIds: existing.slice(0, 5), createdOrderItemIds: createdOrderItemIds.slice(0, 25) };
       }
       const check = verifySkippedStandardReadback({
         performed: true, markerField: 'Name', marker, after: intact ? { Name: marker } : null,
@@ -606,14 +1196,44 @@ async function runCartLifecycle(input: CommerceExecutorInput): Promise<CommerceO
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned cart lifecycle could not be verified.'); }
   finally {
-    cleanupError = await cleanupCommerceFixtures({
-      request, root, marker, owned,
-      order: ['CartItem', 'Order', 'WebCart', 'WebStore', 'Account', 'BuyerAccount', 'BuyerGroupMember', 'Contact'],
+    if (inputs.some(field => field.name.toLowerCase() === "initialstate")) {
+      for (const sessionId of await queryIds(request, root, "SELECT Id FROM CartCheckoutSession WHERE WebCartId='" + cart.cartId + "' LIMIT 25")) capture("CartCheckoutSession", sessionId);
+      checkoutScopes.push({ objectName: "CartCheckoutSession", equals: { WebCartId: cart.cartId }, ownedParents: [{ field: "WebCartId", objectName: "WebCart" }] });
+    }
+    // The activation-created summary (and its item summaries) blocks line
+    // deletion until removed; the Activated order itself refuses deletion
+    // until reduced to Draft. Both run before any delete is attempted.
+    if (activateSummaryId) {
+      cleanupError ??= await deleteOwnedSummary(request, root, activateSummaryId);
+    }
+    if (activateOrderId) {
+      await request(root + '/sobjects/Order/' + activateOrderId, 'PATCH', { Status: 'Draft' }).catch(() => null);
+    }
+    // Draft-created order children (items + delivery groups) scope to the
+    // captured order ids; the session chain itself deletes via owned ids.
+    const createdOrderIds = Array.isArray(extra.createdOrderIds) ? extra.createdOrderIds.filter(id) : [];
+    const createdOrderItemIds = Array.isArray(extra.createdOrderItemIds) ? extra.createdOrderItemIds.filter(id) : [];
+    const orderChildScopes: CommerceScope[] = [
+      ...createdOrderIds.flatMap((orderId) => [
+        { objectName: 'OrderItem', equals: { OrderId: orderId }, ownedParents: [{ field: 'OrderId', objectName: 'Order' }] },
+        { objectName: 'OrderDeliveryGroup', equals: { OrderId: orderId }, ownedParents: [{ field: 'OrderId', objectName: 'Order' }] },
+      ]),
+      ...createdOrderItemIds.map((orderItemId) => ({
+        objectName: 'OrderItemTaxLineItem', equals: { OrderItemId: orderItemId },
+        ownedParents: [{ field: 'OrderItemId', objectName: 'OrderItem' }],
+      })),
+    ];
+    cleanupError ??= await cleanupCommerceFixtures({
+      request, root, marker, owned: owned.filter((entry) => entry.objectName !== 'OrderSummary'),
+      order: ['CartCheckoutSession', 'CartTax', 'OrderItemTaxLineItem', 'CartItem', 'OrderItem', 'OrderDeliveryGroup', 'CartDeliveryGroup', 'Order', 'WebCart', 'WebStore', 'Account', 'BuyerAccount', 'BuyerGroupMember', 'Contact'],
       scopes: [
         markerScope('WebStore', 'Name', marker), markerScope('Account', 'Name', marker), markerScope('WebCart', 'Name', marker),
         ...buyerChainScopes(marker, cart.accountId),
         { objectName: 'CartItem', equals: { CartId: cart.cartId }, ownedParents: [{ field: 'CartId', objectName: 'WebCart' }] },
         { objectName: 'Order', equals: { AccountId: cart.accountId }, ownedParents: [{ field: 'AccountId', objectName: 'Account' }] },
+        ...chainScopes,
+        ...checkoutScopes,
+        ...orderChildScopes,
       ],
     });
   }
@@ -711,6 +1331,7 @@ async function runOrderLifecycle(input: CommerceExecutorInput): Promise<Commerce
   let cleanupError: string | undefined;
   let outcome: Result = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned order lifecycle did not complete.');
   let verified = false, extra: Value = {};
+  let activatedOrderId: string | undefined;
   try {
     outcome = await (async (): Promise<Result> => {
       const account = await createOwnedFixture({ request, build, root, objectType: 'Account', marker, values: { Name: marker }, capture });
@@ -719,6 +1340,13 @@ async function runOrderLifecycle(input: CommerceExecutorInput): Promise<Commerce
       const order = await createOwnedFixture({ request, build, root, objectType: 'Order', marker, values: { AccountId: account.id }, capture });
       if ('failure' in order) return order.failure;
       scopes.push(markerScope('Order', order.markerField, order.storedMarker));
+      const isSummary = /createsummary|creates.*summary/i.test(action) || /ordersummary$/i.test(action);
+      if (isSummary) {
+        const activated = await activateOwnedOrder({ request, build, root, orderId: order.id, marker, capture });
+        if ('failure' in activated) return activated.failure;
+        scopes.push(activated.itemScope, activated.groupScope);
+        activatedOrderId = order.id;
+      }
       const before = await request(root + '/sobjects/Order/' + order.id);
       const beforeStatus = record(before.body) ? before.body.Status : undefined;
       const mapped = mapCommerceArguments(inputs, { accountId: account.id, orderId: order.id });
@@ -728,9 +1356,9 @@ async function runOrderLifecycle(input: CommerceExecutorInput): Promise<Commerce
         return fail('COMMERCE_ACTION_OUTCOME_MISSING', 'Salesforce returned no native outcome; no mutation is counted as successful.');
       }
       if (!nativeAccepted(invoked)) return invoked;
-      if (/createsummary|creates.*summary/i.test(action) || /ordersummary$/i.test(action)) {
+      if (isSummary) {
         const summaryIds = outputIdentities(invoked.body, /ordersummaryid$/i);
-        const summaryId = summaryIds[0] ?? (await queryIds(request, root, `SELECT Id FROM OrderSummary WHERE OrderId='${order.id}' LIMIT 1`))[0];
+        const summaryId = summaryIds[0] ?? (await queryIds(request, root, `SELECT Id FROM OrderSummary WHERE OriginalOrderId='${order.id}' LIMIT 1`))[0];
         if (!summaryId) return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no verifiable order summary.', { upstreamOutcome: invoked.body });
         capture('OrderSummary', summaryId);
         extra = { createdOrderSummaryId: summaryId };
@@ -748,14 +1376,18 @@ async function runOrderLifecycle(input: CommerceExecutorInput): Promise<Commerce
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned order lifecycle could not be verified.'); }
   finally {
+    // Activated orders (and their lines) refuse deletion until reduced to
+    // Draft; the reduction runs before any delete is attempted.
+    if (activatedOrderId) {
+      await request(root + '/sobjects/Order/' + activatedOrderId, 'PATCH', { Status: 'Draft' }).catch(() => null);
+    }
     const summaryOwned = owned.filter((entry) => entry.objectName === 'OrderSummary');
     for (const entry of summaryOwned) {
-      const gone = await request(root + '/sobjects/OrderSummary/' + entry.id, 'DELETE').catch(() => null);
-      if (!gone?.ok) cleanupError ??= `OrderSummary ${entry.id} could not be removed; platform natives may refuse deletion.`;
+      cleanupError ??= await deleteOwnedSummary(request, root, entry.id);
     }
     cleanupError ??= await cleanupCommerceFixtures({
       request, root, marker, owned: owned.filter((entry) => entry.objectName !== 'OrderSummary'),
-      order: ['Order', 'Account'], scopes,
+      order: ['OrderItem', 'OrderDeliveryGroup', 'Order', 'Account'], scopes,
     });
   }
   return done(outcome, { verified: cleanupError ? false : verified, marker, ownedRecords: owned,
@@ -815,31 +1447,16 @@ async function runSubmitLifecycle(input: CommerceExecutorInput): Promise<Commerc
   let cleanupError: string | undefined;
   let outcome: Result = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned submit lifecycle did not complete.');
   let verified = false, extra: Value = {};
+  let submitActivatedOrderId: string | undefined;
   try {
     outcome = await (async (): Promise<Result> => {
-      // Owned-summary mint: owned Account + Order, then the native
-      // create-summary action. Live rows are never fabricated.
-      let orderSummaryId: string | undefined; let ownedSummary = false;
-      const mintDescriptor = await request(root + '/actions/standard/createOrderSummary').catch(() => null);
-      if (mintDescriptor?.ok && record(mintDescriptor.body) && Array.isArray(mintDescriptor.body.inputs)) {
-        const account = await createOwnedFixture({ request, build, root, objectType: 'Account', marker, values: { Name: marker }, capture });
-        if (!('failure' in account)) {
-          scopes.push(markerScope('Account', account.markerField, account.storedMarker));
-          const order = await createOwnedFixture({ request, build, root, objectType: 'Order', marker, values: { AccountId: account.id }, capture });
-          if (!('failure' in order)) {
-            scopes.push(markerScope('Order', order.markerField, order.storedMarker));
-            const mintInputs = commerceDescriptorInputs(mintDescriptor.body);
-            const mapped = mapCommerceArguments(mintInputs, { accountId: account.id, orderId: order.id });
-            if (!('failure' in mapped)) {
-              const minted = await request(root + '/actions/standard/createOrderSummary', 'POST', { inputs: [mapped.args] });
-              const mintedId = outputIdentities(minted.body, /ordersummaryid$/i)[0];
-              if (nativeAccepted(minted) && mintedId) {
-                const reread = await request(root + '/sobjects/OrderSummary/' + mintedId);
-                if (reread.ok) { orderSummaryId = mintedId; ownedSummary = true; capture('OrderSummary', mintedId); }
-              }
-            }
-          }
-        }
+      // Owned-summary mint via the shared native chain; destructive
+      // legs refuse live rows when the mint fails.
+      let orderSummaryId: string | undefined; let ownedSummary = false; let summaryAccountId: string | undefined;
+      const minted = await mintOwnedOrderSummary({ request, build, root, marker, capture, scopes });
+      if (minted) {
+        orderSummaryId = minted.orderSummaryId; ownedSummary = true;
+        submitActivatedOrderId = minted.activatedOrderId; summaryAccountId = minted.accountId;
       }
       if (!orderSummaryId) {
         if (destructive) {
@@ -855,7 +1472,40 @@ async function runSubmitLifecycle(input: CommerceExecutorInput): Promise<Commerc
         }
         orderSummaryId = live[0];
       }
-      const ownedIds: CommerceOwnedIds = { orderSummaryId };
+      if (!summaryAccountId) {
+        try {
+          const found = await request(root + '/sobjects/OrderSummary/' + orderSummaryId);
+          const liveAccountId = found.ok && record(found.body) ? found.body.AccountId : undefined;
+          if (typeof liveAccountId === 'string' && id(liveAccountId)) summaryAccountId = liveAccountId;
+        } catch { /* accountId stays unbound; the mapper fails honestly */ }
+      }
+      const ownedIds: CommerceOwnedIds = { orderSummaryId, ...(summaryAccountId ? { accountId: summaryAccountId } : {}) };
+      // Payment summaries link an authorization: the leg mints an owned
+      // one (live gateway, owned amount) so no live auth row is touched.
+      if (/^createorderpaymentsummary$/i.test(action)) {
+        if (!summaryAccountId) return fail('COMMERCE_INPUT_UNAVAILABLE', 'No resolved identity for required input accountId.');
+        const gateway = await discoverLiveSetupId(request, root, 'PaymentGateway');
+        if (!gateway) return fail('COMMERCE_PAYMENT_SUBSTRATE_ABSENT',
+          'No live payment gateway exists for the owned authorization; provision payment substrate before retrying.');
+        // Minted Draft: Processed/Canceled authorizations refuse deletion
+        // ("Delete not allowed when Status is ..."), which would leak; the
+        // native decides whether Draft funds link.
+        const auth = await createOwnedFixture({ request, build, root, objectType: 'PaymentAuthorization', marker,
+          values: { AccountId: summaryAccountId, PaymentGatewayId: gateway, Amount: 1,
+            Status: 'Draft', ProcessingMode: 'External' }, capture });
+        if ('failure' in auth) return fail('COMMERCE_PAYMENT_SUBSTRATE_ABSENT',
+          'The owned payment authorization could not be created.', { upstreamOutcome: auth.failure.body });
+        scopes.push(markerScope('PaymentAuthorization', auth.markerField, auth.storedMarker));
+        ownedIds.live = { ...(ownedIds.live ?? {}), PaymentAuthorization: auth.id };
+      }
+      // Tax reversals post against the acted-on summary's first item
+      // summary (order-tax lines snapshot below for verification).
+      if (/^recordtaxreversal$/i.test(action)) {
+        const itemIds = await queryIds(request, root, `SELECT Id FROM OrderItemSummary WHERE OrderSummaryId='${orderSummaryId}' LIMIT 5`);
+        if (!itemIds.length) return fail('COMMERCE_TAX_SUBSTRATE_ABSENT',
+          'The acted-on summary holds no item summaries to reverse tax against.');
+        ownedIds.live = { ...(ownedIds.live ?? {}), OrderItemSummary: itemIds[0] };
+      }
       if (/invoice/i.test(action)) {
         const fulfillmentParent = await discoverLiveSetupId(request, root, 'FulfillmentOrder');
         const changeParent = fulfillmentParent ? null : await discoverLiveSetupId(request, root, 'ChangeOrder');
@@ -866,6 +1516,25 @@ async function runSubmitLifecycle(input: CommerceExecutorInput): Promise<Commerc
         }
       }
       const before = await readSummaryFingerprint(request, root, orderSummaryId);
+      const beforePayIds = /^createorderpaymentsummary$/i.test(action)
+        ? await queryIds(request, root, `SELECT Id FROM OrderPaymentSummary WHERE OrderSummaryId='${orderSummaryId}' LIMIT 10`)
+        : [];
+      // Reversal entries hang off the order (OrderItemTaxLineItem has no
+      // summary link); snapshot them for the after-check below.
+      let beforeTaxIds: string[] = [];
+      let reversalOrderId: string | undefined = submitActivatedOrderId;
+      if (/^recordtaxreversal$/i.test(action)) {
+        if (!reversalOrderId) {
+          try {
+            const found = await request(root + '/sobjects/OrderSummary/' + orderSummaryId);
+            const original = found.ok && record(found.body) ? found.body.OriginalOrderId : undefined;
+            if (typeof original === 'string' && id(original)) reversalOrderId = original;
+          } catch { /* snapshot stays empty; the after-check fails honestly */ }
+        }
+        if (reversalOrderId) {
+          beforeTaxIds = await queryIds(request, root, `SELECT Id FROM OrderItemTaxLineItem WHERE OrderId='${reversalOrderId}' LIMIT 20`);
+        }
+      }
       const mapped = mapCommerceArguments(inputs, ownedIds);
       if ('failure' in mapped) return fail('COMMERCE_INPUT_UNAVAILABLE', mapped.failure);
       const invoked = await request(route, 'POST', { inputs: [mapped.args] });
@@ -873,11 +1542,34 @@ async function runSubmitLifecycle(input: CommerceExecutorInput): Promise<Commerc
         return fail('COMMERCE_ACTION_OUTCOME_MISSING', 'Salesforce returned no native outcome; no mutation is counted as successful.');
       }
       if (!nativeAccepted(invoked)) return invoked;
-      const after = await readSummaryFingerprint(request, root, orderSummaryId);
-      if (!after.summary || fingerprintDigest(before) === fingerprintDigest(after)) {
-        return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no observable order change.', { upstreamOutcome: invoked.body });
+      // Payment summaries attach beside the summary/items fingerprint, so
+      // the created payment row itself is the verification (the acted-on
+      // summary is owned when minted; a live summary's pre-existing rows
+      // are excluded by snapshotting before the invoke).
+      if (/^createorderpaymentsummary$/i.test(action)) {
+        const payIds = await queryIds(request, root, `SELECT Id FROM OrderPaymentSummary WHERE OrderSummaryId='${orderSummaryId}' LIMIT 10`);
+        const fresh = payIds.filter((payId) => !beforePayIds.includes(payId));
+        if (!fresh.length) {
+          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no owned payment summary.', { upstreamOutcome: invoked.body });
+        }
+        for (const payId of fresh) capture('OrderPaymentSummary', payId);
+        extra = { orderSummaryId, ownedSummary, createdOrderPaymentSummaryIds: fresh };
+      } else if (/^recordtaxreversal$/i.test(action) && reversalOrderId) {
+        const afterTaxIds = await queryIds(request, root, `SELECT Id FROM OrderItemTaxLineItem WHERE OrderId='${reversalOrderId}' LIMIT 20`);
+        const freshTax = afterTaxIds.filter((taxId) => !beforeTaxIds.includes(taxId));
+        const after = await readSummaryFingerprint(request, root, orderSummaryId);
+        if (!freshTax.length && (!after.summary || fingerprintDigest(before) === fingerprintDigest(after))) {
+          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no observable tax reversal.', { upstreamOutcome: invoked.body });
+        }
+        for (const taxId of freshTax) capture('OrderItemTaxLineItem', taxId);
+        extra = { orderSummaryId, ownedSummary, createdTaxLineItemIds: freshTax };
+      } else {
+        const after = await readSummaryFingerprint(request, root, orderSummaryId);
+        if (!after.summary || fingerprintDigest(before) === fingerprintDigest(after)) {
+          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no observable order change.', { upstreamOutcome: invoked.body });
+        }
+        extra = { orderSummaryId, ownedSummary, itemCountBefore: before.items.length, itemCountAfter: after.items.length };
       }
-      extra = { orderSummaryId, ownedSummary, itemCountBefore: before.items.length, itemCountAfter: after.items.length };
       if (/ordertocart/i.test(action)) {
         const cartIds = outputIdentities(invoked.body, /cartid$/i);
         if (cartIds[0]) {
@@ -897,13 +1589,20 @@ async function runSubmitLifecycle(input: CommerceExecutorInput): Promise<Commerc
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned submit lifecycle could not be verified.'); }
   finally {
-    for (const entry of owned.filter((row) => row.objectName === 'OrderSummary' || row.objectName === 'WebCart')) {
-      const gone = await request(root + '/sobjects/' + entry.objectName + '/' + entry.id, 'DELETE').catch(() => null);
-      if (!gone?.ok) cleanupError ??= `${entry.objectName} ${entry.id} could not be removed; platform natives may refuse deletion.`;
+    for (const entry of owned.filter((row) => row.objectName === 'OrderSummary')) {
+      cleanupError ??= await deleteOwnedSummary(request, root, entry.id);
+    }
+    for (const entry of owned.filter((row) => row.objectName === 'WebCart')) {
+      const gone = await request(root + '/sobjects/WebCart/' + entry.id, 'DELETE').catch(() => null);
+      if (!gone?.ok) cleanupError ??= `WebCart ${entry.id} could not be removed; platform natives may refuse deletion.`;
+    }
+    // The mint-activated order refuses deletion until reduced to Draft.
+    if (submitActivatedOrderId) {
+      await request(root + '/sobjects/Order/' + submitActivatedOrderId, 'PATCH', { Status: 'Draft' }).catch(() => null);
     }
     cleanupError ??= await cleanupCommerceFixtures({
       request, root, marker, owned: owned.filter((row) => row.objectName !== 'OrderSummary' && row.objectName !== 'WebCart'),
-      order: ['Order', 'Account'], scopes,
+      order: ['OrderPaymentSummary', 'OrderItemTaxLineItem', 'OrderItem', 'OrderDeliveryGroup', 'PaymentAuthorization', 'Order', 'Account'], scopes,
     });
   }
   return done(outcome, { verified: cleanupError ? false : verified, marker, ownedRecords: owned,
@@ -963,68 +1662,170 @@ async function runFulfillmentLifecycle(input: CommerceExecutorInput): Promise<Co
   let cleanupError: string | undefined;
   let outcome: Result = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned fulfillment lifecycle did not complete.');
   let verified = false, extra: Value = {};
+  let fulfillActivatedOrderId: string | undefined;
   try {
     outcome = await (async (): Promise<Result> => {
-      const account = await createOwnedFixture({ request, build, root, objectType: 'Account', marker, values: { Name: marker }, capture });
-      if ('failure' in account) return account.failure;
-      scopes.push(markerScope('Account', account.markerField, account.storedMarker));
-      const order = await createOwnedFixture({ request, build, root, objectType: 'Order', marker, values: { AccountId: account.id }, capture });
-      if ('failure' in order) return order.failure;
-      scopes.push(markerScope('Order', order.markerField, order.storedMarker));
-      const ownedIds: CommerceOwnedIds = { accountId: account.id, orderId: order.id };
-      const parentField = referenceFieldTo(fulfillmentSchema.body, ['Order', 'OrderSummary', 'OrderDeliveryGroup']);
-      if (/cancel/i.test(action)) {
-        const setup = await invokeNativeSetup({ request, root, actionName: 'createFulfillmentOrder', owned: ownedIds });
-        if (!setup.accepted) {
-          return fail('COMMERCE_SETUP_UNAVAILABLE', 'No owned fulfillment order could be created for the cancel; nothing was cancelled.',
-            { upstreamStatus: setup.result.status });
-        }
-        const createdIds = outputIdentities(setup.body, /fulfillmentorderid$/i);
-        const fulfillmentId = createdIds[0] ?? (parentField
-          ? (await queryIds(request, root, `SELECT Id FROM FulfillmentOrder WHERE ${parentField}='${order.id}' LIMIT 1`))[0]
-          : undefined);
-        if (!fulfillmentId) return fail('COMMERCE_SETUP_UNVERIFIED', 'The setup fulfillment order could not be read back.');
-        capture('FulfillmentOrder', fulfillmentId);
-        ownedIds.live = { FulfillmentOrder: fulfillmentId };
-        ownedIds.fixtures = { FulfillmentOrder: fulfillmentId };
+      // Fulfillment acts on a summary: mint an owned one, then discover
+      // its live group/line rows (quantities flow into the wrapper) plus
+      // the fulfill-from location.
+      const minted = await mintOwnedOrderSummary({ request, build, root, marker, capture, scopes });
+      if (!minted) {
+        return fail('COMMERCE_OWNED_SUMMARY_UNAVAILABLE',
+          'No owned OrderSummary could be minted for the fulfillment; nothing was fulfilled.',
+          { setupRequirement: 'Provision Order Management substrate (an owned OrderSummary mintable through the native create-summary action), then retry.' });
       }
+      fulfillActivatedOrderId = minted.activatedOrderId;
+      // Cancel needs an owned fulfillment line to act on. The create
+      // action cannot supply one (org allocation automation consumes
+      // fresh summaries within seconds), so the setup direct-inserts a
+      // Draft fulfillment order plus one owned line (live proof: the
+      // cancel drops the owned line Quantity 1->0).
+      if (/cancel/i.test(action)) {
+        const cancelLocationId = await discoverLiveSetupId(request, root, 'Location');
+        if (!cancelLocationId) {
+          return fail('COMMERCE_FULFILLMENT_SUBSTRATE_ABSENT',
+            'The org exposes no fulfill-from location for the owned cancel setup.',
+            { setupRequirement: 'Provision fulfillment substrate (a fulfill-from location), then retry.' });
+        }
+        const cancelType = await discoverFulfillmentType(request, root, fulfillmentSchema.body, cancelLocationId);
+        const setupOrder = await createOwnedFixture({ request, build, root, objectType: 'FulfillmentOrder', marker,
+          values: { OrderSummaryId: minted.orderSummaryId, AccountId: minted.accountId, Status: 'Draft',
+            FulfilledFromLocationId: cancelLocationId, FulfilledToName: marker,
+            ...(cancelType ? { Type: cancelType } : {}) }, capture });
+        if ('failure' in setupOrder) {
+          return fail('COMMERCE_SETUP_UNAVAILABLE', 'No owned fulfillment order could be created for the cancel; nothing was cancelled.',
+            { upstreamOutcome: setupOrder.failure.body });
+        }
+        scopes.push(markerScope('FulfillmentOrder', setupOrder.markerField, setupOrder.storedMarker));
+        const oisId = (await queryIds(request, root,
+          `SELECT Id FROM OrderItemSummary WHERE OrderSummaryId='${minted.orderSummaryId}' LIMIT 1`))[0];
+        if (!oisId) {
+          return fail('COMMERCE_FULFILLMENT_SUBSTRATE_ABSENT', 'The minted summary holds no item summary to link the owned cancel line against.');
+        }
+        const setupLine = await createOwnedFixture({ request, build, root, objectType: 'FulfillmentOrderLineItem', marker,
+          values: { FulfillmentOrderId: setupOrder.id, OrderItemSummaryId: oisId, Quantity: 1, OriginalQuantity: 1,
+            Type: 'Order Product', TypeCode: 'Product' }, capture });
+        if ('failure' in setupLine) {
+          return fail('COMMERCE_SETUP_UNAVAILABLE', 'No owned fulfillment line could be created for the cancel; nothing was cancelled.',
+            { upstreamOutcome: setupLine.failure.body });
+        }
+        scopes.push(markerScope('FulfillmentOrderLineItem', setupLine.markerField, setupLine.storedMarker));
+        const cancelOwned: CommerceOwnedIds = {
+          accountId: minted.accountId, orderId: minted.orderId, orderSummaryId: minted.orderSummaryId,
+          live: { FulfillmentOrder: setupOrder.id }, fixtures: { FulfillmentOrder: setupOrder.id },
+          lineSummaries: [{ id: setupLine.id, quantity: 1 }],
+        };
+        const cancelMapped = mapCommerceArguments(inputs, cancelOwned);
+        if ('failure' in cancelMapped) return fail('COMMERCE_INPUT_UNAVAILABLE', cancelMapped.failure);
+        const cancelInvoked = await request(route, 'POST', { inputs: [cancelMapped.args] });
+        if (cancelInvoked.ok && (cancelInvoked.body === null || Array.isArray(cancelInvoked.body) && cancelInvoked.body.length === 0)) {
+          return fail('COMMERCE_ACTION_OUTCOME_MISSING', 'Salesforce returned no native outcome; no mutation is counted as successful.');
+        }
+        if (!nativeAccepted(cancelInvoked)) return cancelInvoked;
+        const afterLine = await request(root + '/query?q=' + encodeURIComponent(
+          `SELECT Quantity, OriginalQuantity FROM FulfillmentOrderLineItem WHERE Id='${setupLine.id}'`));
+        const afterRow = afterLine.ok && record(afterLine.body) && Array.isArray(afterLine.body.records)
+          ? afterLine.body.records.find(record) : undefined;
+        if (!afterRow || afterRow.Quantity !== 0) {
+          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no observable cancel on the owned line.',
+            { upstreamOutcome: cancelInvoked.body });
+        }
+        verified = true;
+        extra = { fulfillmentId: setupOrder.id, cancelledLineId: setupLine.id, afterQuantity: afterRow.Quantity };
+        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+        return cancelInvoked;
+      }
+      const groupId = (await queryIds(request, root,
+        `SELECT Id FROM OrderDeliveryGroupSummary WHERE OrderSummaryId='${minted.orderSummaryId}' LIMIT 1`))[0];
+      const lineQuery = await request(root + '/query?q=' + encodeURIComponent(
+        `SELECT Id, Quantity, Type, TypeCode, QuantityAvailableToFulfill FROM OrderItemSummary WHERE OrderSummaryId='${minted.orderSummaryId}' LIMIT 25`));
+      const lineRows = lineQuery.ok && record(lineQuery.body) && Array.isArray(lineQuery.body.records)
+        ? lineQuery.body.records.filter(record)
+          .map((row) => ({ id: row.Id, quantity: row.Quantity, type: row.Type, typeCode: row.TypeCode, available: row.QuantityAvailableToFulfill }))
+          .filter((row) => typeof row.id === 'string' && id(row.id) && typeof row.quantity === 'number' && row.quantity > 0)
+        : [];
+      const locationId = await discoverLiveSetupId(request, root, 'Location');
+      if (!groupId || !lineRows.length || !locationId) {
+        return fail('COMMERCE_FULFILLMENT_SUBSTRATE_ABSENT',
+          'The minted summary holds no fulfillable group lines, or the org exposes no fulfill-from location.',
+          { setupRequirement: 'Provision fulfillment substrate (summary group lines and a fulfill-from location), then retry.' });
+      }
+      // The service requires typed lines (the missing_type gate reads
+      // Type/TypeCode data, not wrapper shape).
+      if (lineRows.some((row) => typeof row.type !== 'string' || !row.type || typeof row.typeCode !== 'string' || !row.typeCode)) {
+        return fail('COMMERCE_FULFILLMENT_SUBSTRATE_ABSENT',
+          'The minted summary lines carry no Type/TypeCode; the fulfillment service requires both.',
+          { setupRequirement: 'Mint the summary from an order whose OrderItem rows set Type (e.g. Order Product) so Type/TypeCode inherit, then retry.' });
+      }
+      // Org allocation automation may consume the minted lines within
+      // seconds; with nothing available the native refuses, honestly.
+      const availabilityOf = (row: { available: unknown; quantity: unknown }): number =>
+        typeof row.available === 'number' ? row.available : (typeof row.quantity === 'number' ? row.quantity : 0);
+      const fulfillable = lineRows.filter((row) => availabilityOf(row) > 0);
+      if (!fulfillable.length) {
+        return fail('COMMERCE_FULFILLMENT_QUANTITY_CONSUMED',
+          'The minted summary lines show no quantity available to fulfill: org allocation automation consumes fresh summaries within seconds, before the native action can run.',
+          { setupRequirement: 'Exclude probe summaries from the org allocation automation (or run in an org without it), then retry.' });
+      }
+      const fulfillmentType = await discoverFulfillmentType(request, root, fulfillmentSchema.body, locationId);
+      const ownedIds: CommerceOwnedIds = {
+        accountId: minted.accountId, orderId: minted.orderId, orderSummaryId: minted.orderSummaryId,
+        live: { OrderDeliveryGroupSummary: groupId, Location: locationId },
+        lineSummaries: fulfillable.map((row) => ({ id: row.id, quantity: availabilityOf(row) })),
+        ...(fulfillmentType ? { scalars: { type: fulfillmentType } } : {}),
+      };
+      const parentField = referenceFieldTo(fulfillmentSchema.body, ['Order', 'OrderSummary', 'OrderDeliveryGroup']);
       const mapped = mapCommerceArguments(inputs, ownedIds);
       if ('failure' in mapped) return fail('COMMERCE_INPUT_UNAVAILABLE', mapped.failure);
       const invoked = await request(route, 'POST', { inputs: [mapped.args] });
       if (invoked.ok && (invoked.body === null || Array.isArray(invoked.body) && invoked.body.length === 0)) {
         return fail('COMMERCE_ACTION_OUTCOME_MISSING', 'Salesforce returned no native outcome; no mutation is counted as successful.');
       }
-      if (!nativeAccepted(invoked)) return invoked;
-      if (/cancel/i.test(action)) {
-        const fulfillmentId = ownedIds.live?.FulfillmentOrder as string;
-        const after = await request(root + '/sobjects/FulfillmentOrder/' + fulfillmentId);
-        const status = record(after.body) ? String(after.body.Status ?? after.body.StatusCategory ?? '') : '';
-        if (!after.ok && after.status !== 404 && !/cancel/i.test(status)) {
-          return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no observable cancel.', { upstreamOutcome: invoked.body });
+      if (!nativeAccepted(invoked)) {
+        // The automation can consume the lines between the availability
+        // gate and the invoke; translate that native refusal to the same
+        // stable verdict so probes report one deterministic cause.
+        const refusal = JSON.stringify(invoked.body ?? {});
+        if (/valid quantity/i.test(refusal)) {
+          return fail('COMMERCE_FULFILLMENT_QUANTITY_CONSUMED',
+            'The native refused the fulfillable quantity: org allocation automation consumed the minted lines between discovery and invoke.',
+            { setupRequirement: 'Exclude probe summaries from the org allocation automation (or run in an org without it), then retry.' });
         }
-        extra = { fulfillmentId, afterStatus: status || (after.status === 404 ? 'absent' : 'unknown') };
-      } else {
-        const createdIds = outputIdentities(invoked.body, /fulfillmentorderids?$/i);
-        const existing = createdIds.length ? createdIds : parentField
-          ? await queryIds(request, root, `SELECT Id FROM FulfillmentOrder WHERE ${parentField}='${order.id}' LIMIT 5`)
-          : [];
-        if (!existing.length) return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no verifiable fulfillment order.', { upstreamOutcome: invoked.body });
-        for (const fulfillmentId of existing.slice(0, 5)) capture('FulfillmentOrder', fulfillmentId);
-        extra = { createdFulfillmentIds: existing.slice(0, 5) };
+        return invoked;
       }
+      const createdIds = outputIdentities(invoked.body, /fulfillmentorderids?$/i);
+      // Anchor the fallback query to whichever parent the live schema
+      // linked: summary-backed links need the minted summary id.
+      const anchorValue = /summary/i.test(parentField ?? '') ? minted.orderSummaryId : minted.orderId;
+      const existing = createdIds.length ? createdIds : parentField
+        ? await queryIds(request, root, `SELECT Id FROM FulfillmentOrder WHERE ${parentField}='${anchorValue}' LIMIT 5`)
+        : [];
+      if (!existing.length) return fail('COMMERCE_EFFECT_UNVERIFIED', 'Native acceptance carried no verifiable fulfillment order.', { upstreamOutcome: invoked.body });
+      for (const fulfillmentId of existing.slice(0, 5)) capture('FulfillmentOrder', fulfillmentId);
+      extra = { createdFulfillmentIds: existing.slice(0, 5) };
       verified = true;
       if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned fulfillment lifecycle could not be verified.'); }
   finally {
+    // Owned fulfillment rows delete first, then the minted summary with
+    // any automation-attached children; each may refuse per platform rules.
     for (const entry of owned.filter((row) => row.objectName === 'FulfillmentOrder')) {
       const gone = await request(root + '/sobjects/FulfillmentOrder/' + entry.id, 'DELETE').catch(() => null);
       if (!gone?.ok) cleanupError ??= `FulfillmentOrder ${entry.id} could not be removed; platform natives may refuse deletion.`;
     }
+    for (const entry of owned.filter((row) => row.objectName === 'OrderSummary')) {
+      cleanupError ??= await deleteOwnedSummary(request, root, entry.id);
+    }
+    if (fulfillActivatedOrderId) {
+      await request(root + '/sobjects/Order/' + fulfillActivatedOrderId, 'PATCH', { Status: 'Draft' }).catch(() => null);
+    }
     cleanupError ??= await cleanupCommerceFixtures({
-      request, root, marker, owned: owned.filter((row) => row.objectName !== 'FulfillmentOrder'),
-      order: ['Order', 'Account'], scopes,
+      request, root, marker, owned: owned.filter((row) => row.objectName !== 'FulfillmentOrder' && row.objectName !== 'OrderSummary'),
+      // The cancel setup's owned line deletes here (usually already gone
+      // via the header cascade; 404 counts as absent).
+      order: ['FulfillmentOrderLineItem', 'OrderItem', 'OrderDeliveryGroup', 'OrderDeliveryMethod', 'PricebookEntry', 'Order', 'Account'], scopes,
     });
   }
   return done(outcome, { verified: cleanupError ? false : verified, marker, ownedRecords: owned,
@@ -1127,14 +1928,78 @@ async function runReturnLifecycle(input: CommerceExecutorInput): Promise<Commerc
 async function provisionRebateScope(input: {
   request: Request; build: Build; root: string; marker: string;
   capture: (objectName: string, value: string) => void;
-}): Promise<{ typeId: string; markerField: string; storedMarker: string } | { failure: Result }> {
-  const rebateType = await createOwnedFixture({ ...input, objectType: 'ProgramRebateType', marker: input.marker, capture: input.capture });
-  if ('failure' in rebateType) {
-    return { failure: fail('COMMERCE_REBATE_SCOPE_UNAVAILABLE',
-      'No owned rebate scope could be provisioned; the live org exposes no creatable ProgramRebateType. Provision rebate substrate, then retry.',
-      { setupRequirement: 'Provision rebate substrate during org provisioning so the live org exposes a creatable ProgramRebateType, then retry.' }) };
+}): Promise<{ typeId: string; markerField: string; storedMarker: string; programId?: string; usedCustomFallback: boolean; program?: { markerField: string; storedMarker: string } } | { failure: Result; program?: { markerField: string; storedMarker: string } }> {
+  // Borrow leg: reuse one live type row (never written, never captured for
+  // deletion; the empty-marker scope below matches nothing). Mint only when
+  // the org holds no live row.
+  const borrowed = await input.request(`${input.root}/query?q=${encodeURIComponent('SELECT Id FROM ProgramRebateType LIMIT 1')}`).catch(() => null);
+  const live = borrowed?.ok && record(borrowed.body) && Array.isArray(borrowed.body.records)
+    ? borrowed.body.records.filter(record).find((row) => id(row.Id)) : undefined;
+  if (live) {
+    const typeRow = await input.request(`${input.root}/sobjects/ProgramRebateType/${live.Id}`).catch(() => null);
+    const programId = typeRow?.ok && record(typeRow.body) && id(typeRow.body.RebateProgramId)
+      ? typeRow.body.RebateProgramId as string : undefined;
+    return { typeId: live.Id as string, markerField: 'Name', storedMarker: '', programId, usedCustomFallback: false };
   }
-  return { typeId: rebateType.id, markerField: rebateType.markerField, storedMarker: rebateType.storedMarker };
+  // Mint leg: the type's required RebateProgramId seeds from a freshly
+  // minted program (live describe requireds: Name/StartDate/EndDate).
+  // Faults pass through unmasked with native text (no swallow); a type-mint
+  // failure still carries the program scope so cleanup proves identity.
+  const today = new Date().toISOString().slice(0, 10);
+  const end = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+  const programValues: Value = { StartDate: today, EndDate: end };
+  const programSchema = await input.request(`${input.root}/sobjects/RebateProgram/describe`).catch(() => null);
+  const programFields = programSchema?.ok && record(programSchema.body) && Array.isArray(programSchema.body.fields)
+    ? programSchema.body.fields.filter(record) : [];
+  const programStatus = programFields.find((entry) => entry.name === 'Status');
+  const programChoices = Array.isArray(programStatus?.picklistValues) ? programStatus.picklistValues.filter(record)
+    .filter((entry) => entry.active === true && typeof entry.value === 'string') : [];
+  if (programStatus?.createable === true && programChoices.some((entry) => entry.value === 'Active')) {
+    programValues.Status = 'Active';
+  }
+  const program = await createOwnedFixture({ ...input, objectType: 'RebateProgram', marker: input.marker,
+    values: programValues, capture: input.capture });
+  if ('failure' in program) return { failure: program.failure };
+  const programScope = { markerField: program.markerField, storedMarker: program.storedMarker };
+  // Type semantics follow the org's calc infrastructure: a live Rebates-type
+  // definition unlocks standard calculable semantics (CalcObjectId-bound);
+  // without one the type falls back to Custom (read/estimate actions still
+  // convert; calculate actions fault opaquely for lack of an engine
+  // formula, which the caller translates to a setup terminal).
+  const typeValues: Value = { RebateProgramId: program.id };
+  const defRows = await input.request(input.root + '/query?q=' + encodeURIComponent(
+    'SELECT Id, DeveloperName, MasterLabel, ProcessType FROM BatchCalcJobDefinition LIMIT 10')).catch(() => null);
+  const rebateDef = defRows?.ok && record(defRows.body) && Array.isArray(defRows.body.records)
+    ? defRows.body.records.filter(record).find((row) => id(row.Id) &&
+      /rebate/i.test(`${row.DeveloperName ?? ''} ${row.MasterLabel ?? ''} ${row.ProcessType ?? ''}`)) : undefined;
+  const typeSchema = await input.request(`${input.root}/sobjects/ProgramRebateType/describe`).catch(() => null);
+  const typeFields = typeSchema?.ok && record(typeSchema.body) && Array.isArray(typeSchema.body.fields)
+    ? typeSchema.body.fields.filter(record) : [];
+  const preferences: Record<string, string[]> = rebateDef ? {
+    CalculationType: ['PerTransaction', 'AggregateBased', 'GrowthBased', 'Custom'],
+    RebateMeasureType: ['FixedAmount', 'AmountperUnit', 'PercentageOfRevenue', 'Custom'],
+    Status: ['Active'],
+    AggregateObjectName: ['RebateMemberProductAggregate'],
+  } : {
+    CalculationType: ['Custom'],
+    RebateMeasureType: ['Custom'],
+    Status: ['Active'],
+    AggregateObjectName: ['RebateMemberProductAggregate'],
+  };
+  for (const [name, ordered] of Object.entries(preferences)) {
+    const field = typeFields.find((entry) => entry.name === name);
+    const choices = Array.isArray(field?.picklistValues) ? field.picklistValues.filter(record)
+      .filter((entry) => entry.active === true && typeof entry.value === 'string') : [];
+    if (field?.createable !== true || !choices.length) continue;
+    const values = choices.map((entry) => entry.value as string);
+    typeValues[name] = ordered.find((want) => values.includes(want)) ?? values[0];
+  }
+  if (rebateDef) typeValues.CalcObjectId = rebateDef.Id as string;
+  const rebateType = await createOwnedFixture({ ...input, objectType: 'ProgramRebateType', marker: input.marker,
+    values: typeValues, capture: input.capture });
+  if ('failure' in rebateType) return { failure: rebateType.failure, program: programScope };
+  return { typeId: rebateType.id, markerField: rebateType.markerField, storedMarker: rebateType.storedMarker,
+    programId: program.id, usedCustomFallback: !rebateDef, program: programScope };
 }
 
 /**
@@ -1167,9 +2032,71 @@ async function runRebateLifecycle(input: CommerceExecutorInput): Promise<Commerc
   try {
     outcome = await (async (): Promise<Result> => {
       const scope = await provisionRebateScope({ request, build, root, marker, capture });
-      if ('failure' in scope) return scope.failure;
+      if ('failure' in scope) {
+        if (scope.program) scopes.push(markerScope('RebateProgram', scope.program.markerField, scope.program.storedMarker));
+        return scope.failure;
+      }
       scopes.push(markerScope('ProgramRebateType', scope.markerField, scope.storedMarker));
+      if (scope.program) scopes.push(markerScope('RebateProgram', scope.program.markerField, scope.program.storedMarker));
       const ownedIds: CommerceOwnedIds = { fixtures: { ProgramRebateType: scope.typeId }, live: { ProgramRebateType: scope.typeId } };
+      // AggregateId-declaring actions need a real aggregate row: mint the
+      // owned member + payout-period + aggregate chain under the scope's
+      // program. Partial chains push their scopes before failing so cleanup
+      // proves every minted row.
+      const aggregateInput = inputs.find((entry) => /^aggregateids?$/i.test(entry.name ?? ''));
+      if (aggregateInput) {
+        if (!scope.programId) {
+          return fail('COMMERCE_REBATE_PROGRAM_UNAVAILABLE',
+            'The rebate scope exposes no program identity, so no owned aggregate chain can be minted.',
+            { setupRequirement: 'A ProgramRebateType row carrying RebateProgramId.' });
+        }
+        const chainToday = new Date().toISOString().slice(0, 10);
+        const chainEnd = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+        const account = await createOwnedFixture({ ...input, objectType: 'Account', marker: input.marker,
+          values: { Name: input.marker }, capture });
+        if ('failure' in account) return account.failure;
+        scopes.push(markerScope('Account', account.markerField, account.storedMarker));
+        const member = await createOwnedFixture({ ...input, objectType: 'RebateProgramMember', marker: input.marker,
+          values: { RebateProgramId: scope.programId, AccountId: account.id }, capture });
+        if ('failure' in member) return member.failure;
+        scopes.push(markerScope('RebateProgramMember', member.markerField, member.storedMarker));
+        const period = await createOwnedFixture({ ...input, objectType: 'RebateProgramPayoutPeriod', marker: input.marker,
+          values: { RebateProgramId: scope.programId, StartDate: chainToday, EndDate: chainEnd,
+            TransactionGracePeriodDate: chainEnd, PayoutCalculationDate: chainEnd }, capture });
+        if ('failure' in period) return period.failure;
+        scopes.push(markerScope('RebateProgramPayoutPeriod', period.markerField, period.storedMarker));
+        const aggregate = await createOwnedFixture({ ...input, objectType: 'RebateMemberProductAggregate', marker: input.marker,
+          values: { ProgramRebateTypeId: scope.typeId, RebateProgramMemberId: member.id,
+            RebateProgramPayoutPeriodId: period.id, TotalQuantity: 2, TotalTransactionAmount: 100 }, capture });
+        if ('failure' in aggregate) return aggregate.failure;
+        scopes.push(markerScope('RebateMemberProductAggregate', aggregate.markerField, aggregate.storedMarker));
+        // One journaled item: calculation actions dereference aggregate
+        // contents, and an empty aggregate faults opaquely. The journal
+        // needs only an activity date; the item links journal + aggregate.
+        const journal = await createOwnedFixture({ ...input, objectType: 'TransactionJournal', marker: input.marker,
+          values: { ActivityDate: new Date().toISOString(), MemberId: member.id, AccountId: account.id,
+            TransactionAmount: 100, Quantity: 2 }, capture });
+        if ('failure' in journal) return journal.failure;
+        scopes.push(markerScope('TransactionJournal', journal.markerField, journal.storedMarker));
+        // Items expose no writable marker field (auto-number Name), so mint
+        // directly and prove identity through the owned aggregate parent.
+        const itemPosted = await request(root + '/sobjects/RebateMemberAggregateItem', 'POST',
+          { TransactionJournalId: journal.id, RebateMemberProductAggregateId: aggregate.id,
+            TransactionQuantity: 2, TransactionAmount: 100 });
+        if (!itemPosted.ok || !id(itemPosted.body?.id)) return itemPosted;
+        const itemId = itemPosted.body.id as string;
+        capture('RebateMemberAggregateItem', itemId);
+        const itemRead = await request(root + '/sobjects/RebateMemberAggregateItem/' + itemId);
+        if (!itemRead.ok || !record(itemRead.body) || itemRead.body.RebateMemberProductAggregateId !== aggregate.id ||
+          itemRead.body.TransactionJournalId !== journal.id) {
+          return fail('COMMERCE_FIXTURE_UNVERIFIED', 'Actual owned RebateMemberAggregateItem readback failed.');
+        }
+        scopes.push({ objectName: 'RebateMemberAggregateItem',
+          equals: { RebateMemberProductAggregateId: aggregate.id },
+          ownedParents: [{ field: 'RebateMemberProductAggregateId', objectName: 'RebateMemberProductAggregate' }] });
+        ownedIds.fixtures!.RebateMemberProductAggregate = aggregate.id;
+        ownedIds.live!.RebateMemberProductAggregate = aggregate.id;
+      }
       if (/csv/i.test(action)) {
         const described = await request(root + '/sobjects/ProgramRebateType/describe');
         const fields = targetFieldsOf(described.ok ? described.body : null)
@@ -1191,17 +2118,51 @@ async function runRebateLifecycle(input: CommerceExecutorInput): Promise<Commerc
       }
       const mapped = mapCommerceArguments(inputs, ownedIds);
       if ('failure' in mapped) return fail('COMMERCE_INPUT_UNAVAILABLE', mapped.failure);
+      // Calculation actions resolve the member through the named aggregate
+      // field; without it the engine faults asking for a member or account.
+      if (ownedIds.fixtures!.RebateMemberProductAggregate && !mapped.args.PayoutMemberFieldName &&
+        inputs.some((entry) => entry.name === 'PayoutMemberFieldName')) {
+        mapped.args.PayoutMemberFieldName = 'RebateProgramMemberId';
+      }
       const invoked = await request(route, 'POST', { inputs: [mapped.args] });
       if (invoked.ok && (invoked.body === null || Array.isArray(invoked.body) && invoked.body.length === 0)) {
         return fail('COMMERCE_ACTION_OUTCOME_MISSING', 'Salesforce returned no native outcome; no mutation is counted as successful.');
       }
-      if (!nativeAccepted(invoked)) return invoked;
+      if (!nativeAccepted(invoked)) {
+        // Under the Custom fallback the engine carries no formula, so
+        // calculate actions fault opaquely: name the missing calc
+        // infrastructure instead of surfacing a content-free fault.
+        const opaque = scope.usedCustomFallback && !invoked.ok && Array.isArray(invoked.body) &&
+          invoked.body.some((entry) => record(entry) && Array.isArray(entry.errors) && entry.errors.some((item) =>
+            record(item) && item.statusCode === 'UNKNOWN_EXCEPTION' && typeof item.message === 'string' &&
+            /something went wrong/i.test(item.message)));
+        if (opaque) {
+          return fail('COMMERCE_CALC_DEFINITION_UNAVAILABLE',
+            'The calculation needs a Rebates-type engine definition and the org holds none (the Custom fallback carries no formula).',
+            { setupRequirement: 'A Rebates-type BatchCalcJobDefinition row for the rebate calculation.', upstreamOutcome: invoked.body });
+        }
+        return invoked;
+      }
       if (/upsert|payout/i.test(action)) {
         const payoutIds = outputIdentities(invoked.body, /(payout|rebate).{0,8}ids?$/i);
-        if (payoutIds[0]) {
-          const reread = await request(root + '/sobjects/CustomRebatePayout/' + payoutIds[0]).catch(() => null);
-          if (reread?.ok) capture('CustomRebatePayout', payoutIds[0]);
-          extra = { payoutIds: payoutIds.slice(0, 5) };
+        for (const payoutId of payoutIds.slice(0, 5)) {
+          const memberPayout = await request(root + '/sobjects/RebateProgramMemberPayout/' + payoutId).catch(() => null);
+          if (memberPayout?.ok) { capture('RebateProgramMemberPayout', payoutId); continue; }
+          const legacy = await request(root + '/sobjects/CustomRebatePayout/' + payoutId).catch(() => null);
+          if (legacy?.ok) capture('CustomRebatePayout', payoutId);
+        }
+        if (payoutIds.length) extra = { payoutIds: payoutIds.slice(0, 5) };
+        // Fallback: the native names the payout from our marker, so sweep
+        // member payouts by the marker uuid when outputs carry no identity.
+        if (!owned.some((entry) => entry.objectName === 'RebateProgramMemberPayout' || entry.objectName === 'CustomRebatePayout')) {
+          const uuid = marker.split(' ').at(-1) ?? '';
+          if (/^[0-9a-f-]{8,}$/i.test(uuid)) {
+            const swept = await request(root + '/query?q=' + encodeURIComponent(
+              `SELECT Id FROM RebateProgramMemberPayout WHERE Name LIKE '%${uuid}%' LIMIT 5`)).catch(() => null);
+            const rows = swept?.ok && record(swept.body) && Array.isArray(swept.body.records)
+              ? swept.body.records.filter(record) : [];
+            for (const row of rows) if (id(row.Id)) capture('RebateProgramMemberPayout', row.Id as string);
+          }
         }
       }
       const reread = await request(root + '/sobjects/ProgramRebateType/' + scope.typeId);
@@ -1213,13 +2174,13 @@ async function runRebateLifecycle(input: CommerceExecutorInput): Promise<Commerc
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned rebate lifecycle could not be verified.'); }
   finally {
-    for (const entry of owned.filter((row) => row.objectName === 'CustomRebatePayout')) {
-      const gone = await request(root + '/sobjects/CustomRebatePayout/' + entry.id, 'DELETE').catch(() => null);
-      if (!gone?.ok) cleanupError ??= `CustomRebatePayout ${entry.id} could not be removed; platform natives may refuse deletion.`;
+    for (const entry of owned.filter((row) => row.objectName === 'CustomRebatePayout' || row.objectName === 'RebateProgramMemberPayout')) {
+      const gone = await request(root + '/sobjects/' + entry.objectName + '/' + entry.id, 'DELETE').catch(() => null);
+      if (!gone?.ok) cleanupError ??= `${entry.objectName} ${entry.id} could not be removed; platform natives may refuse deletion.`;
     }
     cleanupError ??= await cleanupCommerceFixtures({
-      request, root, marker, owned: owned.filter((row) => row.objectName !== 'CustomRebatePayout'),
-      order: ['ProgramRebateType'], scopes,
+      request, root, marker, owned: owned.filter((row) => row.objectName !== 'CustomRebatePayout' && row.objectName !== 'RebateProgramMemberPayout'),
+      order: ['RebateMemberAggregateItem', 'RebateMemberProductAggregate', 'TransactionJournal', 'ProgramRebateType', 'RebateProgramMember', 'RebateProgramPayoutPeriod', 'RebateProgram', 'Account'], scopes,
     });
   }
   return done(outcome, { verified: cleanupError ? false : verified, marker, ownedRecords: owned,
@@ -1255,37 +2216,64 @@ async function runBatchLifecycle(input: CommerceExecutorInput): Promise<Commerce
   try {
     outcome = await (async (): Promise<Result> => {
       const scope = await provisionRebateScope({ request, build, root, marker, capture });
-      if ('failure' in scope) return scope.failure;
+      if ('failure' in scope) {
+        if (scope.program) batchScopes.push(markerScope('RebateProgram', scope.program.markerField, scope.program.storedMarker));
+        return scope.failure;
+      }
       batchScopes.push(markerScope('ProgramRebateType', scope.markerField, scope.storedMarker));
-      const mapped = mapCommerceArguments(inputs, { fixtures: { ProgramRebateType: scope.typeId }, live: { ProgramRebateType: scope.typeId } });
+      if (scope.program) batchScopes.push(markerScope('RebateProgram', scope.program.markerField, scope.program.storedMarker));
+      const fixtures: Record<string, string> = { ProgramRebateType: scope.typeId };
+      if (inputs.some((entry) => /^calcdefinitionids?$/i.test(entry.name ?? ''))) {
+        // The definition must be a rebate calculation: inventory/search
+        // definitions run and fail validation. Match rebate vocabulary on
+        // live labels; refuse honestly when the org holds no rebate def.
+        const defs = await request(root + '/query?q=' + encodeURIComponent(
+          'SELECT Id, DeveloperName, MasterLabel, ProcessType FROM BatchCalcJobDefinition LIMIT 10')).catch(() => null);
+        const rows = defs?.ok && record(defs.body) && Array.isArray(defs.body.records)
+          ? defs.body.records.filter(record) : [];
+        const def = rows.find((row) => id(row.Id) &&
+          /rebate/i.test(`${row.DeveloperName ?? ''} ${row.MasterLabel ?? ''} ${row.ProcessType ?? ''}`));
+        if (!def) {
+          return fail('COMMERCE_CALC_DEFINITION_UNAVAILABLE',
+            'The job needs a live rebate batch calculation definition and the org holds none.',
+            { setupRequirement: 'A Rebates-type BatchCalcJobDefinition row for the rebate calculation.' });
+        }
+        fixtures.BatchCalcJobDefinition = def.Id as string;
+      }
+      const mapped = mapCommerceArguments(inputs, { fixtures, live: { ProgramRebateType: scope.typeId } });
       if ('failure' in mapped) return fail('COMMERCE_INPUT_UNAVAILABLE', mapped.failure);
       const invoked = await request(route, 'POST', { inputs: [mapped.args] });
       if (!nativeAccepted(invoked)) return invoked;
       const jobIds = outputIdentities(invoked.body, /(job|batch|async).{0,8}ids?$/i);
       if (!jobIds[0]) return fail('COMMERCE_JOB_UNVERIFIED', 'Native acceptance carried no job identity.', { upstreamOutcome: invoked.body });
       let status = '';
+      let errorDescription: unknown = null;
       for (let attempt = 0; attempt < 4; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, Math.min(1500, (input.verificationWindowMs ?? 6000) / 4)));
         try {
+          // Calculation runs surface as BatchJob rows (Status/ErrorDescription),
+          // not AsyncApexJob rows.
           const job = await request(root + '/query?q=' + encodeURIComponent(
-            `SELECT Status, NumberOfErrors FROM AsyncApexJob WHERE Id='${jobIds[0]}' LIMIT 1`));
+            `SELECT Status, ErrorDescription FROM BatchJob WHERE Id='${jobIds[0]}' LIMIT 1`));
           const row = record(job.body) && Array.isArray(job.body.records) ? job.body.records.filter(record)[0] : undefined;
           status = row && typeof row.Status === 'string' ? row.Status : '';
+          errorDescription = row?.ErrorDescription ?? null;
           if (['Completed', 'Failed', 'Aborted'].includes(status)) {
-            extra = { jobId: jobIds[0], jobStatus: status, jobErrors: row?.NumberOfErrors ?? null };
+            extra = { jobId: jobIds[0], jobStatus: status, jobErrors: errorDescription };
             break;
           }
         } catch { /* poll again until the bound */ }
       }
       if (status !== 'Completed') {
-        return fail('COMMERCE_JOB_UNVERIFIED', `The batch job did not reach Completed (state: ${status || 'unknown'}).`, { upstreamOutcome: invoked.body });
+        return fail('COMMERCE_JOB_UNVERIFIED', `The batch job did not reach Completed (state: ${status || 'unknown'}).`,
+          { upstreamOutcome: invoked.body, ...(status === 'Failed' && typeof errorDescription === 'string' ? { nativeError: errorDescription.slice(0, 500) } : {}) });
       }
       verified = true;
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned batch lifecycle could not be verified.'); }
   finally {
-    cleanupError = await cleanupCommerceFixtures({ request, root, marker, owned, order: ['ProgramRebateType'], scopes: batchScopes });
+    cleanupError = await cleanupCommerceFixtures({ request, root, marker, owned, order: ['ProgramRebateType', 'RebateProgram'], scopes: batchScopes });
   }
   return done(outcome, { verified: cleanupError ? false : verified, marker, ownedRecords: owned,
     verificationRecordIds: owned.map((entry) => entry.id).slice(0, 5), ...extra, ...(cleanupError ? { cleanupError } : {}) });
@@ -1366,7 +2354,7 @@ export type CommerceLifecycleRequest = {
 export async function invokeCommerceLifecycleWithContext(input: CommerceLifecycleRequest): Promise<CommerceOutcome> {
   const action = commerceLifecycleActionName(input.route);
   if (!action || !input.root.startsWith('/services/data/') || !input.route.startsWith(`${input.root}/actions/`)) {
-    return { status: 422, body: { errorCode: 'COMMERCE_ROUTE_INVALID', message: 'A discovered standard commerce action route is required.' } };
+    return { status: 422, body: { errorCode: 'COMMERCE_ROUTE_INVALID', message: 'A discovered standard or cart-draft apex commerce action route is required.' } };
   }
   const kind = commerceLifecycleKind(action);
   if (kind === 'payment-auth') {

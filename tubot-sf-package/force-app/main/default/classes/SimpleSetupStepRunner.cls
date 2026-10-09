@@ -84,28 +84,16 @@ public with sharing class SimpleSetupStepRunner {
         }
     }
 
-    // Step 3: confirm the packaged execution client is installed and the
-    // subscriber pre-authorization exists (SOQL). When the pre-auth setup is
-    // missing, stop with the exact policies CLI command; the UI waits and
-    // resumes automatically once the command lands.
+    // DML preparation must finish before the separate OAuth initiate callout.
     public static Map<String, Object> runEcaStep(Map<String, Object> input) {
         if (!SimpleSetupEcaStep.ecaExists()) {
             return SimpleSetupInput.failed('The packaged execution client is missing. Reinstall or upgrade the TuBot package, then re-run Simple Setup.');
         }
-        if (!SimpleSetupEcaStep.preAuthExists()) {
-            return new Map<String, Object>{
-                'status' => 'action-required',
-                'message' => 'Subscriber pre-authorization is not configured yet. '
-                    + 'Run the policies command below (it uses your own authenticated session). '
-                    + 'Setup continues automatically once detected.',
-                'eca' => SimpleSetupEcaStep.getPoliciesGuidance()
-            };
+        Map<String, Object> user = SimpleSetupInput.requireUser(input);
+        if (user == null || String.isBlank(SimpleSetupInput.stringValue(user.get('id')))) {
+            return SimpleSetupInput.failed('Select an integration user before preparing pre-authorization.');
         }
-        return new Map<String, Object>{
-            'status' => 'done',
-            'message' => 'Packaged execution client installed and pre-authorized.',
-            'ecaExists' => true
-        };
+        return SimpleSetupEcaStep.prepare((Id) SimpleSetupInput.stringValue(user.get('id')));
     }
 
     // Step 4a: prepare the local channel record (DML). Runs in its own

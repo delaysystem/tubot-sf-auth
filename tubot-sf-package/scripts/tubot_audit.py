@@ -189,7 +189,7 @@ def collect_licenses(org: Dict[str, str]) -> List[Dict[str, str]]:
 
 def collect_permsets(org: Dict[str, str], user_id: str) -> List[Dict[str, str]]:
     checks: List[Dict[str, str]] = []
-    bases = ["Tubot_Salesforce_API_Read", "Panel_Settings_Admin_Access", "Tubot_Channel_Connection_Admin_Access"]
+    bases = ["Tubot_Salesforce_API_Read", "Panel_Settings_Admin_Access"]
     conds = " OR ".join([f"Name = '{b}' OR Name LIKE '%__{b}'" for b in bases])
     ok, rows = probe(org, f"SELECT Id, Name, NamespacePrefix FROM PermissionSet WHERE {conds}")
     found = {(r.get("Name") or "").split("__")[-1]: r for r in (rows if ok else [])}

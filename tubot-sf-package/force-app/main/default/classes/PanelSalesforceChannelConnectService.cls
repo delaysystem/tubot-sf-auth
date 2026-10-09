@@ -1,9 +1,6 @@
-/** Registers a prepared Salesforce API channel with Panel. No ECA secrets
- * are handled here: Panel mints OAuth tokens with the packaged universal
- * execution client (TuBot Channel API) whose secret lives only in Panel.
- * Panel verifies the org's Run As user during registration and rejects
- * mismatches, so a channel can only connect when the subscriber admin has
- * assigned the matching Run As user on the packaged app.
+/** Registers a prepared Salesforce API channel with Panel. Panel uses the
+ * packaged JWT execution client and verifies the pre-authorized user's
+ * org and identity before storing the channel. No ECA secrets cross Apex.
  */
 public with sharing class PanelSalesforceChannelConnectService {
     private class ConnectionContext {
@@ -98,10 +95,14 @@ public with sharing class PanelSalesforceChannelConnectService {
     }
 
     private static void registerConnection(ConnectionContext context) {
+        User integrationUser = [SELECT Username FROM User WHERE Id = :context.userId WITH USER_MODE LIMIT 1];
+        Organization org = [SELECT IsSandbox FROM Organization WITH USER_MODE LIMIT 1];
         Map<String, Object> payload = new Map<String, Object>{
             'orgId' => UserInfo.getOrganizationId(), 'channelId' => context.channelIdText,
             'instanceUrl' => URL.getOrgDomainUrl().toExternalForm(),
-            'integrationUserId' => context.userIdText
+            'integrationUserId' => context.userIdText,
+            'integrationUsername' => integrationUser.Username,
+            'isSandbox' => org.IsSandbox
         };
         HttpResponse response = PanelAuthSupportService.executePanelCallout(
             '/api/v1/salesforce/channels', 'POST', JSON.serialize(payload)

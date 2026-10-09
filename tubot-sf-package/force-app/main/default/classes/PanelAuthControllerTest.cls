@@ -15,8 +15,12 @@ private class PanelAuthControllerTest {
         private HTTPResponse oauthResponse(String endpoint) {
             if (endpoint.contains('/api/oauth/token')) {
                 return response(200, '{"access_token":"mock_pnl_at_12345","token_type":"Bearer",' +
-                    '"expires_in":2592000,"refresh_token":"mock_pnl_rt_12345",' +
+                    '"expires_in":900,"refresh_token":"mock_pnl_rt_12345",' +
                     '"team_id":"team_mock_tenant","user_id":"usr_mock_123"}');
+            }
+            if (endpoint.contains('/api/oauth/userinfo')) {
+                return response(200, '{"sub":"usr_mock_123","email":"john@example.com",' +
+                    '"team_id":"team_mock_tenant","team_name":"Acme Multi-Tenant Corp"}');
             }
             return response(200, '{"success":true,"code":"pnl_code_mock_poll_123"}');
         }
@@ -177,6 +181,24 @@ private class PanelAuthControllerTest {
     }
 
     @isTest
+    static void testReadOnlySettingsPathsUseCurrentOrgState() {
+        Boolean livePermission = PanelAuthSupportService.checkManageTubotPermission();
+        System.assertEquals(livePermission, PanelAuthController.hasPanelSettingsAccess());
+
+        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
+        String currentEnvironment = PanelEnvironmentResolver.selectedKey(config);
+        Map<String, Object> status = PanelAuthController.setPanelEnvironment(currentEnvironment);
+        System.assertEquals(currentEnvironment, status.get('panelEnvironment'));
+
+        if (config.Panel_Token_Expires_At__c == null ||
+            config.Panel_Token_Expires_At__c > System.now().addMinutes(2)) {
+            Datetime previousExpiry = config.Panel_Token_Expires_At__c;
+            PanelAuthController.ensurePanelSession(false);
+            System.assertEquals(previousExpiry, MCP_Config__c.getOrgDefaults().Panel_Token_Expires_At__c);
+        }
+    }
+
+    @isTest
     static void testIncompleteProfileIsNotReportedConnected() {
         PanelAuthSupportService.managePermissionTestOverride = true;
         MCP_Config__c config = MCP_Config__c.getOrgDefaults();
@@ -195,13 +217,13 @@ private class PanelAuthControllerTest {
 
     @isTest
     static void testCheckUserCanEditSettings() {
-        System.assertEquals(true, PanelAuthController.checkUserCanEditSettings('owner', null));
-        System.assertEquals(true, PanelAuthController.checkUserCanEditSettings('admin', null));
-        System.assertEquals(true, PanelAuthController.checkUserCanEditSettings('edit-salesforce-settings', null));
-        System.assertEquals(true, PanelAuthController.checkUserCanEditSettings('coworker', 'access_dashboard,edit_salesforce_settings'));
-        System.assertEquals(false, PanelAuthController.checkUserCanEditSettings('coworker', 'not_edit_salesforce_settings'));
-        System.assertEquals(false, PanelAuthController.checkUserCanEditSettings('coworker', 'access_dashboard,send_messages'));
-        System.assertEquals(false, PanelAuthController.checkUserCanEditSettings('guest', 'access_dashboard'));
+        // This test user has the package permission set from @testSetup. Role claims do not grant it.
+        System.assertEquals(true, PanelAuthController.checkUserCanEditSettings('guest', null));
+        System.assertEquals(true, PanelAuthController.checkUserCanEditSettings('coworker', 'not_edit_salesforce_settings'));
+        PanelAuthSupportService.managePermissionTestOverride = false;
+        System.assertEquals(false, PanelAuthController.checkUserCanEditSettings('owner', null));
+        System.assertEquals(false, PanelAuthController.checkUserCanEditSettings('admin', null));
+        System.assertEquals(false, PanelAuthController.checkUserCanEditSettings('owner', 'access_dashboard,edit_salesforce_settings'));
     }
 
     @isTest
@@ -226,28 +248,11 @@ private class PanelAuthControllerTest {
         System.assertNotEquals(null, res);
         System.assertEquals(true, res.get('isConnected'));
         System.assertEquals('john@example.com', res.get('userEmail'));
-        System.assertEquals('edit-salesforce-settings', res.get('userRole'));
+        System.assertEquals(null, res.get('userRole'), 'Panel role claims are not stored as Salesforce authorization.');
         MCP_Config__c stored = MCP_Config__c.getOrgDefaults();
         System.assertEquals('john@example.com', stored.Panel_User_Email__c, 'Connection profile must persist without token fields.');
-    }
-
-    @isTest
-    static void testFetchSubscriptionAndTeamMembers() {
-        PanelAuthSupportService.managePermissionTestOverride = true;
-        User admin = [SELECT Id FROM User WHERE Id = :UserInfo.getUserId()];
-        Test.setMock(HttpCalloutMock.class, new PanelHttpMock());
-
-        Map<String, Object> subData;
-        Map<String, Object> memData;
-        System.runAs(admin) {
-        Test.startTest();
-        subData = PanelAccountController.fetchPanelSubscriptionData();
-        memData = PanelAccountController.fetchPanelTeamMembers();
-        Test.stopTest();
-        }
-
-        System.assertNotEquals(null, subData);
-        System.assertNotEquals(null, memData);
+        System.assertEquals(null, stored.Panel_User_Role__c, 'OAuth exchange must clear any stale role claim.');
+        System.assertEquals(null, stored.Panel_Permissions__c, 'OAuth exchange must clear any stale permission claims.');
     }
 
     @isTest
@@ -288,38 +293,14 @@ private class PanelAuthControllerTest {
     }
 
     @isTest
-    static void testTubotSettingsEndpoints() {
-        PanelAuthSupportService.managePermissionTestOverride = false;
-        Integer rejected = 0;
-        try { MessagingConfigurationController.getTubotSettings(); }
-        catch (AuraHandledException expected) { rejected++; }
-        try { MessagingConfigurationController.saveTubotSettings('{}'); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(2, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testActivateOmniChannelSettingsEndpoints() {
-        PanelAuthSupportService.managePermissionTestOverride = false;
-        Integer rejected = 0;
-        try { MessagingConfigurationController.activateOmniChannelSkillsAndCapacitySettings(); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testMessagingChannelOmniFlowEndpoints() {
+    static void testMessagingChannelDiscovery() {
         PanelAuthSupportService.managePermissionTestOverride = true;
         User admin = [SELECT Id FROM User WHERE Id = :UserInfo.getUserId()];
-        Integer rejected = 0;
         List<Map<String, Object>> channels;
         System.runAs(admin) {
             channels = MessagingConfigurationController.getMessagingChannels();
         }
-        try { MessagingConfigurationController.setChannelOmniFlow(null); }
-        catch (AuraHandledException expected) { rejected++; }
         System.assertNotEquals(null, channels, 'Authorized settings users must be able to read messaging channels.');
-        System.assertEquals(1, rejected, 'Only the disabled Omni-Flow mutation must reject execution.');
     }
 
     @isTest
@@ -356,14 +337,4 @@ private class PanelAuthControllerTest {
         PanelAuthSupportService.requireSettingsAdmin();
     }
 
-    @isTest
-    static void testT2SubflowConfigAndActivation() {
-        PanelAuthSupportService.managePermissionTestOverride = false;
-        Integer rejected = 0;
-        try { MessagingConfigurationController.getT2SubflowConfig(null); }
-        catch (AuraHandledException expected) { rejected++; }
-        try { MessagingConfigurationController.updateT2SubflowAndActivate('exampleSubflow', null); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(2, rejected, 'Disabled package entry points must reject execution.');
-    }
 }

@@ -20,21 +20,21 @@
  *   --namespace tubot (auto-detected when omitted) to rewrite those refs.
  * - Uses real `sf` CLI auth; no mocks, no synthetic backends.
  */
-import { $ } from "bun";
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = dirname(import.meta.dir); // tubot-sf-auth/
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = dirname(HERE); // tubot-sf-auth/
 const ARCHIVE = join(ROOT, "tubot-sf-package/archive/pre-appexchange-cleanup");
-const STAGING = join(import.meta.dir, "restored-flows");
+const STAGING = join(HERE, "restored-flows");
 
 const FLOWS = ["t2", "t100", "defaultFlowTuBot", "OmniMessagingRoutingFlow"];
 const SKILL = "TuBot_On_Hold_DO_NOT_EDIT";
@@ -67,8 +67,7 @@ function flagValue(name: string): string | null {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : null;
 }
-const targetOrg = flagValue("--target-org");
-if (!targetOrg) usage();
+const targetOrg: string = flagValue("--target-org") ?? usage();
 const checkOnly = args.includes("--check-only");
 const verifyOnly = args.includes("--verify-only");
 const withDeps = args.includes("--with-routing-deps");
@@ -87,17 +86,8 @@ function stage(subdir: string, names: string[], ext: string) {
 }
 
 async function runSf(cmdArgs: string[]) {
-  const proc = Bun.spawn(["sf", ...cmdArgs], {
-    cwd: STAGING,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { out, err, code };
+  const done = spawnSync("sf", cmdArgs, { cwd: STAGING, encoding: "utf8" });
+  return { out: done.stdout ?? "", err: done.stderr ?? "", code: done.status ?? 1 };
 }
 
 async function deploy() {

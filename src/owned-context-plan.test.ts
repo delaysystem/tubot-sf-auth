@@ -33,13 +33,32 @@ test('arbitrary required reference overrides cannot borrow existing tenant recor
 });
 
 test('polymorphic references require an explicit live valid target', async () => {
-  const schemas = [schema('ServiceAppointment', [reference('ParentRecordId', ['Account', 'WorkOrder'])]), schema('WorkOrder')];
-  expect(await planOwnedContext({ roots: ['ServiceAppointment'], describe: describe(schemas) })).toMatchObject({
-    ok: false, issue: { code: 'OWNED_CONTEXT_REFERENCE_AMBIGUOUS', field: 'ParentRecordId', targets: ['Account', 'WorkOrder'] },
+  const schemas = [schema('Child', [reference('ParentId', ['Account', 'WorkOrder'])]), schema('WorkOrder')];
+  expect(await planOwnedContext({ roots: ['Child'], describe: describe(schemas) })).toMatchObject({
+    ok: false, issue: { code: 'OWNED_CONTEXT_REFERENCE_AMBIGUOUS', field: 'ParentId', targets: ['Account', 'WorkOrder'] },
   });
-  const result = await planOwnedContext({ roots: ['ServiceAppointment'], referenceTargets: { 'ServiceAppointment.ParentRecordId': 'WorkOrder' }, describe: describe(schemas) });
+  const result = await planOwnedContext({ roots: ['Child'], referenceTargets: { 'Child.ParentId': 'WorkOrder' }, describe: describe(schemas) });
   expect(result.ok).toBe(true);
-  expect(await planOwnedContext({ roots: ['ServiceAppointment'], referenceTargets: { 'ServiceAppointment.ParentRecordId': 'Contact' }, describe: describe(schemas) })).toMatchObject({ ok: false });
+  expect(await planOwnedContext({ roots: ['Child'], referenceTargets: { 'Child.ParentId': 'Contact' }, describe: describe(schemas) })).toMatchObject({ ok: false });
+});
+
+test('FSL trigger forces a nillable SA parent onto an owned WorkOrder', async () => {
+  const nillableParent = (referenceTo: string[]): ContextField =>
+    ({ name: 'ParentRecordId', referenceTo, type: 'reference', nillable: true, createable: true });
+  const schemas = [schema('ServiceAppointment', [nillableParent(['Account', 'WorkOrder'])]), schema('WorkOrder')];
+  const forced = await planOwnedContext({ roots: ['ServiceAppointment'], describe: describe(schemas) });
+  expect(forced.ok).toBe(true);
+  if (!forced.ok) return;
+  expect(forced.nodes.map(node => node.objectName)).toEqual(['WorkOrder', 'ServiceAppointment']);
+  expect(forced.nodes[1].references).toEqual([{ field: 'ParentRecordId', objectName: 'WorkOrder', source: 'owned' }]);
+  // An explicit invalid target still fails.
+  expect(await planOwnedContext({ roots: ['ServiceAppointment'],
+    referenceTargets: { 'ServiceAppointment.ParentRecordId': 'Contact' }, describe: describe(schemas) }))
+    .toMatchObject({ ok: false });
+  // No WorkOrder target offered: the force does not apply, planning proceeds.
+  const skipped = await planOwnedContext({ roots: ['ServiceAppointment'],
+    describe: describe([schema('ServiceAppointment', [nillableParent(['Account'])]), schema('Account')]) });
+  expect(skipped.ok).toBe(true);
 });
 
 test('cyclic dependencies and missing cleanup access fail before any write', async () => {

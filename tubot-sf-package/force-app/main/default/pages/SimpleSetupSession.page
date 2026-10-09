@@ -1,0 +1,4 @@
+<apex:page showHeader="false" sidebar="false" standardStylesheets="false">
+    <h1>This setup page has been retired</h1>
+    <p>Open Panel Settings and use Simple Setup to configure your connection.</p>
+</apex:page>

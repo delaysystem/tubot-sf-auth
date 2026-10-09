@@ -1,3 +1,9 @@
+import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
+import { provisionCommerceFixtureAccess } from "./commerce-fixture-access";
+import { deleteOwnedOrderSummary } from "./delete-owned-order-summary";
+import { provisionOwnedOrderAccess } from "./owned-order-access";
+import { flowReadFields, provisionFlowReadFields } from "./flow-read-field-grants";
+import { isQueryOnlyFlowMetadata } from "./flow-read-metadata";
 import { buildJwtAssertion, JWT_BEARER_GRANT_TYPE, TUBOT_CHANNEL_API_CLIENT_ID } from "./jwt";
 import { extractTrailingResponseDocuments, parseSalesforceResponseJson } from './salesforce-response-json';
 import { isCompoundParent, isNameMarkerField } from "./describe-marker-field";
@@ -39,8 +45,8 @@ import { isTriggerNullInsertFault, planTriggerNullEnrichment } from "./trigger-n
 import { selectAlternativeMarkerField, type TargetField } from "./skipped-standards-context";
 import { flowCreationRecipes } from "./flow-creation-context";
 import { invokeFlowScalarCreationContract } from "./flow-scalar-creation-contract";
-import { flowLookupBindings, flowFixtureValue } from "./action-flow-context";
-import { PRODUCER_REQUIRED_OUTPUTS, personIdentityCompletion, verificationProducerInput } from "./flow-producer-context";
+import { flowLookupBindings, flowFixtureValue, lookupIdBindings, commaStructuredProbeValue } from "./action-flow-context";
+import { PRODUCER_REQUIRED_OUTPUTS, eventSlotCompletion, personIdentityCompletion, verificationProducerInput } from "./flow-producer-context";
 import { sweepFlowCommunicationResidue, type ResidueSweep } from "./flow-residue-sweep";
 import { flowOutputFailureSnippet, invokeFlowContactChain } from "./flow-fallback-contact-chain";
 import { invokeOwnedSubstrate, isReadOnlyEvident, type OwnedSubstratePlan } from "./flow-owned-substrate-chain";
@@ -48,6 +54,7 @@ import { runFlowFaultRepairConsumer } from "./flow-fault-repair-consumer";
 import { type ManagedFlowFault } from "./managed-flow-faults";
 import { FLOW_LIVE_SOBJECT_SPECS, invokeFlowLiveSObject } from "./flow-live-sobject-context";
 import { guerrillaInbox, invokeFlowVerificationCodeChain, mailslurpInbox } from "./flow-verification-code-chain";
+import { invokeFlowVerifyLinkedChain } from "./flow-verify-linked-chain";
 
 /** Disposable verification inbox: MailSlurp when its key is configured, else Guerrilla. */
 function verificationInbox(env: AuthEnv) {
@@ -62,6 +69,8 @@ import { invokeNotificationFlowWithContext, notificationFlowActionName } from ".
 import { invokeEmailAlertWithContext, emailAlertRouteParts } from "./email-alert-owned-context";
 import { apexRelayActionName, invokeApexRelayWithContext } from "./apex-relay-context";
 import { apexExecActionName, invokeApexExecWithContext } from "./apex-exec-context";
+import { APEX_SOBJECT_RECORD_SPECS, invokeApexSObjectRecord } from "./apex-sobject-record-context";
+import { ASSET_REPLACE_SPECS, invokeAssetReplace } from "./asset-replace-context";
 import { decisionTableActionName, invokeDecisionTableWithContext } from "./decision-table-context";
 import { apexCsvActionName, invokeApexCsvWithContext } from "./apex-csv-context";
 import { apexOverlapActionName, invokeApexOverlapWithContext } from "./apex-overlap-context";
@@ -69,10 +78,9 @@ import { ORDER_SUMMARY_ACTIONS, invokeOrderSummaryPreviewWithContext } from "./o
 import { researchActionName, invokeResearchWithOwnedContext } from "./research-lifecycle-context";
 import { invokeSkippedStandardWithOwnedContext, skippedStandardFamilySlug, skippedStandardRouteInfo } from "./skipped-standard-lifecycle";
 import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
-import { commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
+import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
 import { readBodyBounded, readJsonBounded, requestScope, requireScope, scopedTags, SecurityError } from "./request-security";
 import { getAgentScripts, getCallableToolUrlsForChannel, findCredentialByChannelId, type Credential } from "./agent-script";
-import { fetchBridgeCredential, fetchBridgeTenants } from "./tenant-bridge";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
 import {
   UserDataCacheStore,
@@ -92,18 +100,20 @@ import {
 export * from "./agent-script";
 export * from "./cache-helper";
 
+const PANEL_INTERNAL_SECRET_HEADER = "x-panel-internal-secret";
+
 /** Private service-binding API for channel-scoped Salesforce operations. */
 export interface AuthEnv {
   DB: D1Database;
   /** Base64-encoded 32-byte AES-GCM key, configured as a Worker secret. */
   SF_CREDENTIAL_ENCRYPTION_KEY: string;
-  /** Shared only with Panel to authenticate service-binding self-OAuth calls. */
-  SELF_OAUTH_INTERNAL_HMAC_KEY?: string;
+  /** Same 32-byte key used by panel to encrypt Salesforce channel secrets in D1. */
+  CHANNEL_ENCRYPTION_KEY?: string;
+  /** Dedicated New Panel service key; the retired Panel key is never accepted. */
+  SELF_OAUTH_NEW_PANEL_HMAC_KEY?: string;
   /** MailSlurp API key for disposable verification inboxes, configured as a Worker secret. Absent in tests. */
   MAILSLURP_API_KEY?: string;
-  /** Service binding to the new panel worker for the tenant bridge. Absent in tests. */
-  NEW_PANEL?: Fetcher;
-  /** Shared secret presented to the new panel bridge, configured as a Worker secret. Absent in tests. */
+  /** Shared secret used by the panel's internal Salesforce diagnostic call. */
   BRIDGE_SHARED_SECRET?: string;
   /** RSA private key (PKCS#8 PEM) for the packaged execution client's JWT bearer flow, configured as a Worker secret. Absent in tests. */
   TUBOT_JWT_PRIVATE_KEY?: string;
@@ -149,6 +159,7 @@ type SelfOAuthCredential = {
   updated_at: number;
 };
 type SelfAccessToken = { accessToken: string; expiresAt: number };
+type SelfOAuthGrant = { teamId: string; orgId: string; tokenId?: string | null };
 type ToolTarget = {
   type: string;
   name: string;
@@ -215,7 +226,7 @@ function validInstanceUrl(v: string): boolean {
     const u = new URL(v);
     return u.protocol === "https:" && !u.username && !u.password && !u.port &&
       u.pathname === "/" && !u.search && !u.hash &&
-      [".my.salesforce.com", ".salesforce.com", ".force.com"]
+      [".my.salesforce.com", ".salesforce.com", ".my.salesforce.mil", ".salesforce.mil", ".force.com"]
         .some(suffix => u.hostname.endsWith(suffix));
   } catch { return false; }
 }
@@ -239,12 +250,14 @@ function salesforceReturnUrl(instanceUrl: string): string {
   const apiUrl = new URL(instanceUrl);
   const hostname = apiUrl.hostname
     .replace(/\.my\.salesforce\.com$/i, ".lightning.force.com")
-    .replace(/\.my\.salesforce\.mil$/i, ".lightning.force.mil");
+    .replace(/\.my\.salesforce\.mil$/i, ".lightning.force.mil")
+    .replace(/\.salesforce\.com$/i, ".lightning.force.com")
+    .replace(/\.salesforce\.mil$/i, ".lightning.force.mil");
   if (hostname === apiUrl.hostname) {
     throw authFailure(400, "invalid_salesforce_domain", "The Salesforce My Domain URL could not be resolved for the authorization return.");
   }
   try {
-    return new URL("/lightning/n/Panel_Settings", `https://${hostname}`).toString();
+    return new URL("/lightning/n/tubot__Panel_Settings", `https://${hostname}`).toString();
   } catch {
     throw authFailure(400, "invalid_salesforce_domain", "The Salesforce My Domain URL could not be resolved for the authorization return.");
   }
@@ -344,7 +357,7 @@ async function activePanelGrant(
 }
 
 async function selfOAuthStart(env: AuthEnv, body: Record<string, unknown>): Promise<{ authorizationUrl: string }> {
-  const grant = await activePanelGrant(env, body);
+  const grant = await selfOAuthGrantOrNull(env, body);
   if (!grant || !validSalesforceUserId(body.salesforceUserId) || !str(body.clientId, 255) ||
       !str(body.instanceUrl, 512) || !validInstanceUrl(body.instanceUrl) ||
       !str(body.redirectUri, 2048) || !validSelfOAuthCallbackUrl(body.redirectUri)) {
@@ -365,7 +378,7 @@ async function selfOAuthStart(env: AuthEnv, body: Record<string, unknown>): Prom
      created_at, expires_at, consumed_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
     .bind(await hash(state), grant.teamId, grant.orgId, instanceUrl, body.clientId, body.redirectUri,
-      returnUrl, body.salesforceUserId, grant.tokenId, encryptedVerifier.cipher,
+      returnUrl, body.salesforceUserId, grant.tokenId ?? null, encryptedVerifier.cipher,
       encryptedVerifier.iv, now, now + SELF_OAUTH_PENDING_SECONDS).run();
 
   const authorizeUrl = new URL("/services/oauth2/authorize", instanceUrl);
@@ -416,6 +429,24 @@ function selfOAuthReturn(row: SelfOAuthPending, result: "connected" | "error", c
   return target.toString();
 }
 
+async function verifySelfSalesforceSettingsAccess(accessToken: string, instanceUrl: string, row: SelfOAuthPending): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(instanceUrl + "/services/apexrest/tubot/panel-settings-access/v1", {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      redirect: "manual",
+    });
+  } catch {
+    throw authFailure(503, "salesforce_settings_access_unavailable", "Salesforce settings permission could not be verified. Retry the connection.", true);
+  }
+  let access: unknown;
+  try { access = await response.json(); } catch { access = null; }
+  if (!response.ok || !object(access) || access.authorized !== true ||
+      !sameSalesforceId(access.organization_id, row.org_id) || !sameSalesforceId(access.user_id, row.salesforce_user_id)) {
+    throw authFailure(403, "salesforce_settings_access_denied", "Upgrade the TuBot package and connect as a user directly assigned Panel Settings Admin Access.");
+  }
+}
+
 async function completeSelfOAuth(env: AuthEnv, body: Record<string, unknown>): Promise<{ redirectUrl: string }> {
   if (!str(body.state, 256)) throw authFailure(400, "invalid_oauth_state", "The Salesforce authorization state is invalid or expired.");
   const stateHash = await hash(body.state);
@@ -451,7 +482,20 @@ async function completeSelfOAuth(env: AuthEnv, body: Record<string, unknown>): P
     }
     const identityInstance = typeof data.instance_url === "string" && validInstanceUrl(data.instance_url)
       ? new URL(data.instance_url).origin : pending.instance_url;
-    const instanceUrl = await verifySelfSalesforceIdentity(data.access_token, identityInstance, pending);
+    let instanceUrl: string;
+    try {
+      instanceUrl = await verifySelfSalesforceIdentity(data.access_token, identityInstance, pending);
+      await verifySelfSalesforceSettingsAccess(data.access_token, instanceUrl, pending);
+    } catch (error) {
+      // Denied grants must not remain usable in Salesforce after a failed connection.
+      try {
+        await fetch(identityInstance + "/services/oauth2/revoke", {
+          method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ token: data.refresh_token }), redirect: "manual",
+        });
+      } catch { /* The connection still fails closed; no credential is persisted. */ }
+      throw error;
+    }
     const refreshToken = await encrypt(env, data.refresh_token);
     const timestamp = Math.floor(Date.now() / 1000);
     await env.DB.prepare(`INSERT INTO salesforce_self_oauth_credential
@@ -472,11 +516,17 @@ async function completeSelfOAuth(env: AuthEnv, body: Record<string, unknown>): P
   }
 }
 
-async function selfOAuthStatus(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<{ connected: boolean }> {
-  const row = await env.DB.prepare(`SELECT team_id FROM salesforce_self_oauth_credential
+async function selfOAuthStatus(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<{
+  connected: boolean; orgId: string; salesforceUserId?: string; instanceUrl?: string;
+}> {
+  const row = await env.DB.prepare(`SELECT salesforce_user_id, instance_url FROM salesforce_self_oauth_credential
     WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
-    .first<{ team_id: string }>();
-  return { connected: !!row };
+    .first<{ salesforce_user_id: string; instance_url: string }>();
+  return {
+    connected: !!row,
+    orgId: grant.orgId,
+    ...(row ? { salesforceUserId: row.salesforce_user_id, instanceUrl: row.instance_url } : {}),
+  };
 }
 
 async function selfOAuthToken(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<{ accessToken: string; instanceUrl: string; expiresIn: number }> {
@@ -594,6 +644,60 @@ async function selfOAuthApiRequest(
   throw authFailure(503, "salesforce_request_unavailable", "Salesforce could not complete the API request. Retry it shortly.", true);
 }
 
+const SALESFORCE_BATCH_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
+const SALESFORCE_BATCH_RESOURCES = /^(?:limits(?:\?|$)|(?:query|queryAll)(?:\/[A-Za-z0-9_-]+)?(?:\?|$)|search\/\?|sobjects\/[A-Za-z][A-Za-z0-9_]*(?:\/[^?#]*)?(?:\?|$)|connect\/[^?#]+(?:\?|$)|chatter\/[^?#]+(?:\?|$)|actions\/(?:standard|custom)\/[^?#]+(?:\?|$))/;
+
+function validSelfOAuthBatchRequest(value: unknown, apiVersion: string): value is Record<string, unknown> & {
+  method: string; url: string; richInput?: unknown;
+} {
+  if (!object(value) || typeof value.method !== "string" || !SALESFORCE_BATCH_METHODS.has(value.method) ||
+      typeof value.url !== "string" || value.url.length > 8192 ||
+      /[\\#\u0000-\u001f\u007f]/.test(value.url) || value.url.startsWith("/") || value.url.includes("//")) return false;
+  const prefix = `v${apiVersion}/`;
+  if (!value.url.startsWith(prefix)) return false;
+  const remainder = value.url.slice(prefix.length);
+  const path = remainder.split("?", 1)[0];
+  if (!SALESFORCE_BATCH_RESOURCES.test(remainder)) return false;
+  for (const part of path.split("/")) {
+    let decoded: string;
+    try { decoded = decodeURIComponent(part); } catch { return false; }
+    if (decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\")) return false;
+  }
+  if (value.method === "GET") return value.richInput === undefined;
+  if (value.richInput === undefined) return value.method === "DELETE";
+  try {
+    const serialized = JSON.stringify(value.richInput);
+    return serialized !== undefined && serialized.length <= 64_000 &&
+      (object(value.richInput) || Array.isArray(value.richInput));
+  } catch { return false; }
+}
+
+async function selfOAuthApiBatch(
+  env: AuthEnv,
+  grant: SelfOAuthGrant,
+  body: Record<string, unknown>,
+  requestId: string,
+): Promise<Response> {
+  const apiVersion = typeof body.apiVersion === "string" ? body.apiVersion.replace(/^v/, "") : "";
+  const versionNumber = Number(apiVersion);
+  if (!/^\d{2,3}(?:\.\d{1,2})?$/.test(apiVersion) || !Number.isFinite(versionNumber) || versionNumber < 34 ||
+      !Array.isArray(body.batchRequests) || body.batchRequests.length < 1 || body.batchRequests.length > 25 ||
+      (body.haltOnError !== undefined && typeof body.haltOnError !== "boolean") ||
+      !body.batchRequests.every(item => validSelfOAuthBatchRequest(item, apiVersion))) {
+    throw authFailure(400, "invalid_salesforce_batch", "The Salesforce batch must contain 1 to 25 supported, org-relative API requests.");
+  }
+  const payload = {
+    batchRequests: body.batchRequests,
+    ...(typeof body.haltOnError === "boolean" ? { haltOnError: body.haltOnError } : {}),
+  };
+  return selfOAuthApiRequest(env, grant, {
+    method: "POST",
+    path: `/services/data/v${apiVersion}/composite/batch`,
+    requestBody: JSON.stringify(payload),
+    headers: { contentType: "application/json", accept: "application/json" },
+  }, requestId);
+}
+
 async function selfOAuthDisconnect(env: AuthEnv, grant: { teamId: string; orgId: string }): Promise<void> {
   const row = await env.DB.prepare(`SELECT * FROM salesforce_self_oauth_credential
     WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
@@ -611,13 +715,20 @@ async function selfOAuthDisconnect(env: AuthEnv, grant: { teamId: string; orgId:
     .bind(grant.teamId, grant.orgId).run();
 }
 
-async function selfOAuthGrantOrNull(env: AuthEnv, body: Record<string, unknown>) {
+async function selfOAuthGrantOrNull(env: AuthEnv, body: Record<string, unknown>): Promise<SelfOAuthGrant | null> {
+  // These routes are HMAC-verified before this function runs. Panel has already
+  // authenticated the caller and supplies the team scope; the Salesforce
+  // credential is always resolved using both teamId and orgId.
+  if (str(body.teamId, 128) && validSalesforceOrgId(body.orgId)) {
+    return { teamId: body.teamId, orgId: body.orgId };
+  }
   return activePanelGrant(env, body);
 }
 
 async function verifySignedSelfOAuthRequest(request: Request, env: AuthEnv, path: string): Promise<boolean> {
-  const secret = env.SELF_OAUTH_INTERNAL_HMAC_KEY;
-  if (!secret || secret.length < 32) {
+  const serviceSecrets = [env.SELF_OAUTH_NEW_PANEL_HMAC_KEY];
+  const secrets = serviceSecrets.filter((secret): secret is string => typeof secret === "string" && secret.length >= 32);
+  if (secrets.length === 0) {
     throw authFailure(503, "self_oauth_signing_not_configured", "Internal Salesforce authorization is not configured.");
   }
   const timestampHeader = request.headers.get("x-tubot-sf-auth-timestamp") || "";
@@ -627,15 +738,21 @@ async function verifySignedSelfOAuthRequest(request: Request, env: AuthEnv, path
   if (!/^\d{10}$/.test(timestampHeader) || !Number.isSafeInteger(timestamp) ||
       Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 60 ||
       !/^[A-Za-z0-9_-]{24}$/.test(nonce) || !/^[A-Za-z0-9_-]{43}$/.test(suppliedSignature)) return false;
-  const maxBytes = path === "/internal/self-oauth/request" ? 10_000_000 : 64_000;
+  const maxBytes = path === "/internal/self-oauth/request" ? 10_000_000 :
+    path === "/internal/self-oauth/batch" ? 512_000 : 64_000;
   const contentLength = Number(request.headers.get("Content-Length") || "0");
   if (contentLength > maxBytes) return false;
   const rawBody = await readBodyBounded(request.clone(), maxBytes);
   const bodyDigest = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)));
-  const canonical = `${timestampHeader}\n${nonce}\n${path}\n${bodyDigest}`;
-  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expectedSignature = b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(canonical))));
-  if (!equalHash(expectedSignature, suppliedSignature)) return false;
+  const target = new URL(request.url);
+  const canonical = `${request.method}\n${target.pathname}${target.search}\n${timestampHeader}\n${nonce}\n${bodyDigest}`;
+  let signatureValid = false;
+  for (const secret of secrets) {
+    const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const expectedSignature = b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(canonical))));
+    signatureValid = equalHash(expectedSignature, suppliedSignature) || signatureValid;
+  }
+  if (!signatureValid) return false;
 
   const now = Math.floor(Date.now() / 1000);
   const nonceHash = await hash(nonce);
@@ -651,15 +768,121 @@ async function credential(env: AuthEnv, k: Key): Promise<Credential | null> {
     "SELECT * FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
   ).bind(k.teamId, k.orgId, k.channelId).first<Credential>();
 }
+
+type PanelCredentialDbRow = {
+  team_id: string;
+  org_id: string;
+  channel_id: string;
+  instance_url: string | null;
+  client_id: string | null;
+  client_secret: string | null;
+  integration_user_id: string | null;
+  integration_username: string | null;
+  is_sandbox: number | null;
+};
+
+function decodePanelBase64(value: string): Uint8Array {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error("invalid base64");
+  }
+  return unb64(value);
+}
+
+async function decryptPanelSecret(env: AuthEnv, stored: string | null): Promise<string | null> {
+  if (stored === null) return null;
+  if (!env.CHANNEL_ENCRYPTION_KEY) {
+    throw authFailure(500, "channel_encryption_key_missing", "Panel channel credential decryption is not configured.");
+  }
+  let envelope: { v?: unknown; iv?: unknown; ct?: unknown };
+  try {
+    envelope = JSON.parse(stored);
+  } catch {
+    throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is invalid.", false);
+  }
+  if (envelope?.v !== 1 || typeof envelope.iv !== "string" || typeof envelope.ct !== "string") {
+    throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is invalid.", false);
+  }
+  try {
+    const rawKey = decodePanelBase64(env.CHANNEL_ENCRYPTION_KEY);
+    const iv = decodePanelBase64(envelope.iv);
+    const ciphertext = decodePanelBase64(envelope.ct);
+    if (rawKey.length !== 32 || iv.length !== 12 || ciphertext.length === 0) throw new Error("invalid envelope");
+    const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+    return new TextDecoder().decode(plaintext);
+  } catch {
+    throw authFailure(500, "credential_decryption_failed", "The Salesforce channel credential could not be decrypted.", false);
+  }
+}
+
+async function panelCredential(env: AuthEnv, scope: Key): Promise<Credential | null> {
+  const row = await env.DB.prepare(`SELECT team_id, org_id, channel_id, instance_url, client_id, client_secret,
+      integration_user_id, integration_username, is_sandbox
+    FROM panel_salesforce_channels
+    WHERE team_id = ? AND org_id = ? AND channel_id = ? LIMIT 1`)
+    .bind(scope.teamId, scope.orgId, scope.channelId)
+    .first<PanelCredentialDbRow>();
+  if (!row) return null;
+  if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.client_id || !row.integration_user_id) {
+    throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is incomplete.", false);
+  }
+  const plaintext = await decryptPanelSecret(env, row.client_secret);
+  const encrypted = plaintext === null ? null : await encrypt(env, plaintext);
+  return {
+    team_id: row.team_id,
+    org_id: row.org_id,
+    channel_id: row.channel_id,
+    instance_url: new URL(row.instance_url).origin,
+    client_id: row.client_id,
+    client_secret_cipher: encrypted?.cipher ?? null,
+    client_secret_iv: encrypted?.iv ?? null,
+    integration_user_id: row.integration_user_id,
+    integration_username: row.integration_username,
+    is_sandbox: row.is_sandbox,
+    channel_secret_hash: await hash(["panel-d1", row.team_id, row.org_id, row.channel_id].join("\u0000")),
+  };
+}
+
+async function panelExecutionUserCredential(
+  env: AuthEnv,
+  scope: Key,
+  integrationUserId: string,
+): Promise<Credential | null> {
+  const row = await env.DB.prepare(`SELECT e.team_id, e.org_id, e.channel_id, e.integration_user_id,
+      COALESCE(e.client_id, c.client_id) AS client_id, e.client_secret,
+      c.instance_url, c.integration_username, c.is_sandbox
+    FROM panel_salesforce_execution_users e
+    JOIN panel_salesforce_channels c ON c.team_id=e.team_id AND c.org_id=e.org_id AND c.channel_id=e.channel_id
+    WHERE e.team_id=? AND e.org_id=? AND e.channel_id=? AND substr(e.integration_user_id, 1, 15)=? LIMIT 1`)
+    .bind(scope.teamId, scope.orgId, scope.channelId, integrationUserId.slice(0, 15))
+    .first<PanelCredentialDbRow>();
+  if (!row || !sameSalesforceId(row.integration_user_id, integrationUserId)) return null;
+  if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.client_id || !row.integration_user_id) {
+    throw authFailure(500, "credential_misconfigured", "The stored Salesforce execution credential is incomplete.", false);
+  }
+  const plaintext = await decryptPanelSecret(env, row.client_secret);
+  const encrypted = plaintext === null ? null : await encrypt(env, plaintext);
+  return {
+    team_id: row.team_id,
+    org_id: row.org_id,
+    channel_id: row.channel_id,
+    instance_url: new URL(row.instance_url).origin,
+    client_id: row.client_id,
+    client_secret_cipher: encrypted?.cipher ?? null,
+    client_secret_iv: encrypted?.iv ?? null,
+    integration_user_id: row.integration_user_id,
+    integration_username: row.integration_username,
+    is_sandbox: row.is_sandbox,
+    channel_secret_hash: await hash(["panel-d1", row.team_id, row.org_id, row.channel_id].join("\u0000")),
+  };
+}
+
 async function authorized(env: AuthEnv, body: Key & { channelSecret: string }): Promise<Credential | null> {
   const row = await credential(env, body);
   if (!row) {
-    // No staging enrollment for this exact triple: the new-panel bridge is the
-    // only other authority. Bridge tenants enroll no channel secret; the
-    // service binding plus strict triple routing is the trust root. This
-    // worker exposes no public routes (workers_dev is off), so callers here
-    // are bound services. Fail closed on any bridge miss or error.
-    return resolveBridgeCredential(env, body);
+    // Panel-owned credentials share this D1 database and remain authoritative
+    // when no staging enrollment exists for the exact triple.
+    return panelCredential(env, body);
   }
   if (!equalHash(row.channel_secret_hash, await hash(body.channelSecret))) return null;
   // The Panel grant is the authority for every read, including reads made with
@@ -675,53 +898,6 @@ async function authorized(env: AuthEnv, body: Key & { channelSecret: string }): 
   return row;
 }
 
-/**
- * Resolve one bridge tenant credential into an ephemeral Credential row.
- * Staging callers use this only when no staging row exists for the exact
- * triple. The fetched secret is encrypted immediately with the staging key
- * so the existing ECA client-credentials flow (token()) is reused unchanged;
- * nothing is persisted and nothing secret is logged. Returns null on any
- * miss, transport failure, or validation failure (fail closed).
- */
-async function resolveBridgeCredential(env: AuthEnv, scope: Key): Promise<Credential | null> {
-  let remote: Awaited<ReturnType<typeof fetchBridgeCredential>>;
-  try {
-    remote = await fetchBridgeCredential(env, scope);
-  } catch {
-    console.error(JSON.stringify({ error: "bridge_credential_failed" }));
-    return null;
-  }
-  if (!remote) return null;
-  try {
-    const encrypted = remote.clientSecret == null ? null : await encrypt(env, remote.clientSecret);
-    return {
-      team_id: remote.teamId,
-      org_id: remote.orgId,
-      channel_id: remote.channelId,
-      instance_url: remote.instanceUrl,
-      client_id: remote.clientId,
-      client_secret_cipher: encrypted ? encrypted.cipher : null,
-      client_secret_iv: encrypted ? encrypted.iv : null,
-      integration_user_id: remote.integrationUserId,
-      integration_username: remote.integrationUsername ?? null,
-      is_sandbox: remote.isSandbox == null ? null : (remote.isSandbox ? 1 : 0),
-      channel_secret_hash: await hash(
-        ["bridge-ephemeral", remote.teamId, remote.orgId, remote.channelId].join("\u0000")),
-    };
-  } catch {
-    console.error(JSON.stringify({ error: "bridge_credential_failed" }));
-    return null;
-  }
-}
-
-/**
- * Staging credential plus active-grant check, with new-panel bridge fallback.
- * Staging enrollments keep their exact legacy behavior (same grant SQL, same
- * 403/404 codes and messages). Triples with no staging enrollment resolve via
- * the bridge with no staging grant check: bridge tenants carry no channel
- * secret by design, and the service binding plus strict triple routing is the
- * trust root (this worker exposes no public routes).
- */
 export async function credentialForEntrypoint(env: AuthEnv, ref: Key): Promise<Credential> {
   const row = await credential(env, ref);
   if (row) {
@@ -734,9 +910,9 @@ export async function credentialForEntrypoint(env: AuthEnv, ref: Key): Promise<C
     if (!grant) throw authFailure(403, "channel_not_authorized", "The Salesforce channel grant is unavailable.");
     return row;
   }
-  const bridgeRow = await resolveBridgeCredential(env, ref);
-  if (!bridgeRow) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
-  return bridgeRow;
+  const panelRow = await panelCredential(env, ref);
+  if (!panelRow) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+  return panelRow;
 }
 
 async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Promise<ExecutionUserReference[]> {
@@ -766,7 +942,14 @@ async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Pro
   `).bind(prefix, prefix).all<ExecutionUserDbRow>();
   const result: ExecutionUserReference[] = [];
   const seenUsers = new Set<string>();
-  for (const row of rows.results ?? []) {
+  const panelRows = await env.DB.prepare(`
+    SELECT team_id AS teamId, org_id AS orgId, channel_id AS channelId,
+      integration_user_id AS integrationUserId, is_primary AS isPrimary
+    FROM panel_salesforce_execution_users
+    WHERE substr(channel_id, 1, 15)=?
+    ORDER BY isPrimary DESC, integrationUserId ASC
+  `).bind(prefix).all<ExecutionUserDbRow>();
+  for (const row of [...(rows.results ?? []), ...(panelRows.results ?? [])]) {
     const userKey = `${row.teamId}\u0000${row.orgId}\u0000${row.channelId}\u0000${row.integrationUserId.slice(0, 15)}`;
     if (seenUsers.has(userKey)) continue;
     seenUsers.add(userKey);
@@ -785,11 +968,9 @@ async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Pro
 async function activeExecutionCredential(env: AuthEnv, scope: Key, integrationUserId: string): Promise<Credential | null> {
   const primary = await credential(env, scope);
   if (!primary) {
-    // Bridge tenants have no staging enrollment or execution-user rows:
-    // serve the primary integration user only.
-    const bridgeRow = await resolveBridgeCredential(env, scope);
-    if (!bridgeRow || !sameSalesforceId(bridgeRow.integration_user_id, integrationUserId)) return null;
-    return bridgeRow;
+    const panelPrimary = await panelCredential(env, scope);
+    if (panelPrimary && sameSalesforceId(panelPrimary.integration_user_id, integrationUserId)) return panelPrimary;
+    return panelExecutionUserCredential(env, scope, integrationUserId);
   }
   const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
     JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
@@ -833,7 +1014,7 @@ export async function token(env: AuthEnv, row: Credential): Promise<Token> {
   return pending;
 }
 
-async function fetchToken(env: AuthEnv, row: Credential, id: string): Promise<Token> {
+async function fetchToken(env: AuthEnv, row: Credential, id: string, cacheResult = true): Promise<Token> {
   // JWT rows (packaged execution client): mint a signed assertion for the
   // pre-authorized integration username. Legacy rows keep the per-row
   // client-secret grant byte-for-byte.
@@ -921,8 +1102,146 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string): Promise<To
   const seconds = typeof data.expires_in === "number" && data.expires_in > 0
     ? Math.min(data.expires_in, 300) : 120;
   const result = { accessToken: data.access_token, instanceUrl, expiresAt: Date.now() + seconds * 1000 };
-  tokenCache.set(id, result);
+  if (cacheResult) tokenCache.set(id, result);
   return result;
+}
+
+type JwtApiDiagnosticInput = Key & {
+  instanceUrl: string;
+  integrationUserId: string;
+  integrationUsername: string;
+  isSandbox: boolean;
+};
+
+type JwtApiDiagnosticCall = {
+  name: string;
+  status: number;
+  ok: boolean;
+  errorCode?: "request_target_invalid" | "upstream_unreachable" | "redirect_response" | "response_too_large" | "invalid_json" | "salesforce_api_rejected";
+  summary?: Record<string, unknown>;
+};
+
+async function diagnosticSalesforceJson(
+  instanceUrl: string,
+  accessToken: string,
+  path: string,
+): Promise<{ status: number; data: unknown; errorCode?: JwtApiDiagnosticCall["errorCode"] }> {
+  const url = new URL(path, instanceUrl);
+  if (url.origin !== instanceUrl || !url.pathname.startsWith("/services/data/")) {
+    return { status: 0, data: null, errorCode: "request_target_invalid" };
+  }
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      redirect: "manual",
+    });
+  } catch {
+    return { status: 0, data: null, errorCode: "upstream_unreachable" };
+  }
+  if (response.status >= 300 && response.status < 400) {
+    return { status: response.status, data: null, errorCode: "redirect_response" };
+  }
+  const declaredBytes = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(declaredBytes) && declaredBytes > 262_144) {
+    return { status: response.status, data: null, errorCode: "response_too_large" };
+  }
+  let text: string;
+  try { text = await response.text(); }
+  catch { return { status: response.status, data: null, errorCode: "upstream_unreachable" }; }
+  if (text.length > 262_144) return { status: response.status, data: null, errorCode: "response_too_large" };
+  let data: unknown = null;
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { return { status: response.status, data: null, errorCode: "invalid_json" }; }
+  }
+  return {
+    status: response.status,
+    data,
+    errorCode: response.ok ? undefined : "salesforce_api_rejected",
+  };
+}
+
+async function runJwtApiDiagnostics(
+  env: AuthEnv,
+  input: JwtApiDiagnosticInput,
+  requestId: string,
+): Promise<Response> {
+  const row: Credential = {
+    team_id: input.teamId,
+    org_id: input.orgId,
+    channel_id: input.channelId,
+    instance_url: new URL(input.instanceUrl).origin,
+    client_id: TUBOT_CHANNEL_API_CLIENT_ID,
+    client_secret_cipher: null,
+    client_secret_iv: null,
+    integration_user_id: input.integrationUserId,
+    integration_username: input.integrationUsername,
+    is_sandbox: input.isSandbox ? 1 : 0,
+    channel_secret_hash: "ephemeral-jwt-api-diagnostic",
+  };
+
+  // Do not use token(): it deliberately caches regular channel tokens in the
+  // isolate. This diagnostic keeps the JWT access token request-local.
+  const auth = await fetchToken(env, row, `jwt-api-diagnostic:${requestId}`, false);
+  const checks: JwtApiDiagnosticCall[] = [];
+
+  const run = async (name: string, path: string): Promise<unknown> => {
+    try {
+      const result = await diagnosticSalesforceJson(auth.instanceUrl, auth.accessToken, path);
+      checks.push({ name, status: result.status, ok: result.status >= 200 && result.status < 300,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}) });
+      return result.data;
+    } catch {
+      checks.push({ name, status: 0, ok: false, errorCode: "upstream_unreachable" });
+      return null;
+    }
+  };
+
+  const versions = await run("rest_api_versions", "/services/data/");
+  const versionsAvailable = Array.isArray(versions) && versions.length > 0;
+  if (checks[0]) {
+    checks[0].ok = checks[0].ok && versionsAvailable;
+    checks[0].summary = { versionCount: Array.isArray(versions) ? versions.length : 0 };
+  }
+
+  const orgSoql = encodeURIComponent("SELECT Id, IsSandbox FROM Organization LIMIT 1");
+  const orgResult = await run("organization_query", `/services/data/${API_VERSION}/query?q=${orgSoql}`);
+  const orgRecords = object(orgResult) && Array.isArray(orgResult.records) ? orgResult.records : [];
+  const orgRecord = object(orgRecords[0]) ? orgRecords[0] : null;
+  const orgMatches = orgRecord !== null && sameSalesforceId(orgRecord.Id, input.orgId) && orgRecord.IsSandbox === input.isSandbox;
+  const orgCheck = checks.find(check => check.name === "organization_query");
+  if (orgCheck) {
+    orgCheck.ok = orgCheck.ok && orgMatches;
+    orgCheck.summary = { recordCount: orgRecords.length, orgMatches };
+  }
+
+  const userSoql = encodeURIComponent(
+    `SELECT Id, Name, Username, IsActive FROM User WHERE Id = '${input.integrationUserId}' LIMIT 1`,
+  );
+  const userResult = await run("integration_user_query", `/services/data/${API_VERSION}/query?q=${userSoql}`);
+  const userRecords = object(userResult) && Array.isArray(userResult.records) ? userResult.records : [];
+  const userRecord = object(userRecords[0]) ? userRecords[0] : null;
+  const identityMatches = userRecord !== null && sameSalesforceId(userRecord.Id, input.integrationUserId) &&
+    userRecord.Username === input.integrationUsername && userRecord.IsActive === true && typeof userRecord.Name === "string";
+  const userCheck = checks.find(check => check.name === "integration_user_query");
+  if (userCheck) {
+    userCheck.ok = userCheck.ok && identityMatches;
+    userCheck.summary = { recordCount: userRecords.length, identityMatches };
+  }
+
+  const ok = checks.length === 3 && checks.every(check => check.ok);
+  return json({
+    ok,
+    orgId: input.orgId,
+    integrationUser: userRecord && identityMatches ? {
+      id: userRecord.Id,
+      name: userRecord.Name,
+      username: userRecord.Username,
+      active: userRecord.IsActive,
+    } : null,
+    checks,
+  }, requestId, ok ? 200 : 502);
 }
 async function sfGet(env: AuthEnv, row: Credential, path: string, requestId: string): Promise<Response> {
   return sfRequest(env, row, path, "GET", undefined, requestId);
@@ -938,7 +1257,9 @@ const FIXTURE_CREATE_PATH = /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/[A-Za-
  * invokes, reads, Tooling, and panel runtime traffic never match.
  */
 function fixtureCreateHeaders(method: string, path: string): Record<string, string> | undefined {
-  return method === "POST" && FIXTURE_CREATE_PATH.test(path) ? { "Sforce-Auto-Assign": "FALSE" } : undefined;
+  return (method === "POST" && FIXTURE_CREATE_PATH.test(path) ||
+    method === "PATCH" && /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/[A-Za-z][A-Za-z0-9_]+\/[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(path))
+    ? { "Sforce-Auto-Assign": "FALSE" } : undefined;
 }
 async function sfRequest(
   env: AuthEnv,
@@ -981,6 +1302,11 @@ async function sfRequest(
     if (!response.ok) {
       console.error(JSON.stringify({ requestId, error: "salesforce_request_failed", method,
         route: path.split("?")[0].slice(0, 160), status: response.status }));
+      // TEMP-LOCAL-DEV — NEVER COMMIT (revert after diagnosing the scalar 400):
+      // narrowly-scoped request-body echo for one debug route (marker nonces only).
+      if (method === "POST" && path.includes("BotsParseAddress") && typeof body === "string") {
+        console.error(JSON.stringify({ requestId, debugRouteBody: body.slice(0, 400) }));
+      }
     }
     if (preserveResponseHeaders) return response;
     const headers = new Headers({
@@ -1057,7 +1383,7 @@ function salesforceError(value: unknown, depth = 0): { code?: string; message?: 
     ...(typeof first.message === "string" ? { message: first.message.slice(0, 1024) } : {}),
   };
 }
-async function synthesizeRecordValues(env: AuthEnv, row: Credential, apiRoot: string, objectName: string,
+export async function synthesizeRecordValues(env: AuthEnv, row: Credential, apiRoot: string, objectName: string,
   namePrefix: string, overrides: Record<string, unknown> = {}, referenceCache = new Map<string, string | null>(),
   schemaOverride?: unknown):
   Promise<{ values: Record<string, unknown> } | { failure: { status: number; body: unknown } }> {
@@ -1085,7 +1411,15 @@ async function synthesizeRecordValues(env: AuthEnv, row: Credential, apiRoot: st
       values[field.name] = overrides[field.name];
       continue;
     }
-    if (field.nillable !== false || field.defaultedOnCreate === true || field.calculated === true ||
+    // Identity fields are always populated: the live describe can mark a
+    // name nillable while the runtime requires it (Person-Account orgs
+    // describe Account.Name nillable, but business inserts 400
+    // REQUIRED_FIELD_MISSING without it). Text-shaped names only;
+    // compound members (Person LastName) stay excluded — they are invalid
+    // on the fixture's record type.
+    const fieldType = typeof field.type === "string" ? field.type.toLowerCase() : "";
+    const identityName = isNameMarkerField(field) && ["string", "textarea", "combobox"].includes(fieldType);
+    if ((!identityName && field.nillable !== false) || field.defaultedOnCreate === true || field.calculated === true ||
         field.autoNumber === true) continue;
     if (field.createable !== true && (field.permissionable === false || schema.fields.filter(object).some(
       component => component.compoundFieldName === field.name))) continue;
@@ -1093,11 +1427,14 @@ async function synthesizeRecordValues(env: AuthEnv, row: Credential, apiRoot: st
     // settable by nobody (neither createable nor updateable); the platform
     // fills them, so omitting is the only consistent choice. A field that is
     // updateable but not createable stays a failure: someone else could set it.
+    // A merely-nillable identity name keeps the old omit behavior when it is
+    // not createable: failing here would regress currently-skipped fields.
     if (field.createable !== true && field.updateable !== true) continue;
-    if (field.createable !== true) return { failure: { status: 422, body: {
+    if (field.createable !== true && !identityName) return { failure: { status: 422, body: {
       errorCode: "SYNTHETIC_RECORD_REQUIRED_FIELD_UNAVAILABLE",
       message: `The temporary ${objectName} has a required field the integration user cannot set.`,
     } } };
+    if (field.createable !== true) continue;
     const type = typeof field.type === "string" ? field.type.toLowerCase() : "";
     // Live length caps bind every synthesized free-text value: an over-long
     // probe 400s STRING_TOO_LONG (live evidence: AccountNumber caps at 40).
@@ -1164,6 +1501,28 @@ async function synthesizeRecordValues(env: AuthEnv, row: Credential, apiRoot: st
         message: `Salesforce exposes a required ${objectName} field type the worker cannot synthesize.`,
       } } };
     }
+  }
+  // Explicit default record type: org automation can reject fixtures whose
+  // type was left for the platform to default (live evidence: an SDO
+  // Account insert faults "record type missing"). Only a real,
+  // available, non-Master default is ever sent. Gated on a live
+  // createable RecordTypeId field: objects without record-type support
+  // (Asset) still describe a Master type entry but reject the column on
+  // insert ("No such column"). Caller overrides stay authoritative, and
+  // objects without a real default keep the omit behavior.
+  const rtFieldSettable = schema.fields.filter(object).some(field =>
+    field.name === "RecordTypeId" && field.createable === true);
+  if (!Object.hasOwn(values, "RecordTypeId") && rtFieldSettable && Array.isArray(schema.recordTypeInfos)) {
+    const infos = schema.recordTypeInfos.filter(object);
+    // Real default only: the Master placeholder (012000000000000AAA) often
+    // describes as available+default for users without an assigned type,
+    // but sending it explicitly 400s INVALID_CROSS_REFERENCE_KEY
+    // ("not valid for the user") while omitting resolves Master fine
+    // (live evidence: Opportunity fixtures across 39 actions). No default
+    // keeps the omit behavior.
+    const pick = infos.find(f => f.available === true && f.defaultRecordTypeMapping === true && f.master !== true &&
+      typeof f.recordTypeId === "string" && f.recordTypeId !== "012000000000000AAA");
+    if (pick && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(pick.recordTypeId as string)) values.RecordTypeId = pick.recordTypeId;
   }
   // Caller-planned overrides are authoritative even when the live describe omits
   // the field (describe visibility quirks); the real create API validates them.
@@ -1792,6 +2151,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
   const channelLifecyclePath =
     (path === "/internal/channels/register" && request.method === "POST") ||
     (path === "/internal/channels" && request.method === "DELETE");
+  if (channelLifecyclePath) return error(requestId, 410, "legacy_panel_retired", "Use New Panel to manage Salesforce connections.");
   if (path.startsWith("/internal/self-oauth/") || channelLifecyclePath) {
     if (path.startsWith("/internal/self-oauth/") && request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal self-authorization operation.");
     try {
@@ -1803,7 +2163,31 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       throw err;
     }
   }
-  const body = await parse(request, path === "/internal/self-oauth/request" ? 10_000_000 : 64_000);
+  const body = await parse(request, path === "/internal/self-oauth/request" ? 10_000_000 :
+    path === "/internal/self-oauth/batch" ? 512_000 : 64_000);
+
+  if (path === "/internal/jwt-api-diagnostics") {
+    if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce diagnostic.");
+    const suppliedBridgeSecret = request.headers.get(PANEL_INTERNAL_SECRET_HEADER) || "";
+    if (!env.BRIDGE_SHARED_SECRET) {
+      return error(requestId, 503, "panel_internal_auth_unconfigured", "The internal Salesforce service is not configured.", true);
+    }
+    if (!suppliedBridgeSecret || !equalHash(await hash(suppliedBridgeSecret), await hash(env.BRIDGE_SHARED_SECRET))) {
+      return error(requestId, 401, "invalid_internal_signature", "A valid Panel service credential is required.");
+    }
+    if (!body || !key(body) || !validSalesforceOrgId(body.orgId) ||
+        !validSalesforceUserId(body.integrationUserId) || !str(body.integrationUsername, 254) ||
+        !str(body.instanceUrl, 512) || !validInstanceUrl(body.instanceUrl) || typeof body.isSandbox !== "boolean") {
+      return error(requestId, 400, "invalid_request", "A valid channel identity is required.");
+    }
+    try {
+      return await runJwtApiDiagnostics(env, body as JwtApiDiagnosticInput, requestId);
+    } catch (cause) {
+      if (cause instanceof AuthFailure) return failure(requestId, cause.failure);
+      console.error(JSON.stringify({ requestId, error: "jwt_api_diagnostics_failed" }));
+      return error(requestId, 502, "jwt_api_diagnostics_failed", "The integration user API checks could not be completed.", true);
+    }
+  }
 
   if (path.startsWith("/internal/self-oauth/") && request.method === "POST") {
     if (!body) return error(requestId, 400, "invalid_request", "A valid JSON request is required.");
@@ -1823,6 +2207,9 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       }
       if (path === "/internal/self-oauth/request") {
         return selfOAuthApiRequest(env, grant, body, requestId);
+      }
+      if (path === "/internal/self-oauth/batch") {
+        return selfOAuthApiBatch(env, grant, body, requestId);
       }
       if (path === "/internal/self-oauth/disconnect") {
         await selfOAuthDisconnect(env, grant);
@@ -2539,20 +2926,13 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       WHERE t.expiresAt > unixepoch()
       GROUP BY c.teamId, c.orgId`).all<Key>();
     const staging = rows.results ?? [];
-    // Union staging tenants with new-panel bridge tenants. A missing bridge
-    // secret or any bridge failure degrades to staging-only with a structured
-    // log and never throws out of this inventory call.
-    let bridge: Key[];
-    try {
-      bridge = await fetchBridgeTenants(env);
-    } catch {
-      console.error(JSON.stringify({ error: "bridge_tenants_unavailable" }));
-      return staging;
-    }
+    const panelRows = await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId, channel_id AS channelId
+      FROM panel_salesforce_channels`).all<Key>();
+    const panel = panelRows.results ?? [];
     const seen = new Set(staging.map(entry =>
       [entry.teamId, entry.orgId, entry.channelId].join("\u0000")));
     const merged = [...staging];
-    for (const entry of bridge) {
+    for (const entry of panel) {
       const triple = [entry.teamId, entry.orgId, entry.channelId].join("\u0000");
       if (seen.has(triple)) continue;
       seen.add(triple);
@@ -2572,9 +2952,8 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     if (!key(ref) || !Array.isArray(requests) || requests.length < 1 || requests.length > 25) {
       throw authFailure(400, "invalid_request", "A valid tenant and up to 25 requests are required.");
     }
-    // Staging first, then the new-panel bridge for the exact triple; fail
-    // closed when neither serves this tenant. A staging enrollment is
-    // authoritative when present (wrong grant still denies).
+    // Staging enrollment is authoritative when present (wrong grant still
+    // denies); otherwise resolve the exact panel-owned row from shared D1.
     let row = await credential(env, ref);
     if (row) {
       const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
@@ -2585,7 +2964,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         .first<{ valid: number }>();
       if (!grant) throw authFailure(403, "channel_not_authorized", "The Salesforce channel grant is unavailable.");
     } else {
-      row = await resolveBridgeCredential(env, ref);
+      row = await panelCredential(env, ref);
       if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
     }
     const results: Array<{ status: number; body: unknown; trailingDocuments?: unknown }> =
@@ -2708,10 +3087,17 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       if (objectQuery) {
         try {
           const soql = decodeURIComponent(objectQuery[1]);
-          isTestRecordQuery = /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 1$/i.test(soql) ||
+          isTestRecordQuery = /^SELECT Id(?:, [A-Za-z][A-Za-z0-9_]{0,127}){1,59} FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 3$/i.test(soql) ||
+            /^SELECT Id, Quantity FROM OrderItemSummary WHERE OrderSummaryId = '[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?' LIMIT 5$/i.test(soql) ||
+            /^SELECT Reason FROM OrderItemSummaryChangeReason LIMIT 5$/i.test(soql) ||
+            /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 1$/i.test(soql) ||
+            /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 8$/i.test(soql) ||
+            /^SELECT RelatedRecordId FROM Swarm WHERE Status != 'Closed' LIMIT 200$/i.test(soql) ||
             /^SELECT Id, DeveloperName, MasterLabel FROM Skill LIMIT 1$/i.test(soql) ||
             /^SELECT Id, RecordTypeId FROM [A-Za-z][A-Za-z0-9_]{0,127} WHERE Id='[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?' LIMIT 1$/i.test(soql) ||
             /^SELECT Id FROM MessagingSession WHERE ConversationId != null(?: AND Status = 'Ended')? LIMIT 1$/i.test(soql) ||
+            /^SELECT Id FROM Conversation WHERE ConversationIdentifier = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' LIMIT 1$/i.test(soql) ||
+            /^SELECT Id, SessionKey FROM MessagingSession WHERE ConversationId = '[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?' LIMIT 1$/i.test(soql) ||
             /^SELECT DurableId,ApiName,Label FROM FlowDefinitionView WHERE ApiName IN \('[A-Za-z][A-Za-z0-9_]{0,127}'(?:,'[A-Za-z][A-Za-z0-9_]{0,127}')?\)$/i.test(soql) ||
             /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} WHERE [A-Za-z][A-Za-z0-9_]{0,127}='ACTIVE' LIMIT [1-5]$/i.test(soql) ||
             /^SELECT Id FROM ContentDocument WHERE FileType IN \('AMR','AU','FLAC','M4A','MP3','MP4','MPEG','MPGA','OGG','OGA','WAV','WAVE','WEBM'\) LIMIT 1$/i.test(soql) ||
@@ -3814,6 +4200,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const retrieved = await request(`${root}/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id='${versionId}'`)}`);
     if (!retrieved.ok) return retrieved;
     const metadata = object(retrieved.body) && Array.isArray(retrieved.body.records) ? retrieved.body.records.filter(object)[0]?.Metadata : null;
+    if (isQueryOnlyFlowMetadata(metadata)) return { status: 422,
+      body: { errorCode: "FLOW_CREATION_CHAIN_UNRESOLVED", message: "The active Flow is query-only and requires owned record inputs, rather than a creation lifecycle." },
+      contextSchema: { source: "salesforce_active_query_only_flow_metadata", readOnlyMetadataVerified: true, activeVersionId: versionId, requiredReadFields: flowReadFields(metadata) } };
     const recipes = flowCreationRecipes(metadata);
     if (!recipes.length || !object(metadata) || !Array.isArray(metadata.variables)) return { status: 422, body: {
       errorCode: "FLOW_CREATION_CHAIN_UNRESOLVED", message: "The live Flow needs additional dependency handling beyond resolved record creation assignments." } };
@@ -3838,10 +4227,10 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
             const parentSchema = await request(`${root}/sobjects/${objectName}/describe`);
             if (!parentSchema.ok) return parentSchema;
             const parentFields = object(parentSchema.body) && Array.isArray(parentSchema.body.fields) ? parentSchema.body.fields.filter(object) : [];
-            const markers = parentFields.filter(item => !parentFields.some(component => component.compoundFieldName === item.name) && item.calculated !== true && item.autoNumber !== true && item.filterable === true && ["string", "combobox"].includes(String(item.type)) && typeof item.length === "number" && item.length >= 48);
+            const markers = parentFields.filter(item => !isCompoundParent(parentFields, item) && item.calculated !== true && item.autoNumber !== true && item.filterable === true && ["string", "combobox"].includes(String(item.type)) && typeof item.length === "number" && item.length >= 48);
             const writableMarkers = markers.filter(item => item.createable === true);
             const preferredMarkers = writableMarkers.length ? writableMarkers : markers;
-            const marker = preferredMarkers.find(item => item.nameField === true && !item.compoundFieldName) ?? preferredMarkers.find(item => item.nillable === false) ?? preferredMarkers[0];
+            const marker = preferredMarkers.find(isNameMarkerField) ?? preferredMarkers.find(item => item.nillable === false) ?? preferredMarkers[0];
             fixtures.push({ inputName: assignment.inputName, objectName, fixtureAccessReady: object(parentSchema.body) && parentSchema.body.createable === true && parentSchema.body.deletable === true && (!marker || marker.createable === true), ...(typeof marker?.name === "string" ? { markerField: marker.name } : {}), collection: assignment.collection === true });
           }
         }
@@ -3873,7 +4262,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       return { status: 403, body: { errorCode: "FLOW_CREATION_FIXTURE_PERMISSIONS_REQUIRED", message: "Live Flow targets or references lack the create/read/delete or marker access needed for verification. Run dynamic fixture permission setup and retry." }, contextSchema: plan };
     }
     const env = this.env as AuthEnv;
-    const row = (await credential(env, ref)) ?? (await resolveBridgeCredential(env, ref));
+    const row = (await credential(env, ref)) ?? (await panelCredential(env, ref));
     if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
     const root = input.route.split("/actions/")[0];
     const request = async (path: string, method = "GET", body?: unknown) => {
@@ -4120,7 +4509,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const fields = schema.body.fields.filter(object);
     const candidates = fields.filter(field => typeof field.name === "string" && field.createable === true && field.filterable === true &&
       (!update || field.updateable === true) && ["string", "combobox"].includes(String(field.type)) && typeof field.length === "number" && field.length >= 48);
-    const markerField = candidates.find(field => field.nameField === true && !field.compoundFieldName) ?? candidates.find(field => field.nillable === false) ?? candidates[0];
+    const markerField = candidates.find(isNameMarkerField) ?? candidates.find(field => field.nillable === false) ?? candidates[0];
     if (!markerField || typeof markerField.name !== "string") return { status: 422, body: { errorCode: "RECORD_ACTION_MARKER_UNAVAILABLE", message: "The live object has no writable and queryable ownership marker." } };
     const marker = `AS probe ${crypto.randomUUID()}`;
     const built = await synthesizeRecordValues(env, row, root, target, marker, { [markerField.name]: marker });
@@ -4195,7 +4584,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = `/services/data/${match[1]}`;
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "NOTIFICATION_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };
@@ -4251,7 +4640,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const root = `/services/data/${match[1]}`;
     const request = async (path: string, method = "GET", body?: unknown, extraHeaders?: Record<string, string>) => {
       try {
-        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), extraHeaders);
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000), extraHeaders ?? fixtureCreateHeaders(method, path));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "EMAIL_ALERT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };
@@ -4306,6 +4695,54 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       } catch { return { status: 502, ok: false, body: { errorCode: "APEX_EXEC_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
     };
     return invokeApexExecWithContext({ root, route: input.route, ownerUserId: row.integration_user_id,
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Invoke an apex SOBJECT-record action with an owned fixture chain. */
+  async invokeApexSObjectRecordWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !match || !Object.hasOwn(APEX_SOBJECT_RECORD_SPECS, match[2]) ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_apex_sobject_record_context", "A discovered apex record action route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "APEX_SOBJECT_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeApexSObjectRecord({ root, route: input.route, actionName: match[2],
+      verificationWindowMs: input.verificationWindowMs, request,
+      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+        return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
+  }
+
+  /** Invoke a dual-asset standard action with two owned assets. */
+  async invokeAssetReplaceWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !match || !Object.hasOwn(ASSET_REPLACE_SPECS, match[2]) ||
+      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      throw authFailure(400, "invalid_asset_replace_context", "A discovered asset replace action route and bounded verification window are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const root = `/services/data/${match[1]}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      try {
+        const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        return { status: response.status, ok: response.ok, body: await responseJson(response) };
+      } catch { return { status: 502, ok: false, body: { errorCode: "ASSET_REPLACE_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    };
+    return invokeAssetReplace({ root, route: input.route, actionName: match[2],
       verificationWindowMs: input.verificationWindowMs, request,
       build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
@@ -4453,24 +4890,39 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   async invokeCommerceLifecycleWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
     const match = typeof input?.route === "string" && input.route.match(
-      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_.]{0,127})$/);
+      /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/(?:standard|custom\/apex)\/([A-Za-z][A-Za-z0-9_.]{0,127})$/);
     const action = match ? commerceLifecycleActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
       input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
-      throw authFailure(400, "invalid_commerce_action_context", "A discovered standard commerce action and bounded verification window are required.");
+      throw authFailure(400, "invalid_commerce_action_context", "A discovered standard or cart-draft apex commerce action and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
     const row = await credentialForEntrypoint(env, ref);
     const root = `/services/data/${match[1]}`;
-    const request = async (path: string, method = "GET", body?: unknown) => {
+    const rawRequest = cacheLifecycleSchema(root, async (path: string, method = "GET", body?: unknown) => {
       try {
         const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body), crypto.randomUUID(), true, AbortSignal.timeout(60_000));
         return { status: response.status, ok: response.ok, body: await responseJson(response) };
       } catch { return { status: 502, ok: false, body: { errorCode: "COMMERCE_UPSTREAM_UNAVAILABLE", message: "Salesforce request failed; owned context cleanup will still run." } }; }
+    });
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const summary = method === "DELETE" ? path.match(/^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/OrderSummary\/([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)$/) : null;
+      return summary ? deleteOwnedOrderSummary(root, summary[1], rawRequest) : rawRequest(path, method, body);
     };
+    if (commerceLifecycleKind(action) === "cart") {
+      const missing = await provisionCommerceFixtureAccess(root, rawRequest);
+      if (missing.length) return { status: 422, body: { errorCode: "COMMERCE_FIXTURE_ACCESS_REQUIRED", message: "Owned cart setup requires: " + missing.join(", ") } };
+    }
+    if (["order", "order-submit", "fulfillment", "return"].includes(commerceLifecycleKind(action) ?? "")) {
+      const missing = await provisionOwnedOrderAccess(root, request);
+      if (missing.length) return { status: 422, body: { errorCode: "COMMERCE_OWNED_ORDER_ACCESS_REQUIRED", message: "Owned order setup requires: " + missing.join(", ") } };
+    }
     return invokeCommerceLifecycleWithContext({ root, route: input.route,
       verificationWindowMs: input.verificationWindowMs, request,
-      build: async (name, marker, values) => { const result = await synthesizeRecordValues(env, row, root, name, marker, values);
+      build: async (name, marker, values) => {
+        const described = await request(root + "/sobjects/" + name + "/describe");
+        if (!described.ok) return { failure: described };
+        const result = await synthesizeRecordValues(env, row, root, name, marker, values, new Map(), described.body);
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
@@ -4540,7 +4992,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const liveReferenceCache = await seedLiveReferenceCache(request, root, fields);
     const candidates = fields.filter(field => typeof field.name === "string" && (!global || allowed.has(field.name)) &&
       field.createable === true && field.filterable === true && typeof field.length === "number" && field.length >= 48 && ["string", "textarea", "combobox"].includes(String(field.type)));
-    let markerField = candidates.find(field => field.nameField === true && !field.compoundFieldName) ??
+    let markerField = candidates.find(isNameMarkerField) ??
       candidates.find(field => field.nillable === false) ?? candidates.find(field => ["Subject", "Title"].includes(String(field.name)));
     if (!markerField && !ownedChildCreation) {
       // Targets such as group/messaging objects expose no 48-char Name marker.
@@ -4579,7 +5031,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       }
       const parentFields = parentSchema.body.fields.filter(object).filter(field => typeof field.name === "string" && field.createable === true && field.filterable === true && typeof field.length === "number" && field.length >= 48 &&
         ["string", "textarea", "combobox"].includes(String(field.type)));
-      const parentMarkerField = parentFields.find(field => field.nameField === true && !field.compoundFieldName) ??
+      const parentMarkerField = parentFields.find(isNameMarkerField) ??
         parentFields.find(field => field.nillable === false) ?? parentFields.find(field => ["Subject", "Title"].includes(String(field.name)));
       if (!parentMarkerField || typeof parentMarkerField.name !== "string") return { status: 422, body: { errorCode: "QUICK_ACTION_PARENT_MARKER_UNAVAILABLE", message: "The live context has no writable, filterable ownership marker with enough space for a unique identity." } };
       const parentMarker = "AS context " + crypto.randomUUID();
@@ -4623,7 +5075,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
           ? accountSchema.body.fields.filter(object).filter(field => typeof field.name === "string" && field.createable === true &&
             field.filterable === true && typeof field.length === "number" && field.length >= 48 &&
             ["string", "textarea", "combobox"].includes(String(field.type))) : [];
-        const accountMarkerField = accountFields.find(field => field.nameField === true && !field.compoundFieldName) ??
+        const accountMarkerField = accountFields.find(isNameMarkerField) ??
           accountFields.find(field => field.nillable === false);
         if (!accountMarkerField || typeof accountMarkerField.name !== "string") {
           return { status: 422, body: { errorCode: "QUICK_ACTION_PARENT_MARKER_UNAVAILABLE",
@@ -4654,7 +5106,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         const markerCandidates = contextFields.filter(field => typeof field.name === "string" && field.createable === true &&
           field.filterable === true && typeof field.length === "number" && field.length >= 24 &&
           ["string", "textarea", "combobox"].includes(String(field.type)));
-        const fixtureMarkerField = markerCandidates.find(field => field.nameField === true && !field.compoundFieldName) ??
+        const fixtureMarkerField = markerCandidates.find(isNameMarkerField) ??
           markerCandidates.find(field => field.nillable === false) ?? markerCandidates[0];
         if (!fixtureMarkerField || typeof fixtureMarkerField.name !== "string") {
           return { status: 422, body: { errorCode: "QUICK_ACTION_CONTEXT_FIXTURE_UNAVAILABLE",
@@ -4679,7 +5131,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       verificationWindowMs: input.verificationWindowMs, request });
   }
 
-  async invokeFlowWithContext(ref: Key, input: { apiVersion: string; route: string; arguments: Record<string, unknown> }):
+  async invokeFlowWithContext(ref: Key, input: { apiVersion: string; route: string; arguments: Record<string, unknown>; argumentsSynthetic?: boolean }):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
@@ -4691,7 +5143,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const apiRoot = `/services/data/v${input.apiVersion}`;
     const request = async (path: string, method = "GET", body?: unknown) => {
       const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
-        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
       return { status: response.status, ok: response.ok, body: await responseJson(response) };
     };
     const described = await request(input.route);
@@ -4782,8 +5234,19 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       // honest, and identity-shaped caller scalars are refused before
       // anything is created. (Record inputs are overwritten with owned
       // fixtures below, so only non-record caller args are scanned.)
-      const readOnlyEvident = isReadOnlyEvident(descriptor, input.route);
-      if (!readOnlyEvident) {
+      const metadataProof = outputs.some(field => field.type === "SOBJECT")
+        ? await this.describeFlowCreationContext(ref, { route: input.route }) : null;
+      const queryOnlyMetadataVerified = metadataProof && object(metadataProof.contextSchema) && metadataProof.contextSchema.readOnlyMetadataVerified === true;
+      if (queryOnlyMetadataVerified && metadataProof && object(metadataProof.contextSchema)) {
+        const grant = await provisionFlowReadFields(apiRoot, metadataProof.contextSchema.requiredReadFields, request);
+        if (grant.missing.length) return { status: 403, body: { errorCode: "FLOW_UPSTREAM_ACCESS_REQUIRED",
+          message: "The query-only Flow requires field read access: " + grant.missing.join(", ") + ". Grant these fields through the fixture permission set and retry." }, contextSchema: metadataProof.contextSchema };
+      }
+      const readOnlyEvident = queryOnlyMetadataVerified || isReadOnlyEvident(descriptor, input.route);
+      // Searcher-attested synthesis (neutral/well-formed fillers, nothing
+      // live) skips the foreign-identity scan: unguessable values match no
+      // row, so they cannot smuggle a live identity into the interview.
+      if (!readOnlyEvident && input.argumentsSynthetic !== true) {
         const recordNames = new Set(recordInputs.map(field => String(field.name)));
         let foreignIdentity = false;
         const scan = (value: unknown): void => {
@@ -4794,7 +5257,10 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
           else if (object(value)) Object.values(value).forEach(scan);
         };
         for (const [name, value] of Object.entries(input.arguments)) {
-          if (!recordNames.has(name)) scan(value);
+          // recordId never reaches the interview verbatim (it is rebound
+          // to the owned fixture id below, or dropped), so scanning it
+          // would refuse probes for a value that is never passed.
+          if (!recordNames.has(name) && name.toLowerCase() !== "recordid") scan(value);
         }
         if (foreignIdentity) return { status: 422, body: {
           errorCode: "FLOW_RECORD_LIVE_INPUT_REFUSED",
@@ -4874,7 +5340,8 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
           // People-record flows fault on fixtures without a routable identity; complete a
           // createable Email with an undeliverable probe address (never a real recipient).
           const priorEmail = (built.values as Record<string, unknown>).Email;
-          const completed = personIdentityCompletion(fields, built.values as Record<string, unknown>);
+          const completed = eventSlotCompletion(objectName, fields,
+            personIdentityCompletion(fields, built.values as Record<string, unknown>));
           if ((priorEmail == null || priorEmail === "") && typeof completed.Email === "string" && completed.Email.length) fixtureEmails.push(completed.Email);
           let created = await request(`${apiRoot}/sobjects/${objectName}`, "POST", completed);
           let id = object(created.body) ? created.body.id : null;
@@ -4905,10 +5372,15 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
               });
               if (candidates.length === 0) return null;
               const enrichmentOverrides: Record<string, unknown> = {};
+              // Best-effort per candidate: setup-flavored targets (WorkType,
+              // ServiceTerritory) describe as mintable but reject the probe
+              // insert, and one unmintable target must not void the parents
+              // that did mint. Skipped candidates stay null on the retry;
+              // the retry outcome still decides honestly.
               for (const candidate of candidates) {
                 const reused = fixtures.find((fixture) => fixture.objectName === candidate.target)?.id;
                 if (reused !== undefined) {
-                  if (!/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(reused)) return null;
+                  if (!/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(reused)) continue;
                   enrichmentOverrides[candidate.field] = reused;
                   continue;
                 }
@@ -4917,26 +5389,28 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
                 const parentName = `Action Searcher temporary flow parent ${crypto.randomUUID()}`;
                 const parentMarker = targetFields.find((item) => ["Subject", "Name"].includes(String(item.name)) &&
                   item.createable === true && item.autoNumber !== true);
-                if (!parentMarker || typeof parentMarker.name !== "string") return null;
+                if (!parentMarker || typeof parentMarker.name !== "string") continue;
                 const parentSeeds = await seedRequiredReferenceValues(request, apiRoot, targetFields, { allowLiveBorrow: readOnlyEvident });
                 const parentBuilt = await synthesizeRecordValues(env, row, apiRoot, candidate.target, parentName,
                   { [parentMarker.name]: parentName, ...parentSeeds.overrides });
-                if ("failure" in parentBuilt) return null;
+                if ("failure" in parentBuilt) continue;
                 const parentCreated = await request(`${apiRoot}/sobjects/${candidate.target}`, "POST", parentBuilt.values);
                 const parentId = object(parentCreated.body) ? parentCreated.body.id : null;
-                if (!parentCreated.ok || typeof parentId !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(parentId)) return null;
+                if (!parentCreated.ok || typeof parentId !== "string" || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(parentId)) continue;
                 fixtures.push({ objectName: candidate.target, id: parentId });
                 const parentVerified = await request(`${apiRoot}/sobjects/${candidate.target}/${parentId}`);
                 if (!parentVerified.ok || !object(parentVerified.body) || parentVerified.body.Id !== parentId ||
-                  parentVerified.body[parentMarker.name] !== parentName) return null;
+                  parentVerified.body[parentMarker.name] !== parentName) continue;
                 enrichmentOverrides[candidate.field] = parentId;
               }
+              if (Object.keys(enrichmentOverrides).length === 0) return null;
               const rebuilt = await synthesizeRecordValues(env, row, apiRoot, objectName, name,
                 { ...(marker ? { [String(marker.name)]: name } : {}), ...(description ? {
                   Description: "Disposable action validation record. Inspect the equipment and record the work performed. This fixture is deleted after validation." } : {}),
                   ...refSeed.overrides, ...parentOverrides, ...enrichmentOverrides });
               if ("failure" in rebuilt) return null;
-              const recompleted = personIdentityCompletion(fields, rebuilt.values as Record<string, unknown>);
+              const recompleted = eventSlotCompletion(objectName, fields,
+                personIdentityCompletion(fields, rebuilt.values as Record<string, unknown>));
               const retryEmail = (recompleted as Record<string, unknown>).Email;
               if ((priorEmail == null || priorEmail === "") && typeof retryEmail === "string" && retryEmail.length &&
                 !fixtureEmails.includes(retryEmail)) fixtureEmails.push(retryEmail);
@@ -4956,12 +5430,49 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
             result = { status: 422, body: { errorCode: "FLOW_RECORD_FIXTURE_UNVERIFIED", message: "The disposable Flow record failed readback verification." } }; break;
           }
           // Flow record variables do not automatically hydrate fields from an Id.
-          // Pass the fields read from our own disposable record, including server defaults.
-          args[String(field.name)] = { ...verified.body, attributes: { type: objectName } };
+          // Pass the fields read from our own disposable record — but sparse:
+          // system/audit/autonumber/formula fields poison the flow's Update
+          // Records elements (opaque UNKNOWN_EXCEPTION), so only Id plus
+          // updateable fields ride the input.
+          const keepable = new Set(fields.filter(item => item.updateable === true).map(item => String(item.name)));
+          keepable.add("Id");
+          const sparse: Record<string, unknown> = { attributes: { type: objectName } };
+          for (const [key, value] of Object.entries(verified.body)) {
+            if (keepable.has(key)) sparse[key] = value;
+          }
+          args[String(field.name)] = sparse;
           mappings.push({ inputName: String(field.name), objectName });
+        }
+        // The conventional recordId scalar rides the single mapped fixture:
+        // a synthetic there faults Id-filtered Gets, and a caller-supplied
+        // value must never reach the interview verbatim. With zero or
+        // several mappings the key is dropped (the flow faults honestly on
+        // a missing input rather than running on a foreign identity).
+        const recordIdKey = Object.keys(args).find(key => key.toLowerCase() === "recordid" &&
+          !mappings.some(entry => entry.inputName === key));
+        if (recordIdKey !== undefined) {
+          const bound = mappings.length === 1
+            ? fixtures.filter(entry => entry.objectName === mappings[0].objectName).at(-1)?.id
+            : undefined;
+          if (typeof bound === "string") args[recordIdKey] = bound;
+          else delete args[recordIdKey];
         }
         if (mappings.length === recordInputs.length) {
           result = await request(input.route, "POST", { inputs: [args] });
+          const single = Array.isArray(result.body) && result.body.length === 1 && object(result.body[0]) ? result.body[0] : null;
+          const opaque = single !== null && Array.isArray(single.errors) && single.errors.some((entry) => object(entry) &&
+            entry.statusCode === "UNKNOWN_EXCEPTION" && typeof entry.message === "string" &&
+            /error occurred when executing a flow interview/i.test(entry.message));
+          if (opaque && Object.values(args).some((value) => typeof value === "string")) {
+            // Vendors that split a scalar and index past its parts fault on
+            // unstructured text; one structured retry reuses the bound
+            // fixtures and only a native success adopts (fixtures sweep
+            // either way, so a failed retry keeps the original fault).
+            const structured: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(args)) structured[key] = commaStructuredProbeValue(value);
+            const retried = await request(input.route, "POST", { inputs: [structured] });
+            if (retried.ok && Array.isArray(retried.body) && retried.body.every((item) => object(item) && item.isSuccess === true)) result = retried;
+          }
         } else if (result === defaultOutcome && missedInputs.length > 0) {
           // Tried candidates missed the live catalog: the declared object is
           // absent from the org schema, which is exact terminal evidence
@@ -5008,12 +5519,17 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         if (residueSweep.queried && !residueSweep.verified) cleanupError = "Temporary Flow communication residue cleanup could not be verified.";
         for (const fixture of fixtures.reverse()) {
           const path = `${apiRoot}/sobjects/${fixture.objectName}/${fixture.id}`;
+          const before = await request(path);
+          if (before.ok && object(before.body) && before.body.CreatedById === row.integration_user_id &&
+              typeof before.body.OwnerId === "string" && before.body.OwnerId !== row.integration_user_id) {
+            await request(path, "PATCH", { OwnerId: row.integration_user_id });
+          }
           const deleted = await request(path, "DELETE");
           const verified = await request(path);
           if ((!deleted.ok && deleted.status !== 404) || verified.status !== 404) cleanupError = "Temporary Flow record cleanup could not be verified.";
         }
       }
-      return { ...result, contextSchema: { source: "salesforce_live_flow_record_inputs", mappings, residueSweep,
+      return { ...result, contextSchema: { source: "salesforce_live_flow_record_inputs", mappings, residueSweep, ownedRecords: fixtures.map(fixture => ({ objectName: fixture.objectName, id: fixture.id })),
         ...(omittedProbe ? { readOnlyOmittedProbe: true } : {}),
         ...(readOnlyEvident ? {} : { ownedReferencesOnly: true }),
         automaticSteps: ["Resolve record inputs against the live sObject catalog", "Describe required writable fields", "Create and read back disposable records", "Invoke with real record IDs", "Sweep communication residue", "Delete and verify fixtures"] },
@@ -5068,7 +5584,11 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
           const value = field && flowFixtureValue(field, nonce);
           if (value !== undefined) { overrides[binding.fieldName] = value; arguments_[binding.inputName] = value; }
         }
-        if (!Object.keys(overrides).length) continue;
+        // Id-filtered lookups bind the created fixture id itself (no
+        // synthesized value can stand in for an object id); other inputs
+        // without overrides still skip.
+        const idBoundInputs = lookupIdBindings(bindings, objectName);
+        if (!Object.keys(overrides).length && idBoundInputs.length === 0) continue;
         const values = await synthesizeRecordValues(env, row, apiRoot, objectName,
           "Action Searcher temporary flow context", overrides);
         if ("failure" in values) { result = values.failure; break; }
@@ -5082,6 +5602,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
           result = { status: 422, body: { errorCode: "FLOW_CONTEXT_VERIFICATION_FAILED",
             message: "The created lookup context did not match Salesforce's independent record read." } }; break;
         }
+        for (const inputName of idBoundInputs) arguments_[inputName] = id;
         const action = await request(input.route, "POST", { inputs: [arguments_] });
         result = action;
         if (action.ok && Array.isArray(action.body) && action.body.every(item => object(item) && item.isSuccess === true)) break;
@@ -5135,6 +5656,26 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       build: async (values) => synthesizeRecordValues(env, row, apiRoot, "Contact", "Action Searcher temporary verification-chain probe", values) });
   }
 
+  /** Run the output-linked verification chain for a refused custom Flow action. */
+  async invokeFlowVerifyLinkedChain(ref: Key, input: { apiVersion: string; route: string }):
+    Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    const match = typeof input?.route === "string" && input.route.match(
+      /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
+    if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion) {
+      throw authFailure(400, "invalid_flow_verify_linked_chain", "A discovered Flow route and API version are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await credentialForEntrypoint(env, ref);
+    const apiRoot = `/services/data/v${input.apiVersion}`;
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+      return { status: response.status, ok: response.ok, body: await responseJson(response) };
+    };
+    return invokeFlowVerifyLinkedChain({ root: apiRoot, route: input.route, request,
+      build: async (values) => synthesizeRecordValues(env, row, apiRoot, "Contact", "Action Searcher temporary verify-linked probe", values) });
+  }
+
   /** Run the owned-substrate chain for a refused custom Flow action. */
   async invokeFlowOwnedSubstrateChain(ref: Key, input: { apiVersion: string; route: string; plan: OwnedSubstratePlan; verificationWindowMs?: number }):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
@@ -5148,7 +5689,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const apiRoot = `/services/data/v${input.apiVersion}`;
     const request = async (path: string, method = "GET", body?: unknown) => {
       const response = await sfRequest(env, row, path, method, body === undefined ? undefined : JSON.stringify(body),
-        crypto.randomUUID(), true, AbortSignal.timeout(60_000));
+        crypto.randomUUID(), true, AbortSignal.timeout(60_000), fixtureCreateHeaders(method, path));
       return { status: response.status, ok: response.ok, body: await responseJson(response) };
     };
     if (!row.integration_user_id || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(row.integration_user_id)) {

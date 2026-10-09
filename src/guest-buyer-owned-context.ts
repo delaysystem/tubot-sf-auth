@@ -5,7 +5,8 @@ const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?
 const successful = (r: Result) => r.ok && Array.isArray(r.body) && r.body.length === 1 && r.body[0]?.isSuccess === true && !r.body[0].errors?.length;
 export const GUEST_BUYER_ACTIONS = ['registerGuestBuyer'];
 export const GUEST_BUYER_OBJECTS = ['WebStore', 'Account'];
-export const GUEST_BUYER_LIFECYCLE_BUILDER_VERSION = 85;
+/** 86: person-account shadows verify cascade absence with bounded re-reads instead of joining the delete batch. */
+export const GUEST_BUYER_LIFECYCLE_BUILDER_VERSION = 86;
 
 /** Guest-buyer registration operates only on an owned store and buyer account. */
 export async function invokeGuestBuyerRegistration(input: {
@@ -98,16 +99,40 @@ export async function invokeGuestBuyerRegistration(input: {
         if(attemptedBuyer)await find('Account',`Name='${marker}'`);
         if(contactQueryable&&accountId)await find('Contact',`AccountId='${accountId}'`,'Id,AccountId');
       }catch{cleanupError='Owned guest-buyer cleanup could not be independently read back.';}
-      // Person-account shadows cannot be deleted directly (400
-      // INVALID_PERSON_ACCOUNT_OPERATION, live-verified); the Person Account
-      // delete cascades its shadow, so the account precedes the contact and
-      // the contact legs verify cascade absence.
-      const cleaned=await cleanupOwnedContext({root,request,records:owned,order:['WebStore','Account','Contact'],scopes:[
+      const storeRecords=owned.filter(v=>v.objectName==='WebStore'||v.objectName==='Account');
+      const contactRecords=owned.filter(v=>v.objectName==='Contact');
+      const cleaned=await cleanupOwnedContext({root,request,records:storeRecords,order:['WebStore','Account'],scopes:[
         {objectName:'WebStore',equals:{Name:marker}}, {objectName:'Account',equals:{Name:marker}},
-        ...(accountId?[{objectName:'Contact',equals:{AccountId:accountId},ownedParents:[{field:'AccountId',objectName:'Account'}]}]:[]),
       ]});
       cleanupError ??= cleaned.cleanupError;
-      owned.splice(0,owned.length,...cleaned.ownedRecords);
+      owned.splice(0,owned.length,...cleaned.ownedRecords,...contactRecords.filter(v=>!cleaned.ownedRecords.some(w=>w.objectName===v.objectName&&w.id===v.id)));
+      // Person-account shadows cannot be deleted directly (400
+      // INVALID_PERSON_ACCOUNT_OPERATION, live-verified); the Person Account
+      // delete cascades its shadow, so contacts verify cascade absence with
+      // bounded re-reads instead of joining the delete batch.
+      for(const contact of contactRecords){
+        try{
+          const read=await request(root+'/sobjects/Contact/'+contact.id);
+          if(read.status===404||(read.ok&&read.body===null))continue;
+          if(!read.ok)throw Error('contact readback failed');
+          if(read.body?.LastName===marker){
+            let gone=false;
+            for(let i=0;i<3&&!gone;i++){
+              if(i>0)await new Promise(r=>setTimeout(r,1000));
+              const reread=await request(root+'/sobjects/Contact/'+contact.id);
+              if(reread.status===404)gone=true;
+            }
+            if(!gone)throw Error('shadow cascade absence unverified');
+          }else{
+            const deleted=await request(root+'/sobjects/Contact/'+contact.id,'DELETE');
+            if(!deleted.ok&&deleted.status!==404)throw Error('contact delete refused');
+            const verify=await request(root+'/sobjects/Contact/'+contact.id);
+            if(verify.status!==404)throw Error('contact absence unverified');
+          }
+        }catch(cascadeError){
+          cleanupError ??= 'Owned guest-buyer shadow cleanup could not be verified: '+(cascadeError instanceof Error?cascadeError.message:'unknown');
+        }
+      }
     }
     const result={status:outcome.status,body:outcome.body,cleanupError,contextSchema:{source:'salesforce_live_native_guest_buyer_action',objects:Object.values(schemas),descriptor:descriptor.body,marker,storeType:type,storeId,accountId,ownedRecords:owned,verified,nativeEvidence,outputKeys,
       verificationRecordIds:accountId?[accountId]:[],automaticSteps:['Read live native descriptor and owned record schemas','Select only published store types','Create and read back an owned store and buyer','Invoke native registerGuestBuyer and verify the declared output','Delete owned context and independently CLI verify absence']}};

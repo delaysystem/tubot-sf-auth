@@ -16,15 +16,12 @@
                             <div class="slds-page-header__name">
                                 <div class="slds-page-header__name-title">
                                     <h1>
-                                        <span class="slds-page-header__title slds-truncate" title="Panel OAuth and Salesforce Channel API Settings">
-                                            Panel OAuth 2.0 & Channel API Settings
+                                        <span class="slds-page-header__title slds-truncate" title="TuBot Settings">
+                                            TuBot Settings
                                         </span>
                                     </h1>
                                 </div>
                             </div>
-                            <p class="slds-page-header__name-meta">
-                                Multi-Tenant Isolation &amp; Channel API Settings
-                            </p>
                         </div>
                     </div>
                 </div>
@@ -113,12 +110,12 @@
                                     </template>
                                 </div>
                             </template>
-                            <template if:true={wizardUserOptions.length}>
+                            <template if:true={integrationUserOptions.length}>
                                 <lightning-combobox
                                     label="Integration user"
-                                    value={selectedWizardUserId}
-                                    options={wizardUserOptions}
-                                    onchange={handleWizardSelectUser}
+                                    value={selectedIntegrationUserId}
+                                    options={integrationUserOptions}
+                                    onchange={handleIntegrationUserChange}
                                     disabled={simpleSetupRunning}
                                     class="slds-m-bottom_small">
                                 </lightning-combobox>
@@ -177,364 +174,7 @@
                             </div>
                         </div>
                     </article>
-                    <template if:true={showLegacySetupUi}>
-                    <!-- Progress Indicator -->
-                    <div class="slds-box slds-theme_default slds-m-bottom_medium">
-                        <lightning-progress-indicator current-step={wizardStep} type="path" variant="base">
-                            <lightning-progress-step label="1. Org Health Check" value="health" onclick={handleWizardStepClick}></lightning-progress-step>
-                            <lightning-progress-step label="2. Integration User" value="user" onclick={handleWizardStepClick}></lightning-progress-step>
-                            <lightning-progress-step label="3. External Client App" value="eca" onclick={handleWizardStepClick}></lightning-progress-step>
-                            <lightning-progress-step label="4. Connect & Verify" value="connect" onclick={handleWizardStepClick}></lightning-progress-step>
-                        </lightning-progress-indicator>
-                    </div>
 
-                    <!-- STEP 1: Org Health Check -->
-                    <template if:true={isWizardStepHealth}>
-                        <article class="slds-card slds-box slds-theme_default">
-                            <div class="slds-card__header slds-grid">
-                                <header class="slds-media slds-media_center slds-has-flexi-truncate">
-                                    <div class="slds-media__figure">
-                                        <lightning-icon icon-name="standard:service_crew" size="small"></lightning-icon>
-                                    </div>
-                                    <div class="slds-media__body">
-                                        <h2 class="slds-card__header-title">
-                                            <span class="slds-text-heading_small font-bold">Step 1: Org Readiness &amp; Permissions Health Check</span>
-                                        </h2>
-                                        <p class="slds-text-body_small text-gray-500">
-                                            Verifies Salesforce org prerequisites, packaged permission sets, license availability, and Panel OAuth grounding.
-                                        </p>
-                                    </div>
-                                </header>
-                            </div>
-                            <div class="slds-card__body slds-card__body_inner">
-                                <template if:true={isWizardHealthLoading}>
-                                    <lightning-spinner alternative-text="Checking health..." size="small"></lightning-spinner>
-                                </template>
-                                <template if:false={isWizardHealthLoading}>
-                                    <template if:true={wizardHealth}>
-                                        <div class="slds-grid slds-gutters slds-wrap">
-                                            <!-- Card 1: External Client Apps -->
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
-                                                <div class="slds-box slds-theme_shade slds-p-around_small">
-                                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                                                        <div>
-                                                            <div class="font-bold">External Client Apps (ECA)</div>
-                                                            <div class="slds-text-body_small text-gray-600">Salesforce OAuth 2.0 Inbound Standard</div>
-                                                        </div>
-                                                        <template if:true={wizardHealth.isEcaAvailable}>
-                                                            <span class="slds-badge slds-theme_success">Available</span>
-                                                        </template>
-                                                        <template if:false={wizardHealth.isEcaAvailable}>
-                                                            <span class="slds-badge slds-theme_warning">Check Setup</span>
-                                                        </template>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <!-- Card 2: Panel OAuth Session -->
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
-                                                <div class="slds-box slds-theme_shade slds-p-around_small">
-                                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                                                        <div>
-                                                            <div class="font-bold">Panel OAuth Connection</div>
-                                                            <div class="slds-text-body_small text-gray-600">{wizardHealth.panelTeamName}</div>
-                                                        </div>
-                                                        <template if:true={wizardHealth.isPanelConnected}>
-                                                            <span class="slds-badge slds-theme_success">Connected</span>
-                                                        </template>
-                                                        <template if:false={wizardHealth.isPanelConnected}>
-                                                            <span class="slds-badge slds-theme_warning">Login Required</span>
-                                                        </template>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <!-- Card 3: Packaged Permission Sets -->
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
-                                                <div class="slds-box slds-theme_shade slds-p-around_small">
-                                                    <div class="font-bold slds-m-bottom_xx-small">Packaged Permission Sets</div>
-                                                    <div class="slds-grid slds-grid_align-spread slds-m-bottom_xx-small">
-                                                        <span class="slds-text-body_small">Tubot_Salesforce_API_Read:</span>
-                                                        <template if:true={wizardHealth.hasApiReadPermissionSet}>
-                                                            <span class="slds-badge slds-theme_success">Installed</span>
-                                                        </template>
-                                                        <template if:false={wizardHealth.hasApiReadPermissionSet}>
-                                                            <span class="slds-badge slds-theme_error">Missing</span>
-                                                        </template>
-                                                    </div>
-                                                    <div class="slds-grid slds-grid_align-spread">
-                                                        <span class="slds-text-body_small">Panel_Settings_Admin_Access:</span>
-                                                        <template if:true={wizardHealth.hasSettingsAdminPermissionSet}>
-                                                            <span class="slds-badge slds-theme_success">Installed</span>
-                                                        </template>
-                                                        <template if:false={wizardHealth.hasSettingsAdminPermissionSet}>
-                                                            <span class="slds-badge slds-theme_error">Missing</span>
-                                                        </template>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <!-- Card 4: Salesforce Integration Licenses -->
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
-                                                <div class="slds-box slds-theme_shade slds-p-around_small">
-                                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                                                        <div>
-                                                            <div class="font-bold">Integration User Licenses</div>
-                                                            <div class="slds-text-body_small text-gray-600">
-                                                                Available: <strong>{wizardHealth.availableIntegrationLicenses}</strong> / Total: {wizardHealth.totalIntegrationLicenses}
-                                                            </div>
-                                                        </div>
-                                                        <span class="slds-badge slds-theme_default">{wizardHealth.availableIntegrationLicenses} Free</span>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </template>
-
-                                    <div class="slds-notify slds-notify_alert slds-alert_info slds-m-top_small" role="alert">
-                                        <span class="slds-assistive-text">AppExchange Compliance Notice</span>
-                                        <span>
-                                            <strong>AppExchange Zero-Trust Architecture:</strong> Salesforce requires that External Client App policies and execution users be explicitly approved and configured by an administrator. This wizard helps you configure least-privilege API access without sharing passwords or global administrative profiles.
-                                        </span>
-                                    </div>
-
-                                    <div class="slds-m-top_medium slds-text-align_right">
-                                        <lightning-button variant="brand" label="Next: Select Integration User" icon-name="utility:forward" icon-position="right" onclick={handleWizardGoToUser}></lightning-button>
-                                    </div>
-                                </template>
-                            </div>
-                        </article>
-                    </template>
-
-                    <!-- STEP 2: Integration User Selection & Role Validation -->
-                    <template if:true={isWizardStepUser}>
-                        <article class="slds-card slds-box slds-theme_default">
-                            <div class="slds-card__header slds-grid">
-                                <header class="slds-media slds-media_center slds-has-flexi-truncate">
-                                    <div class="slds-media__figure">
-                                        <lightning-icon icon-name="standard:user" size="small"></lightning-icon>
-                                    </div>
-                                    <div class="slds-media__body">
-                                        <h2 class="slds-card__header-title">
-                                            <span class="slds-text-heading_small font-bold">Step 2: Integration User Selection &amp; Permission Assignment</span>
-                                        </h2>
-                                        <p class="slds-text-body_small text-gray-500">
-                                            Select a dedicated Integration User for API execution. The package will assign <code>Tubot_Salesforce_API_Read</code>.
-                                        </p>
-                                    </div>
-                                </header>
-                            </div>
-                            <div class="slds-card__body slds-card__body_inner">
-                                <div class="slds-form-element slds-m-bottom_medium">
-                                    <lightning-combobox
-                                        label="Select Integration User in Org"
-                                        placeholder="Choose an active user..."
-                                        value={selectedWizardUserId}
-                                        options={wizardUserOptions}
-                                        onchange={handleWizardSelectUser}>
-                                    </lightning-combobox>
-                                </div>
-
-                                <template if:true={selectedWizardUser}>
-                                    <div class="slds-box slds-theme_shade slds-m-bottom_medium">
-                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_x-small">
-                                            <div>
-                                                <h3 class="font-bold text-sm">{selectedWizardUser.name}</h3>
-                                                <div class="font-mono text-xs text-gray-600">{selectedWizardUser.username}</div>
-                                            </div>
-                                            <template if:true={selectedWizardUser.isIntegrationProfile}>
-                                                <span class="slds-badge slds-theme_success">Dedicated Integration Profile</span>
-                                            </template>
-                                        </div>
-                                        <div class="slds-grid slds-grid_align-spread slds-m-bottom_x-small text-xs">
-                                            <span class="text-gray-500">Profile:</span>
-                                            <span class="font-semibold">{selectedWizardUser.profileName}</span>
-                                        </div>
-                                        <div class="slds-grid slds-grid_align-spread slds-m-bottom_x-small text-xs">
-                                            <span class="text-gray-500">User ID:</span>
-                                            <span class="font-mono">{selectedWizardUser.id}</span>
-                                        </div>
-                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-p-top_x-small slds-border_top">
-                                            <div>
-                                                <span class="text-xs text-gray-600">Tubot API Read Permission Set: </span>
-                                                <template if:true={selectedWizardUser.hasApiPermission}>
-                                                    <span class="slds-badge slds-theme_success font-bold">Assigned</span>
-                                                </template>
-                                                <template if:false={selectedWizardUser.hasApiPermission}>
-                                                    <span class="slds-badge slds-theme_warning">Not Assigned</span>
-                                                </template>
-                                            </div>
-                                            <template if:false={selectedWizardUser.hasApiPermission}>
-                                                <lightning-button
-                                                    variant="brand-outline"
-                                                    label="Assign Tubot API Permission Set"
-                                                    icon-name="utility:shield"
-                                                    onclick={handleWizardAssignPermission}
-                                                    disabled={isAssigningPermission}>
-                                                </lightning-button>
-                                            </template>
-                                        </div>
-                                    </div>
-                                </template>
-
-                                <div class="slds-grid slds-grid_align-spread slds-m-top_medium">
-                                    <lightning-button label="Back" icon-name="utility:back" onclick={handleWizardGoToHealth}></lightning-button>
-                                    <lightning-button variant="brand" label="Next: External Client App Setup" icon-name="utility:forward" icon-position="right" onclick={handleWizardGoToEca} disabled={wizardNextFromUserDisabled}></lightning-button>
-                                </div>
-                            </div>
-                        </article>
-                    </template>
-
-                    <!-- STEP 3: External Client App Setup -->
-                    <template if:true={isWizardStepEca}>
-                        <article class="slds-card slds-box slds-theme_default">
-                            <div class="slds-card__header slds-grid">
-                                <header class="slds-media slds-media_center slds-has-flexi-truncate">
-                                    <div class="slds-media__figure">
-                                        <lightning-icon icon-name="standard:connected_apps" size="small"></lightning-icon>
-                                    </div>
-                                    <div class="slds-media__body">
-                                        <h2 class="slds-card__header-title">
-                                            <span class="slds-text-heading_small font-bold">Step 3: Execution Client Pre-Authorization</span>
-                                        </h2>
-                                        <p class="slds-text-body_small text-gray-500">
-                                            The TuBot Channel API client ships in the package. Run the policies command once per org, then connect.
-                                        </p>
-                                    </div>
-                                </header>
-                            </div>
-                            <div class="slds-card__body slds-card__body_inner">
-                                <template if:true={wizardEcaGuidance}>
-                                    <div class="slds-box slds-theme_shade slds-m-bottom_medium">
-                                        <h3 class="font-bold text-xs uppercase tracking-wider text-gray-700 slds-m-bottom_small">Required ECA Parameters (AppExchange Grounded)</h3>
-                                        <div class="slds-grid slds-gutters slds-wrap text-xs">
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_x-small">
-                                                <span class="text-gray-500">App Name:</span>
-                                                <span class="font-mono font-bold block">{wizardEcaGuidance.recommendedAppName}</span>
-                                            </div>
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_x-small">
-                                                <span class="text-gray-500">OAuth Scopes:</span>
-                                                <span class="font-mono font-bold block">{wizardEcaGuidance.requiredScopes}</span>
-                                            </div>
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_x-small">
-                                                <span class="text-gray-500">OAuth Flow:</span>
-                                                <span class="font-bold block">{wizardEcaGuidance.oauthFlow}</span>
-                                            </div>
-                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_x-small">
-                                                <span class="text-gray-500">Run As Integration User:</span>
-                                                <span class="font-mono font-bold text-indigo-700 block">{selectedWizardUserUsername}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </template>
-
-                                <div class="slds-box slds-box_x-small slds-theme_default slds-m-bottom_medium">
-                                    <ol class="slds-list_ordered slds-text-body_small slds-m-left_medium">
-                                        <li class="slds-m-bottom_xx-small">From the package folder, run the policies command (uses your own authenticated CLI session, no secrets):</li>
-                                    </ol>
-                                    <pre class="slds-box slds-theme_shade slds-text-body_small slds-m-vertical_x-small"><lightning-formatted-text value={wizardEcaPoliciesCli}></lightning-formatted-text></pre>
-                                    <ol class="slds-list_ordered slds-text-body_small slds-m-left_medium" start="2">
-                                        <li class="slds-m-bottom_xx-small">The command creates the subscriber pre-authorization and locks the packaged app to admin-approved users.</li>
-                                        <li>Assigning the integration user (Step 2) grants pre-auth membership automatically. Nothing to paste, no Setup clicks.</li>
-                                    </ol>
-                                    <div class="slds-m-top_small">
-                                        <lightning-button
-                                            label="Open External Client App Manager"
-                                            icon-name="utility:new_window"
-                                            onclick={handleOpenEcaSetup}>
-                                        </lightning-button>
-                                    </div>
-                                </div>
-
-                                <div class="slds-grid slds-grid_align-spread slds-m-top_medium">
-                                    <lightning-button label="Back" icon-name="utility:back" onclick={handleWizardGoToUser}></lightning-button>
-                                    <lightning-button variant="brand" label="Next: Connect &amp; Verify Channel" icon-name="utility:forward" icon-position="right" onclick={handleWizardGoToConnect}></lightning-button>
-                                </div>
-                            </div>
-                        </article>
-                    </template>
-
-                    <!-- STEP 4: Connect Channel & End-to-End Verification -->
-                    <template if:true={isWizardStepConnect}>
-                        <article class="slds-card slds-box slds-theme_default">
-                            <div class="slds-card__header slds-grid">
-                                <header class="slds-media slds-media_center slds-has-flexi-truncate">
-                                    <div class="slds-media__figure">
-                                        <lightning-icon icon-name="standard:record_create" size="small"></lightning-icon>
-                                    </div>
-                                    <div class="slds-media__body">
-                                        <h2 class="slds-card__header-title">
-                                            <span class="slds-text-heading_small font-bold">Step 4: Register &amp; Verify Channel</span>
-                                        </h2>
-                                        <p class="slds-text-body_small text-gray-500">
-                                            Register your Messaging Channel. Panel verifies the Run As mapping server-side; nothing to paste.
-                                        </p>
-                                    </div>
-                                </header>
-                            </div>
-                            <div class="slds-card__body slds-card__body_inner">
-                                <template if:true={wizardConnectSuccess}>
-                                    <div class="slds-notify slds-notify_alert slds-alert_success slds-m-bottom_medium" role="alert">
-                                        <span class="slds-assistive-text">Success</span>
-                                        <span>
-                                            🎉 <strong>Setup Complete!</strong> The channel has been verified and securely registered with Panel. The integration user and Run As mapping are fully grounded.
-                                        </span>
-                                    </div>
-                                </template>
-
-                                <div class="slds-form slds-form_stacked slds-m-bottom_medium">
-                                    <lightning-combobox
-                                        label="Target Messaging Channel"
-                                        value={wizardSelectedChannelId}
-                                        options={messagingChannelOptions}
-                                        onchange={handleWizardChannelChange}
-                                        placeholder="Select channel...">
-                                    </lightning-combobox>
-
-                                    <div class="slds-form-element slds-m-top_small">
-                                        <label class="slds-form-element__label">Selected Integration User</label>
-                                        <div class="slds-form-element__control">
-                                            <div class="slds-box slds-box_x-small slds-theme_shade font-mono text-xs">
-                                                {selectedWizardUserDisplayName}
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <p class="slds-text-body_small slds-m-top_small">
-                                        The packaged TuBot Channel API client authenticates Panel. Registration fails closed if its Run As user does not match the integration user above.
-                                    </p>
-
-                                    <div class="slds-m-top_medium">
-                                        <lightning-button
-                                            variant="brand"
-                                            label="Connect &amp; Verify Channel API"
-                                            icon-name="utility:link"
-                                            onclick={handleWizardConnectChannel}
-                                            disabled={wizardConnectDisabled}>
-                                        </lightning-button>
-                                    </div>
-                                </div>
-
-                                <div class="slds-grid slds-grid_align-spread slds-m-top_medium slds-border_top slds-p-top_small">
-                                    <lightning-button label="Back" icon-name="utility:back" onclick={handleWizardGoToEca}></lightning-button>
-                                    <lightning-button variant="neutral" label="Restart Wizard" icon-name="utility:refresh" onclick={handleWizardRestart}></lightning-button>
-                                </div>
-                            </div>
-                        </article>
-                    </template>
-                    </template>
-                    <!-- Advanced fallback: manual CLI setup script (collapsed, de-emphasized) -->
-                    <lightning-accordion allow-multiple-sections-open class="slds-m-top_medium">
-                        <lightning-accordion-section name="cliPostinstall" label="Advanced: Manual Setup Script">
-                            <p class="slds-text-body_small slds-m-bottom_x-small">
-                                Prefer Simple Setup above. For break-glass or offline review, the same flow is available as a standalone script (Python 3.9+, curl, authenticated Salesforce CLI).
-                            </p>
-                            <pre class="slds-box slds-theme_shade slds-text-body_small font-mono" style="white-space: pre-wrap; word-break: break-all; font-size: 0.75rem;"><lightning-formatted-text value={postinstallCommand}></lightning-formatted-text></pre>
-                            <div class="slds-m-top_x-small">
-                                <lightning-button variant="neutral" label="Copy Command" icon-name="utility:copy" onclick={handleCopyPostinstallCommand} size="small"></lightning-button>
-                            </div>
-                        </lightning-accordion-section>
-                    </lightning-accordion>
                 </div>
             </lightning-tab>
 
@@ -551,20 +191,37 @@
                             </div>
                             <div class="slds-media__body">
                                 <h2 class="slds-card__header-title">
-                                    <span class="slds-truncate slds-text-heading_small font-bold">Panel OAuth Connection</span>
+                                    <span class="slds-truncate slds-text-heading_small font-bold" onclick={handleRevealPanelEnvironmentToggle}>Panel OAuth Connection</span>
                                 </h2>
                             </div>
                         </header>
                     </div>
                     <div class="slds-card__body slds-card__body_inner">
-                        <!-- Modern External Credentials Production Endpoint -->
+                        <template if:true={showPanelEnvironmentToggle}>
+                            <div class="slds-box slds-theme_warning slds-m-bottom_small">
+                                <div class="slds-grid slds-wrap slds-grid_align-spread slds-grid_vertical-align-center">
+                                    <div class="slds-col slds-size_1-of-1 slds-medium-size_8-of-12">
+                                        <div class="slds-text-title_bold">Panel and auth environment</div>
+                                        <p class="slds-text-body_small">This setting applies to the whole Salesforce org. Switching environments revokes the current Panel session; connect again after the change.</p>
+                                    </div>
+                                    <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12">
+                                        <lightning-input type="toggle" label="Use staging Panel and auth" checked={isStagingPanelEnvironment}
+                                            message-toggle-active="Staging" message-toggle-inactive="Production"
+                                            disabled={isPanelEnvironmentToggleDisabled} onchange={handlePanelEnvironmentToggle}>
+                                        </lightning-input>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- Modern External Credentials Panel Environment -->
                         <div class="slds-box slds-box_x-small slds-theme_shade slds-m-bottom_small slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
                             <div class="slds-media slds-media_center">
                                 <div class="slds-media__figure">
                                     <lightning-icon icon-name="standard:service_territory" size="small"></lightning-icon>
                                 </div>
                                 <div class="slds-media__body">
-                                    <div class="slds-text-body_small slds-text-color_weak font-semibold">Production Endpoint</div>
+                                    <div class="slds-text-body_small slds-text-color_weak font-semibold">{panelEnvironmentLabel} Endpoint</div>
                                     <div class="font-mono text-xs font-bold text-indigo-700">{panelBaseUrl}</div>
                                 </div>
                             </div>
@@ -603,74 +260,12 @@
                                 <lightning-button variant="destructive-text" label="Disconnect Panel" icon-name="utility:logout" onclick={handleLogout}></lightning-button>
                             </div>
 
-                            <template if:true={showLegacySetupUi}>
-                            <!-- Technical rows + live Panel data, collapsed by default -->
-                            <lightning-accordion allow-multiple-sections-open class="slds-m-bottom_medium">
-                                <lightning-accordion-section name="connectionDetails" label="Connection details">
-                                    <div class="slds-grid slds-grid_align-spread slds-m-bottom_xx-small">
-                                        <span class="slds-text-color_weak slds-text-body_small">OAuth Protocol:</span>
-                                        <span class="slds-badge slds-theme_success font-bold">PKCE S256 (No Client Secrets)</span>
-                                    </div>
-                                    <div class="slds-grid slds-grid_align-spread slds-m-bottom_xx-small">
-                                        <span class="slds-text-color_weak slds-text-body_small">Named Credential:</span>
-                                        <span class="font-mono text-xs font-bold text-indigo-700">callout:{namedCredentialName}</span>
-                                    </div>
-                                    <div class="slds-grid slds-grid_align-spread slds-m-bottom_small">
-                                        <span class="slds-text-color_weak slds-text-body_small">External Credential:</span>
-                                        <span class="font-mono text-xs text-gray-700">{externalCredentialName}</span>
-                                    </div>
-                                    <lightning-button variant="brand-outline" label="Inspect Panel APIs" icon-name="utility:preview" onclick={handleTogglePanelData}></lightning-button>
-                                    <template if:true={showPanelData}>
-                                        <div class="slds-box slds-m-top_small bg-white">
-                                            <lightning-tabset>
-                                                <lightning-tab label="Subscription" icon-name="utility:money">
-                                                    <template if:true={subscriptionData}>
-                                                        <div class="slds-m-around_x-small text-xs space-y-1">
-                                                            <div><strong>Plan:</strong> {subscriptionData.subscription.planName} ({subscriptionData.subscription.status})</div>
-                                                            <div><strong>Credit Balance:</strong> {subscriptionData.subscription.purchasedCreditBalance}</div>
-                                                            <div><strong>Seats:</strong> {subscriptionData.subscription.limits.teamSeats}</div>
-                                                            <div class="slds-m-top_x-small text-muted text-gray-500">
-                                                                Protected API endpoint: <code>GET /api/v1/subscription</code> via <code>callout:{namedCredentialName}</code>
-                                                            </div>
-                                                        </div>
-                                                    </template>
-                                                    <template if:false={subscriptionData}>
-                                                        <lightning-button label="Load Subscription" onclick={handleLoadSubscription} size="small"></lightning-button>
-                                                    </template>
-                                                </lightning-tab>
-                                                <lightning-tab label="Team Members" icon-name="utility:groups">
-                                                    <template if:true={teamMembersData}>
-                                                        <ul class="slds-has-dividers_bottom slds-m-around_x-small text-xs">
-                                                            <template for:each={teamMembersData.members} for:item="m">
-                                                                <li key={m.id} class="slds-item slds-p-vertical_xx-small">
-                                                                    <strong>{m.name}</strong> ({m.email}) - <span class="slds-badge">{m.role}</span>
-                                                                </li>
-                                                            </template>
-                                                        </ul>
-                                                    </template>
-                                                    <template if:false={teamMembersData}>
-                                                        <lightning-button label="Load Team Members" onclick={handleLoadTeamMembers} size="small"></lightning-button>
-                                                    </template>
-                                                </lightning-tab>
-                                            </lightning-tabset>
-                                        </div>
-                                    </template>
-                                </lightning-accordion-section>
-                            </lightning-accordion>
-                            </template>
+
                         </template>
 
                         <!-- Disconnected State -->
                         <template if:false={isConnected}>
                             <div class="slds-text-align_center slds-m-vertical_medium">
-                                <div class="slds-box slds-box_x-small slds-theme_shade slds-m-bottom_small" style="border-left: 4px solid #4f46e5;">
-                                    <div class="slds-text-title_bold text-indigo-700 slds-m-bottom_xx-small">
-                                        🛡️ Modern Salesforce External Credentials Framework
-                                    </div>
-                                    <p class="slds-text-body_small text-gray-600">
-                                        Panel login uses OAuth 2.0 PKCE (S256) with a Client ID and no client secret. Its token is secured in <code>{externalCredentialName}</code> and calls route via <code>callout:{namedCredentialName}</code>. Channel API setup sends identity only — Panel mints short-lived JWT tokens with the packaged execution client and there is no secret to paste.
-                                    </p>
-                                </div>
                                 <p class="slds-text-color_weak slds-m-bottom_small">
                                     Log in with your Panel account to authorize access to subscription quotas, team roles, and Salesforce channel API management.
                                 </p>
@@ -706,7 +301,7 @@
                                                     Connecting to Panel OAuth...
                                                 </div>
                                                 <div class="slds-text-body_small text-indigo-700">
-                                                    Approve access in the popup. This page connects automatically once approved — no further clicks needed.
+                                                    Approve access in the popup. This page connects automatically once approved. If you close the popup, use Cancel to stop waiting.
                                                 </div>
                                             </div>
                                         </div>
@@ -718,7 +313,6 @@
 
                                 <div class="slds-grid slds-wrap slds-grid_vertical-align-center">
                                     <lightning-button variant="brand" label="Connect with Panel (PKCE OAuth 2.0)" icon-name="utility:lock" onclick={handleStartOAuth} class="slds-m-bottom_small slds-m-right_x-small"></lightning-button>
-                                    <lightning-button variant="neutral" label="Connect with Different Account" icon-name="utility:switch" onclick={handleStartOAuthDifferentAccount} class="slds-m-bottom_small"></lightning-button>
                                 </div>
                             </div>
                         </template>
@@ -727,67 +321,7 @@
             </div>
         </div>
 
-        <template if:true={showLegacySetupUi}>
-        <template if:true={isConnected}>
-            <article class="slds-card slds-box slds-theme_default slds-m-top_medium">
-                <h2 class="slds-text-heading_small slds-m-bottom_small">Salesforce API access by Messaging Channel</h2>
-                <p class="slds-text-body_small slds-m-bottom_medium">
-                    Panel login uses a Salesforce External Credential for the Panel token. Salesforce API access uses the packaged TuBot Channel API client.
-                    The package assigns its API permission set to the selected user; Panel mints short-lived tokens and verifies the Run As mapping during registration.
-                    One execution user per channel: the integration user configured as Run As on the packaged app.
-                </p>
-                <template if:true={apiConnectionsError}>
-                    <div class="slds-notify slds-notify_alert slds-alert_error slds-m-bottom_small" role="alert">
-                        <span class="slds-assistive-text">Error</span>
-                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                            <span>{apiConnectionsError}</span>
-                            <lightning-button label="Retry status" variant="neutral" onclick={handleRetryApiConnections}></lightning-button>
-                        </div>
-                    </div>
-                </template>
-                <template if:true={apiConnectionSetupError}>
-                    <div class="slds-notify slds-notify_alert slds-alert_error slds-m-bottom_small" role="alert">
-                        <span class="slds-assistive-text">Error</span>
-                        <span>{apiConnectionSetupError}</span>
-                    </div>
-                </template>
-                <lightning-combobox label="Messaging Channel" value={selectedChannelId} options={messagingChannelOptions}
-                    onchange={handleChannelChange}></lightning-combobox>
-                <template if:true={selectedChannelApiConnected}>
-                    <div class="slds-m-top_small"><lightning-badge label="Connected to Panel"></lightning-badge></div>
-                    <div class="slds-box slds-theme_shade slds-m-top_small">
-                        <p class="slds-text-title_bold slds-m-bottom_x-small">Connected execution users</p>
-                        <template for:each={selectedChannelExecutionUsers} for:item="executionUser">
-                            <div key={executionUser.integrationUserId} class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-p-vertical_xx-small">
-                                <span class="slds-text-body_small">{executionUser.integrationUserId}</span>
-                                <template if:true={executionUser.isPrimary}>
-                                    <lightning-badge label="Primary"></lightning-badge>
-                                </template>
-                            </div>
-                        </template>
-                    </div>
-                    <lightning-button class="slds-m-top_small" variant="destructive" label="Disconnect channel API access"
-                        onclick={handleDisconnectApiChannel} disabled={apiConnectionDisabled}></lightning-button>
-                    <lightning-button class="slds-m-top_small slds-m-left_x-small" variant="brand-outline" label="View Tool Proxy Endpoints" icon-name="utility:link" onclick={handleFetchToolProxies} disabled={toolProxiesLoading}></lightning-button>
-                </template>
-                <template if:false={selectedChannelApiConnected}>
-                    <template if:true={selectedChannelApiPending}>
-                        <p class="slds-m-top_small">API permission setup is pending or registration did not finish. Retry Connect, or cancel this setup.</p>
-                        <lightning-button variant="destructive-text" label="Cancel incomplete setup"
-                            onclick={handleDisconnectApiChannel} disabled={apiConnectionDisabled}></lightning-button>
-                    </template>
-                    <lightning-input class="slds-m-top_small" label="Integration user ID" value={apiIntegrationUserId}
-                        onchange={handleApiIntegrationUserChange}></lightning-input>
-                    <lightning-button class="slds-m-top_small" variant="brand" label="Connect channel API access"
-                        onclick={handleConnectApiChannel} disabled={apiConnectionDisabled}></lightning-button>
-                    <p class="slds-text-body_small slds-m-top_x-small">
-                        Assign the integration user as Run As on the packaged TuBot Channel API app first (Step 3 of the Setup Wizard tab).
-                        Registration verifies the mapping server-side; there is nothing to paste.
-                    </p>
-                </template>
-            </article>
-        </template>
-        </template>
+
 
     </lightning-tab>
 
@@ -1200,111 +734,7 @@
         <div class="slds-backdrop slds-backdrop_open"></div>
     </template>
 
-    <!-- Callable Tool Proxy Endpoints Modal -->
-    <template if:true={isToolProxyModalOpen}>
-        <section role="dialog" tabindex="-1" class="slds-modal slds-fade-in-open slds-modal_medium" aria-modal="true" aria-labelledby="tool-proxy-modal-title">
-            <div class="slds-modal__container">
-                <header class="slds-modal__header">
-                    <button class="slds-button slds-button_icon slds-modal__close" title="Close" onclick={handleCloseToolProxyModal}>
-                        <lightning-icon icon-name="utility:close" size="small" variant="inverse"></lightning-icon>
-                        <span class="slds-assistive-text">Close</span>
-                    </button>
-                    <h2 id="tool-proxy-modal-title" class="slds-modal__title slds-hyphenate slds-text-heading_medium font-bold">
-                        Callable Tool Proxy Endpoints
-                    </h2>
-                    <p class="slds-m-top_x-small slds-text-color_weak slds-text-body_small">
-                        Direct proxy endpoints exposed by Panel for registered tools on this Messaging Channel.
-                    </p>
-                </header>
 
-                <div class="slds-modal__content slds-p-around_medium">
-                    <!-- Summary showing Channel ID and total endpoints count -->
-                    <div class="slds-box slds-box_x-small slds-theme_shade slds-m-bottom_medium slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                        <div>
-                            <span class="slds-text-title_bold text-gray-700">Channel ID: </span>
-                            <span class="font-mono text-xs text-indigo-700 font-bold">{selectedChannelId}</span>
-                        </div>
-                        <div class="slds-grid slds-grid_vertical-align-center">
-                            <span class="slds-badge slds-theme_success font-bold slds-m-right_small">
-                                Total Endpoints: {toolProxyCount}
-                            </span>
-                            <lightning-button 
-                                variant="brand-outline" 
-                                size="small" 
-                                label="Copy All Endpoints" 
-                                icon-name="utility:copy" 
-                                onclick={handleCopyAllToolProxies}
-                                disabled={hasNoToolProxies}>
-                            </lightning-button>
-                        </div>
-                    </div>
-
-                    <!-- Searchable or scrollable list of endpoints with a "Copy" button next to each URL -->
-                    <div class="slds-m-bottom_small">
-                        <lightning-input 
-                            type="search" 
-                            label="Search Endpoints" 
-                            variant="label-hidden" 
-                            placeholder="Search endpoints..." 
-                            value={toolProxySearchFilter} 
-                            onchange={handleToolProxySearchChange}>
-                        </lightning-input>
-                    </div>
-
-                    <template if:true={hasFilteredToolProxies}>
-                        <div class="slds-scrollable_y slds-box slds-p-around_none" style="max-height: 350px;">
-                            <ul class="slds-has-dividers_bottom-space">
-                                <template for:each={filteredToolProxyList} for:item="proxyUrl">
-                                    <li key={proxyUrl} class="slds-item slds-p-around_small slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                                        <div class="slds-truncate font-mono text-xs text-gray-800 slds-m-right_small" title={proxyUrl} style="word-break: break-all;">
-                                            {proxyUrl}
-                                        </div>
-                                        <lightning-button 
-                                            label="Copy" 
-                                            icon-name="utility:copy" 
-                                            size="small" 
-                                            variant="neutral" 
-                                            data-url={proxyUrl} 
-                                            onclick={handleCopyToolProxy}>
-                                        </lightning-button>
-                                    </li>
-                                </template>
-                            </ul>
-                        </div>
-                    </template>
-
-                    <template if:false={hasFilteredToolProxies}>
-                        <div class="slds-box slds-theme_shade slds-text-align_center slds-m-vertical_small">
-                            <p class="slds-text-color_weak text-xs">
-                                <template if:true={hasNoToolProxies}>
-                                    No callable tool proxy endpoints available for this channel.
-                                </template>
-                                <template if:false={hasNoToolProxies}>
-                                    No endpoints match your search filter.
-                                </template>
-                            </p>
-                        </div>
-                    </template>
-                </div>
-
-                <footer class="slds-modal__footer slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                    <div>
-                        <lightning-button 
-                            variant="brand-outline" 
-                            label="Copy All Endpoints" 
-                            icon-name="utility:copy" 
-                            onclick={handleCopyAllToolProxies}
-                            disabled={hasNoToolProxies}>
-                        </lightning-button>
-                    </div>
-                    <div>
-                        <lightning-button label="Close" variant="neutral" onclick={handleCloseToolProxyModal}></lightning-button>
-                    </div>
-                </footer>
-            </div>
-        </section>
-        <div class="slds-backdrop slds-backdrop_open"></div>
-    </template>
 </div>
     </template>
     <template if:true={settingsAccessChecked}>

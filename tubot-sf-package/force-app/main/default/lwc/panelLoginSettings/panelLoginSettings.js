@@ -1,68 +1,80 @@
 import { LightningElement, track } from 'lwc';
-import { NavigationMixin } from 'lightning/navigation';
 import getPanelAuthStatus from '@salesforce/apex/PanelAuthController.getPanelAuthStatus';
+import setPanelEnvironmentApex from '@salesforce/apex/PanelAuthController.setPanelEnvironment';
 import exchangeOAuthCode from '@salesforce/apex/PanelAuthController.exchangeOAuthCode';
 import pollOAuthCode from '@salesforce/apex/PanelAuthController.pollOAuthCode';
-import logoutPanel from '@salesforce/apex/PanelAuthController.logoutPanel';
-import fetchPanelSubscriptionData from '@salesforce/apex/PanelAccountController.fetchPanelSubscriptionData';
-import fetchPanelTeamMembers from '@salesforce/apex/PanelAccountController.fetchPanelTeamMembers';
-import getMessagingChannels from '@salesforce/apex/MessagingConfigurationController.getMessagingChannels';
-import getMessagingBackups from '@salesforce/apex/MessagingBackupController.getMessagingBackups';
-import createManualBackup from '@salesforce/apex/MessagingBackupController.createManualBackup';
-import restoreMessagingBackup from '@salesforce/apex/MessagingBackupController.restoreMessagingBackup';
-import getMessagingBackupDetails from '@salesforce/apex/MessagingBackupController.getMessagingBackupDetails';
-import deleteMessagingBackup from '@salesforce/apex/MessagingBackupController.deleteMessagingBackup';
-import listApiConnections from '@salesforce/apex/PanelSalesforceChannelService.listConnections';
-import connectApiChannel from '@salesforce/apex/PanelSalesforceChannelService.connectChannel';
-import disconnectApiChannel from '@salesforce/apex/PanelSalesforceChannelService.disconnectChannel';
-import prepareApiChannel from '@salesforce/apex/PanelSalesforceChannelService.prepareChannel';
-import isApiPermissionReady from '@salesforce/apex/PanelSalesforceChannelService.isApiPermissionReady';
-import getToolProxyList from '@salesforce/apex/PanelSalesforceChannelService.getToolProxyList';
-import getSelfOrgConnectionStatus from '@salesforce/apex/TuBotSelfOrgConnectionController.getConnectionStatus';
-import getSelfOrgAuthorizationUrl from '@salesforce/apex/TuBotSelfOrgConnectionController.getAuthorizationUrl';
-import disconnectSelfOrgApi from '@salesforce/apex/TuBotSelfOrgConnectionController.disconnect';
+import logoutPanelApex from '@salesforce/apex/PanelAuthController.logoutPanel';
+import getMessagingChannelsApex from '@salesforce/apex/MessagingConfigurationController.getMessagingChannels';
+import getMessagingBackupsApex from '@salesforce/apex/MessagingBackupController.getMessagingBackups';
+import createManualBackupApex from '@salesforce/apex/MessagingBackupController.createManualBackup';
+import restoreMessagingBackupApex from '@salesforce/apex/MessagingBackupController.restoreMessagingBackup';
+import getMessagingBackupDetailsApex from '@salesforce/apex/MessagingBackupController.getMessagingBackupDetails';
+import deleteMessagingBackupApex from '@salesforce/apex/MessagingBackupController.deleteMessagingBackup';
+import getSelfOrgConnectionStatusApex from '@salesforce/apex/TuBotSelfOrgConnectionController.getConnectionStatus';
+import getSelfOrgAuthorizationUrlApex from '@salesforce/apex/TuBotSelfOrgConnectionController.getAuthorizationUrl';
+import disconnectSelfOrgApiApex from '@salesforce/apex/TuBotSelfOrgConnectionController.disconnect';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import LightningConfirm from 'lightning/confirm';
-import getSetupHealthCheck from '@salesforce/apex/TubotSetupWizardController.getSetupHealthCheck';
-import getIntegrationCandidates from '@salesforce/apex/TubotSetupWizardController.getIntegrationCandidates';
-import assignApiPermissionSet from '@salesforce/apex/TubotSetupWizardController.assignApiPermissionSet';
-import getEcaSetupGuidance from '@salesforce/apex/TubotSetupWizardController.getEcaSetupGuidance';
-import runSimpleSetupStep from '@salesforce/apex/SimpleSetupController.runStep';
-import initiateEcaAuthorization from '@salesforce/apex/SimpleSetupController.initiateEcaAuthorization';
-import pollEcaAuthorization from '@salesforce/apex/SimpleSetupController.pollEcaAuthorization';
-import checkEcaAuthorization from '@salesforce/apex/SimpleSetupController.checkEcaAuthorization';
+import getIntegrationCandidatesApex from '@salesforce/apex/TubotSetupWizardController.getIntegrationCandidates';
+import runSimpleSetupStepApex from '@salesforce/apex/SimpleSetupController.runStep';
+import initiateEcaAuthorizationApex from '@salesforce/apex/SimpleSetupController.initiateEcaAuthorization';
+import pollEcaAuthorizationApex from '@salesforce/apex/SimpleSetupController.pollEcaAuthorization';
+import checkEcaAuthorizationApex from '@salesforce/apex/SimpleSetupController.checkEcaAuthorization';
 import hasPanelSettingsAccess from '@salesforce/apex/PanelAuthController.hasPanelSettingsAccess';
 
-export default class PanelLoginSettings extends NavigationMixin(LightningElement) {
+import ensurePanelSession from '@salesforce/apex/PanelAuthController.ensurePanelSession';
+
+async function withPanelSession(action, args) {
+    await ensurePanelSession({ forceRefresh: false });
+    try {
+        return await action(args);
+    } catch (error) {
+        const message = error?.body?.message || error?.message || '';
+        if (message !== 'PANEL_REFRESH_REQUIRED: Refresh the Panel session in a separate transaction.') throw error;
+        await ensurePanelSession({ forceRefresh: true });
+        return action(args);
+    }
+}
+
+const logoutPanel = logoutPanelApex;
+const getMessagingChannels = (args) => withPanelSession(getMessagingChannelsApex, args);
+const getMessagingBackups = (args) => withPanelSession(getMessagingBackupsApex, args);
+const createManualBackup = (args) => withPanelSession(createManualBackupApex, args);
+const restoreMessagingBackup = (args) => withPanelSession(restoreMessagingBackupApex, args);
+const getMessagingBackupDetails = (args) => withPanelSession(getMessagingBackupDetailsApex, args);
+const deleteMessagingBackup = (args) => withPanelSession(deleteMessagingBackupApex, args);
+const getSelfOrgConnectionStatus = (args) => withPanelSession(getSelfOrgConnectionStatusApex, args);
+const getSelfOrgAuthorizationUrl = (args) => withPanelSession(getSelfOrgAuthorizationUrlApex, args);
+const disconnectSelfOrgApi = (args) => withPanelSession(disconnectSelfOrgApiApex, args);
+const getIntegrationCandidates = (args) => withPanelSession(getIntegrationCandidatesApex, args);
+const runSimpleSetupStep = (args) => withPanelSession(runSimpleSetupStepApex, args);
+const initiateEcaAuthorization = (args) => withPanelSession(initiateEcaAuthorizationApex, args);
+const pollEcaAuthorization = (args) => withPanelSession(pollEcaAuthorizationApex, args);
+const checkEcaAuthorization = (args) => withPanelSession(checkEcaAuthorizationApex, args);
+
+export default class PanelLoginSettings extends LightningElement {
     @track activeTab = 'settings';
-    @track panelBaseUrl = 'https://panel.tubot.lat';
-    @track clientId = 'pnl_client_salesforce_mcp';
+    @track panelBaseUrl = '';
+    @track clientId = '';
+    @track panelEnvironment = 'production';
+    @track panelEnvironmentLabel = 'Production';
+    @track showPanelEnvironmentToggle = false;
+    @track isChangingPanelEnvironment = false;
     @track isConnected = false;
     @track userEmail = '';
     @track userRole = '';
     @track teamName = '';
-    @track teamId = '';
     @track canEditSettings = false;
     @track usesExternalCredentials = false;
-    @track externalCredentialName = 'Panel_External_Credential';
     @track namedCredentialName = 'Panel_Named_Credential';
     @track isLoading = false;
     @track hasSettingsAccess = false;
     @track settingsAccessChecked = false;
 
-    // Setup Wizard State
-    @track wizardStep = 'health';
-    @track wizardHealth = null;
-    @track isWizardHealthLoading = false;
-    @track wizardUsers = [];
-    @track wizardUserOptions = [];
-    @track selectedWizardUserId = '';
-    @track selectedWizardUser = null;
-    @track isAssigningPermission = false;
-    @track wizardEcaGuidance = null;
-    @track wizardSelectedChannelId = '';
-    @track isWizardConnecting = false;
-    @track wizardConnectSuccess = false;
+    // Integration-user selection for Simple Setup.
+    @track integrationCandidates = [];
+    @track integrationUserOptions = [];
+    @track selectedIntegrationUserId = '';
 
     // Simple Setup (one-click automatic) state
     @track simpleSetupConsented = false;
@@ -75,39 +87,18 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     @track simpleSetupEcaBusy = false;
     _setupPollEpoch = 0;
 
-    // Legacy manual setup UI (step wizard, connection details, per-channel
-    // API access) stays in the template for break-glass but unrendered:
-    // Simple Setup is the supported path. Flip to true to restore it.
-    showLegacySetupUi = false;
-
-    @track showPanelData = false;
-    @track subscriptionData = null;
-    @track teamMembersData = null;
-
     // Headless log sink: backup/restore flows append here via addSetupLog
     @track setupLogs = [];
 
-    // Messaging Channel Omni-Flow Routing State
+    // Messaging Channel selection and Salesforce API connection state
     @track messagingChannels = [];
     @track messagingChannelOptions = [];
     @track selectedChannelId = '';
-    @track apiConnections = [];
-    @track apiIntegrationUserId = '';
-    @track isApiConnectionBusy = false;
-    @track apiConnectionsError = '';
-    @track apiConnectionSetupError = '';
     @track selfOrgConnectionConfigured = false;
     @track selfOrgConnectionConnected = false;
     @track selfOrgConnectionMessage = '';
     @track selfOrgConnectionError = '';
     @track isSelfOrgConnectionBusy = false;
-
-    // Callable Tool Proxy Endpoints State
-    @track isToolProxyModalOpen = false;
-    @track toolProxyList = [];
-    @track toolProxiesLoading = false;
-    @track toolProxyError = '';
-    @track toolProxySearchFilter = '';
 
     // Backup & Restore State
     @track backupsList = [];
@@ -133,6 +124,8 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     _pollInFlight = false;
     _pollFailures = 0;
     _setupWaitInterval = null;
+    _environmentRevealClicks = 0;
+    _environmentRevealStartedAt = 0;
 
     codeVerifier = '';
 
@@ -159,10 +152,9 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         this.checkSelfOrgOAuthResult();
         this.loadData();
         this.loadMessagingChannels();
-        this.loadApiConnections();
         this.loadSelfOrgConnection();
         this.loadBackups();
-        this.loadWizardData();
+        this.loadIntegrationCandidates();
         this.setupMessageListener();
     }
 
@@ -232,13 +224,13 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         }
         if (status.panelBaseUrl) this.panelBaseUrl = status.panelBaseUrl;
         if (status.clientId) this.clientId = status.clientId;
+        this.panelEnvironment = status.panelEnvironment || 'production';
+        this.panelEnvironmentLabel = status.panelEnvironmentLabel || 'Production';
         this.userEmail = status.userEmail || '';
         this.userRole = status.userRole || '';
         this.teamName = status.teamName || '';
-        this.teamId = status.teamId || '';
         this.canEditSettings = Boolean(status.canEditSettings);
         this.usesExternalCredentials = status.usesExternalCredentials === true;
-        this.externalCredentialName = status.externalCredentialName || 'Panel_External_Credential';
         this.namedCredentialName = status.namedCredentialName || 'Panel_Named_Credential';
     }
 
@@ -264,6 +256,70 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         this.loadSelfOrgConnection();
     }
 
+    get isStagingPanelEnvironment() {
+        return this.panelEnvironment === 'staging';
+    }
+
+    get isPanelEnvironmentToggleDisabled() {
+        return this.isChangingPanelEnvironment || this.isLoading || this.isAuthorizingOAuth ||
+            this.simpleSetupRunning || this.simpleSetupEcaBusy;
+    }
+
+    handleRevealPanelEnvironmentToggle() {
+        const now = Date.now();
+        if (!this._environmentRevealStartedAt || now - this._environmentRevealStartedAt > 2500) {
+            this._environmentRevealStartedAt = now;
+            this._environmentRevealClicks = 0;
+        }
+        this._environmentRevealClicks += 1;
+        if (this._environmentRevealClicks >= 6) {
+            this.showPanelEnvironmentToggle = true;
+            this._environmentRevealClicks = 0;
+            this._environmentRevealStartedAt = 0;
+        }
+    }
+
+    async handlePanelEnvironmentToggle(event) {
+        const targetEnvironment = event.target.checked ? 'staging' : 'production';
+        if (targetEnvironment === this.panelEnvironment) return;
+
+        const confirmed = await LightningConfirm.open({
+            label: 'Switch Panel and auth environment',
+            message: `Switch this Salesforce org from ${this.panelEnvironmentLabel} to ${targetEnvironment === 'staging' ? 'Staging' : 'Production'}? The current Panel session will be revoked and must be connected again.`,
+            theme: 'warning'
+        });
+        if (!confirmed) {
+            event.target.checked = this.isStagingPanelEnvironment;
+            return;
+        }
+
+        this.isChangingPanelEnvironment = true;
+        this.isLoading = true;
+        try {
+            const status = await setPanelEnvironmentApex({ environmentName: targetEnvironment });
+            this.applyAuthStatus(status);
+            this.clearPanelOAuthSessionState();
+            this.activeOAuthState = '';
+            try {
+                sessionStorage.removeItem('panel_oauth_state');
+                sessionStorage.removeItem('panel_oauth_code_verifier');
+            } catch (ignoredError) {
+                // Environment selection is persisted by Salesforce.
+            }
+                        this.showToast(
+                'Panel environment changed',
+                `This org now targets ${this.panelEnvironmentLabel} Panel and auth. Connect with Panel to start a new session.`,
+                'success'
+            );
+        } catch (error) {
+            event.target.checked = this.isStagingPanelEnvironment;
+            this.showToast('Environment change failed', error.body?.message || error.message || 'Could not change the Panel environment.', 'error');
+        } finally {
+            this.isChangingPanelEnvironment = false;
+            this.isLoading = false;
+        }
+    }
+
     checkSelfOrgOAuthResult() {
         if (typeof window === 'undefined' || !window.location?.search) return;
         const url = new URL(window.location.href);
@@ -286,13 +342,10 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     closeAuthWindow() {
         this.stopOAuthPolling();
         const authWindow = this.authWindow;
-        if (!authWindow || authWindow.closed) {
-            this.authWindow = null;
-            return;
-        }
+        this.authWindow = null;
+        if (!authWindow) return;
         try {
             authWindow.close();
-            this.authWindow = null;
         } catch (ignoredError) {
             return;
         }
@@ -401,13 +454,12 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             .replace(/=+$/, '');
     }
 
-    handleStartOAuthDifferentAccount() {
-        this.handleStartOAuth(true);
-    }
-
-    async handleStartOAuth(forcePromptLogin = false) {
+    async handleStartOAuth() {
         this.setPanelCredentialRepairNeeded(false);
-        const forcePrompt = typeof forcePromptLogin === 'boolean' ? forcePromptLogin : false;
+        if (!this.panelBaseUrl || !this.clientId) {
+            this.showToast('Panel environment unavailable', 'Refresh Panel Settings before starting OAuth.', 'error');
+            return;
+        }
         this.isLoading = true;
         try {
             const challenge = await this.generatePkce();
@@ -427,10 +479,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                 `&code_challenge_method=S256` +
                 `&scope=${encodeURIComponent('read write')}` +
                 `&popup=1`;
-
-            if (forcePrompt) {
-                authUrl += `&prompt=login&switch_account=true`;
-            }
 
             const width = 560;
             const height = 700;
@@ -458,20 +506,10 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         const startTime = Date.now();
         const maxDurationMs = 600000;
         this._pollFailures = 0;
-        let popupClosedAt = null;
         const tick = async () => {
             if (!this.isAuthorizingOAuth || !this.activeOAuthState) {
                 this.stopOAuthPolling();
                 return;
-            }
-            let popupClosed = false;
-            try {
-                popupClosed = Boolean(this.authWindow && this.authWindow.closed);
-            } catch (ignoredError) {
-                popupClosed = false;
-            }
-            if (popupClosed && popupClosedAt === null) {
-                popupClosedAt = Date.now();
             }
             if (Date.now() - startTime > maxDurationMs) {
                 this.isAuthorizingOAuth = false;
@@ -483,7 +521,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             if (this._pollInFlight) {
                 return;
             }
-            const pollStartedAt = Date.now();
             const pollState = this.activeOAuthState;
             const pollVerifier = this.codeVerifier;
             this._pollInFlight = true;
@@ -503,16 +540,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                     await this.exchangeCode(result.code);
                 } else {
                     this._pollFailures = 0;
-                    // The Panel callback stores the code before closing its popup.
-                    // Wait for a poll that starts after closure so an older in-flight
-                    // pending response cannot be mistaken for a declined login.
-                    if (popupClosedAt !== null && pollStartedAt >= popupClosedAt &&
-                        !result?.error && !result?.statusCode) {
-                        this.isAuthorizingOAuth = false;
-                        this.stopOAuthPolling();
-                        this.authWindow = null;
-                        this.showToast('Popup closed', 'The Panel login popup closed without completing approval. Click Connect with Panel to try again.', 'info');
-                    }
                 }
             } catch (ignoredError) {
                 this._pollFailures += 1;
@@ -563,7 +590,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                 `Authenticated as ${this.userEmail} (${this.userRole}) in ${this.teamName}.`,
                 'success'
             );
-            await this.loadApiConnections();
             await this.loadSelfOrgConnection();
         } catch (err) {
             const message = err.body?.message || err.message || 'Panel login could not be completed.';
@@ -598,39 +624,13 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             this.userEmail = '';
             this.userRole = '';
             this.teamName = '';
-            this.teamId = '';
             this.canEditSettings = false;
-            this.subscriptionData = null;
-            this.teamMembersData = null;
             this.clearPanelOAuthSessionState();
             this.showToast('Disconnected', 'Panel session cleared.', 'info');
         } catch (err) {
             this.showToast('Logout Error', err.body?.message || err.message, 'error');
         } finally {
             this.isLoading = false;
-        }
-    }
-
-    handleTogglePanelData() {
-        this.showPanelData = !this.showPanelData;
-        if (this.showPanelData) {
-            this.handleLoadSubscription();
-        }
-    }
-
-    async handleLoadSubscription() {
-        try {
-            this.subscriptionData = await fetchPanelSubscriptionData();
-        } catch (err) {
-            this.showToast('Subscription Load Error', err.body?.message || err.message, 'warning');
-        }
-    }
-
-    async handleLoadTeamMembers() {
-        try {
-            this.teamMembersData = await fetchPanelTeamMembers();
-        } catch (err) {
-            this.showToast('Members Load Error', err.body?.message || err.message, 'warning');
         }
     }
 
@@ -642,133 +642,25 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         return 'slds-badge slds-theme_warning font-bold';
     }
 
-    // --- Administrator Setup Wizard Getters & Methods ---
-    get isWizardStepHealth() { return this.wizardStep === 'health'; }
-    get isWizardStepUser() { return this.wizardStep === 'user'; }
-    get isWizardStepEca() { return this.wizardStep === 'eca'; }
-    get isWizardStepConnect() { return this.wizardStep === 'connect'; }
-    get wizardNextFromHealthDisabled() { return !this.wizardHealth; }
-    get wizardNextFromUserDisabled() { return !this.selectedWizardUser; }
-    get wizardConnectDisabled() {
-        return !this.wizardSelectedChannelId || !this.selectedWizardUserId || this.isWizardConnecting;
-    }
-    get wizardEcaPoliciesCli() {
-        return 'bun scripts/setup-eca-policies.mjs --target-org YOUR_ORG_ALIAS';
-    }
-    get selectedWizardUserUsername() {
-        return this.selectedWizardUser ? this.selectedWizardUser.username : 'Selected Integration User';
-    }
-    get selectedWizardUserDisplayName() {
-        return this.selectedWizardUser
-            ? `${this.selectedWizardUser.name} (${this.selectedWizardUser.username})`
-            : 'No user selected';
-    }
-
-    async loadWizardData() {
-        this.isWizardHealthLoading = true;
+    async loadIntegrationCandidates() {
         try {
-            const [health, users, guidance] = await Promise.all([
-                getSetupHealthCheck(),
-                getIntegrationCandidates(),
-                getEcaSetupGuidance()
-            ]);
-            this.wizardHealth = health;
-            this.wizardUsers = users || [];
-            this.wizardUserOptions = (users || []).map(u => ({
-                label: `${u.name} (${u.username} • ${u.profileName})`,
-                value: u.id
+            const users = await getIntegrationCandidates();
+            this.integrationCandidates = users || [];
+            this.integrationUserOptions = this.integrationCandidates.map(user => ({
+                label: user.name + ' (' + user.username + ' • ' + user.profileName + ')',
+                value: user.id
             }));
-            if (this.wizardUsers.length > 0 && !this.selectedWizardUserId) {
-                const preferred = this.wizardUsers.find(u => u.isIntegrationProfile) || this.wizardUsers[0];
-                this.selectedWizardUserId = preferred.id;
-                this.selectedWizardUser = preferred;
-                this.apiIntegrationUserId = preferred.id;
+            if (this.integrationCandidates.length > 0 && !this.selectedIntegrationUserId) {
+                const preferred = this.integrationCandidates.find(user => user.isIntegrationProfile) || this.integrationCandidates[0];
+                this.selectedIntegrationUserId = preferred.id;
             }
-            this.wizardEcaGuidance = guidance;
         } catch (err) {
-            console.error('[loadWizardData] error:', err);
-        } finally {
-            this.isWizardHealthLoading = false;
+            console.error('[loadIntegrationCandidates] error:', err);
         }
     }
 
-    handleWizardStepClick(event) {
-        const step = event.target.value;
-        if (step) this.wizardStep = step;
-    }
-
-    handleWizardGoToHealth() {
-        this.wizardStep = 'health';
-    }
-
-    handleWizardGoToUser() {
-        this.wizardStep = 'user';
-    }
-
-    handleWizardGoToEca() {
-        this.wizardStep = 'eca';
-    }
-
-    handleWizardGoToConnect() {
-        this.wizardStep = 'connect';
-    }
-
-    handleWizardRestart() {
-        this.wizardStep = 'health';
-        this.wizardConnectSuccess = false;
-        this.loadWizardData();
-    }
-
-    handleWizardSelectUser(event) {
-        const selectedId = event.detail.value;
-        this.selectedWizardUserId = selectedId;
-        this.selectedWizardUser = this.wizardUsers.find(u => u.id === selectedId) || null;
-        this.apiIntegrationUserId = selectedId;
-    }
-
-    async handleWizardAssignPermission() {
-        if (!this.selectedWizardUserId) return;
-        this.isAssigningPermission = true;
-        try {
-            await assignApiPermissionSet({ userIdentifier: this.selectedWizardUserId });
-            this.showToast('Success', 'Tubot_Salesforce_API_Read permission set assigned successfully.', 'success');
-            if (this.selectedWizardUser) {
-                this.selectedWizardUser = { ...this.selectedWizardUser, hasApiPermission: true };
-            }
-            this.wizardUsers = this.wizardUsers.map(u => (u.id === this.selectedWizardUserId ? { ...u, hasApiPermission: true } : u));
-        } catch (err) {
-            this.showToast('Error', err?.body?.message || err?.message || 'Failed to assign permission set', 'error');
-        } finally {
-            this.isAssigningPermission = false;
-        }
-    }
-
-    handleWizardChannelChange(event) {
-        this.wizardSelectedChannelId = event.detail.value;
-        this.selectedChannelId = event.detail.value;
-    }
-
-    async handleWizardConnectChannel() {
-        if (this.wizardConnectDisabled) return;
-        this.isWizardConnecting = true;
-        try {
-            await prepareApiChannel({
-                channelId: this.wizardSelectedChannelId,
-                integrationUserId: this.selectedWizardUserId
-            });
-            const payload = JSON.stringify({
-                channelId: this.wizardSelectedChannelId,
-                integrationUserId: this.selectedWizardUserId
-            });
-            await connectApiChannel({ requestJson: payload });
-            this.wizardConnectSuccess = true;
-            this.showToast('Connected', 'Channel registered and verified with Panel (Run As mapping checked server-side)!', 'success');
-            await this.loadApiConnections();
-        } catch (err) {
-            this.showToast('Connection Failed', err?.body?.message || err?.message || 'Registration failed', 'error');
-        } finally {
-            this.isWizardConnecting = false;
-        }
+    handleIntegrationUserChange(event) {
+        this.selectedIntegrationUserId = event.detail.value;
     }
 
     handleTabSelect(event) {
@@ -778,7 +670,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         } else if (this.activeTab === 'settings') {
             this.loadMessagingChannels();
         } else if (this.activeTab === 'wizard') {
-            this.loadWizardData();
+            this.loadIntegrationCandidates();
             this.loadMessagingChannels();
         }
     }
@@ -805,59 +697,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
 
     handleChannelChange(event) {
         this.selectedChannelId = event.target.value;
-    }
-
-    get selectedChannelApiConnected() {
-        return this.apiConnections.some(c => c.channelId === this.selectedChannelId && c.isActive === 'true');
-    }
-
-    get selectedChannelApiPending() {
-        return this.apiConnections.some(c => c.channelId === this.selectedChannelId && c.isActive !== 'true');
-    }
-
-    get selectedChannelExecutionUsers() {
-        return this.apiConnections.filter(c => c.channelId === this.selectedChannelId && c.isActive === 'true');
-    }
-
-    get apiConnectionDisabled() {
-        return !this.isConnected || !this.canEditSettings || !this.selectedChannelId || this.isApiConnectionBusy;
-    }
-
-    async loadApiConnections() {
-        if (!this.isConnected || !this.canEditSettings) return;
-        try {
-            this.apiConnections = (await listApiConnections()).map(connection => ({
-                ...connection,
-                isPrimary: connection.isPrimary === 'true'
-            }));
-            this.apiConnectionsError = '';
-        } catch (error) {
-            this.apiConnectionsError = error.body?.message || error.message || 'Could not load channel access status. Retry Panel login and check the request ID in the error.';
-        }
-    }
-
-    async handleRetryApiConnections() {
-        this.apiConnectionsError = '';
-        await this.loadApiConnections();
-    }
-
-    handleApiIntegrationUserChange(event) { this.apiIntegrationUserId = event.target.value.trim(); }
-
-    handleOpenEcaSetup() {
-        // Keep the privileged app setup in Salesforce Setup. Lightning sessions cannot
-        // call the general Metadata API, so this navigates to the supported admin UI directly
-        // via standard Lightning navigation to comply with Lightning Web Security policies.
-        const ecaUrl = '/lightning/setup/ExternalClientApps/home';
-        try {
-            this[NavigationMixin.Navigate]({
-                type: 'standard__webPage',
-                attributes: {
-                    url: ecaUrl
-                }
-            });
-        } catch (ignoredError) {
-            window.location.assign(ecaUrl);
-        }
     }
 
     get selfOrgConnectionStatusLabel() {
@@ -887,23 +726,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
 
     get panelCredentialRepairCommand() {
         return 'bun scripts/repair-panel-external-credential-access.mjs --target-org <org-alias>';
-    }
-
-    get postinstallScriptUrl() {
-        return `${(this.panelBaseUrl || '').replace(/\/+$/, '')}/setup/tubot-postinstall.py`;
-    }
-
-    get postinstallCommand() {
-        return `curl -fsSL ${this.postinstallScriptUrl} -o tubot-postinstall.py && python3 tubot-postinstall.py`;
-    }
-
-    async handleCopyPostinstallCommand() {
-        const success = await this.copyToClipboard(this.postinstallCommand);
-        if (success) {
-            this.showToast('Copied', 'Post-install one-liner copied to clipboard.', 'success');
-        } else {
-            this.showToast('Copy Failed', 'Could not copy the command to clipboard.', 'error');
-        }
     }
 
     // =========================================================================
@@ -982,8 +804,8 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             { call: 'finalize-register', row: 'finalize' }
         ];
         const state = {};
-        if (this.selectedWizardUserId) {
-            state.user = { id: this.selectedWizardUserId };
+        if (this.selectedIntegrationUserId) {
+            state.user = { id: this.selectedIntegrationUserId };
         }
         if (this.selectedChannelId) {
             state.channel = { id: this.selectedChannelId };
@@ -1204,146 +1026,6 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
 
     get canManageSelfOrgApi() {
         return this.hasSettingsAccess;
-    }
-
-    async handleConnectApiChannel() {
-        this.isApiConnectionBusy = true;
-        this.apiConnectionSetupError = '';
-        try {
-            await prepareApiChannel({ channelId: this.selectedChannelId, integrationUserId: this.apiIntegrationUserId });
-            const permissionReady = await isApiPermissionReady({ integrationUserId: this.apiIntegrationUserId });
-            if (!permissionReady) throw new Error('Salesforce API permission assignment is still pending. Wait a few seconds and retry. If it remains pending, assign Tubot_Salesforce_API_Read to this user in Setup, then retry.');
-            await connectApiChannel({ requestJson: JSON.stringify({
-                channelId: this.selectedChannelId,
-                integrationUserId: this.apiIntegrationUserId
-            }) });
-            this.showToast('Channel connected', 'Panel can now use this channel with the configured Salesforce integration user.', 'success');
-            await this.loadApiConnections();
-        } catch (error) {
-            const message = error.body?.message || error.message || 'Check the Run As user on the packaged TuBot Channel API app and retry.';
-            this.apiConnectionSetupError = message;
-            this.showToast('Channel connection failed', message, 'error');
-            await this.loadApiConnections();
-        } finally {
-            this.isApiConnectionBusy = false;
-        }
-    }
-
-    async handleDisconnectApiChannel() {
-        this.isApiConnectionBusy = true;
-        this.apiConnectionSetupError = '';
-        try {
-            await disconnectApiChannel({ channelId: this.selectedChannelId });
-            this.showToast('Channel disconnected', 'Panel API access for this channel has been revoked.', 'success');
-            await this.loadApiConnections();
-        } catch (error) {
-            const message = error.body?.message || error.message || 'Check Panel login and retry.';
-            this.apiConnectionSetupError = message;
-            this.showToast('Disconnect failed', message, 'error');
-        } finally {
-            this.isApiConnectionBusy = false;
-        }
-    }
-
-    get toolProxyCount() {
-        return this.toolProxyList ? this.toolProxyList.length : 0;
-    }
-
-    get hasNoToolProxies() {
-        return !this.toolProxyList || this.toolProxyList.length === 0;
-    }
-
-    get hasFilteredToolProxies() {
-        return this.filteredToolProxyList && this.filteredToolProxyList.length > 0;
-    }
-
-    get filteredToolProxyList() {
-        if (!this.toolProxyList) return [];
-        if (!this.toolProxySearchFilter) return this.toolProxyList;
-        return this.toolProxyList.filter(url => url.toLowerCase().includes(this.toolProxySearchFilter));
-    }
-
-    async handleFetchToolProxies() {
-        if (!this.selectedChannelId) {
-            this.showToast('No Channel Selected', 'Please select a messaging channel first.', 'warning');
-            return;
-        }
-        this.toolProxiesLoading = true;
-        this.toolProxyError = '';
-        this.toolProxySearchFilter = '';
-        try {
-            const proxies = await getToolProxyList({ channelId: this.selectedChannelId });
-            this.toolProxyList = proxies || [];
-            this.isToolProxyModalOpen = true;
-        } catch (err) {
-            const message = err.body?.message || err.message || 'Failed to load callable tool proxy endpoints.';
-            this.toolProxyError = message;
-            this.showToast('Fetch Failed', message, 'error');
-        } finally {
-            this.toolProxiesLoading = false;
-        }
-    }
-
-    handleCloseToolProxyModal() {
-        this.isToolProxyModalOpen = false;
-        this.toolProxySearchFilter = '';
-    }
-
-    handleToolProxySearchChange(event) {
-        this.toolProxySearchFilter = (event.target.value || '').trim().toLowerCase();
-    }
-
-    async copyToClipboard(text) {
-        if (!text) return false;
-        try {
-            if (navigator?.clipboard?.writeText) {
-                await navigator.clipboard.writeText(text);
-                return true;
-            }
-        } catch (e) {
-            console.warn('Clipboard writeText failed, using fallback textarea', e);
-        }
-        try {
-            const textArea = document.createElement('textarea');
-            textArea.value = text;
-            textArea.style.position = 'fixed';
-            textArea.style.left = '-999999px';
-            textArea.style.top = '-999999px';
-            document.body.appendChild(textArea);
-            textArea.focus();
-            textArea.select();
-            const successful = document.execCommand('copy');
-            document.body.removeChild(textArea);
-            return successful;
-        } catch (fallbackErr) {
-            console.error('Fallback clipboard copy failed', fallbackErr);
-            return false;
-        }
-    }
-
-    async handleCopyToolProxy(event) {
-        const url = event.currentTarget?.dataset?.url || event.target?.dataset?.url;
-        if (!url) return;
-        const success = await this.copyToClipboard(url);
-        if (success) {
-            this.showToast('Copied', 'Tool proxy URL copied to clipboard.', 'success');
-        } else {
-            this.showToast('Copy Failed', 'Could not copy URL to clipboard.', 'error');
-        }
-    }
-
-    async handleCopyAllToolProxies() {
-        if (!this.toolProxyList || this.toolProxyList.length === 0) {
-            this.showToast('Nothing to Copy', 'No proxy endpoints available.', 'info');
-            return;
-        }
-        const allUrls = this.toolProxyList.join('\n');
-        const success = await this.copyToClipboard(allUrls);
-        if (success) {
-            this.showToast('Copied All', `${this.toolProxyList.length} tool proxy endpoints copied to clipboard.`, 'success');
-        } else {
-            this.showToast('Copy Failed', 'Could not copy endpoints to clipboard.', 'error');
-        }
     }
 
     addSetupLog(line) {

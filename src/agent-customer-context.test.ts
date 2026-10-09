@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  AGENT_SETUP_REPROBE_CODES, agentCustomerShape, agentFlowNamespace, agentProducerCandidates,
-  agentProducerIdentity, agentProducerListQuery, invokeAgentFlowWithProducerContext,
+  AGENT_SETUP_REPROBE_CODES, agentCustomerShape, agentFlowNamespace, agentOutputEntries, agentProducerCandidates,
+  agentProducerIdentity, agentProducerListQuery, agentIntentShape, invokeAgentFlowWithProducerContext,
   isAgentCustomerSetupReprobe,
 } from './agent-customer-context';
 
@@ -79,7 +79,7 @@ describe('agentCustomerShape', () => {
 
 describe('producer discovery helpers', () => {
   test('builds a bounded namespaced view query', () => {
-    expect(agentProducerListQuery('FldSvcAiAgents')).toContain("LIKE 'FldSvcAiAgents%'");
+    expect(agentProducerListQuery('FldSvcAiAgents')).toContain("NamespacePrefix='FldSvcAiAgents'");
     expect(agentProducerListQuery('FldSvcAiAgents')).toContain('LIMIT 25');
     expect(agentProducerListQuery('bad name')).toBeNull();
     expect(agentProducerListQuery('')).toBeNull();
@@ -176,7 +176,7 @@ describe('invokeAgentFlowWithProducerContext', () => {
     const noCustomer = async (path: string): Promise<Result> =>
       path === ROUTE ? ok(agentDescriptor([{ name: 'topic', type: 'STRING' }])) : notFound();
     const shapeless = await invokeAgentFlowWithProducerContext({ root: ROOT, route: ROUTE, request: noCustomer, build });
-    expect(shapeless.body.errorCode).toBe('FLOW_AGENT_PRODUCER_UNAVAILABLE');
+    expect(shapeless.body.errorCode).toBe('FLOW_AGENT_CONTEXT_UNBINDABLE');
     const unmanaged = await invokeAgentFlowWithProducerContext({
       root: ROOT, route: `${ROOT}/actions/custom/flow/PlainAgent`, request: noProducer, build,
     });
@@ -193,6 +193,61 @@ describe('invokeAgentFlowWithProducerContext', () => {
     };
     const result = await invokeAgentFlowWithProducerContext({ root: ROOT, route: ROUTE, request, build });
     expect(result.body.errorCode).toBe('FLOW_AGENT_FIXTURE_PERMISSIONS_REQUIRED');
+  });
+  test('intent path grounds, invokes, and live-verifies the matched id', async () => {
+    const WT_ID = '08q000000000001EAA';
+    const intentRoute = `${ROOT}/actions/custom/flow/FldSvcAiAgents__MatchWorkType`;
+    const posts: Array<{ path: string; body: any }> = [];
+    const request = async (path: string, method = 'GET', body?: any): Promise<Result> => {
+      if (method === 'POST') posts.push({ path, body });
+      if (path === intentRoute && method === 'GET') return ok({
+        inputs: [
+          { name: 'operationType', type: 'STRING', required: false },
+          { name: 'contextualIntent', type: 'STRING', required: false },
+        ],
+        outputs: [{ name: 'workTypeId', type: 'STRING' }, { name: 'errorMessage', type: 'STRING' }],
+      });
+      if (path.includes('/query?')) {
+        if (path.includes('EntityDefinition')) return ok({ records: [{ QualifiedApiName: 'WorkType' }] });
+        if (path.includes('WorkType')) return ok({ records: [{ Name: 'Oil Change' }] });
+        return ok({ records: [] });
+      }
+      if (path === `${ROOT}/sobjects/WorkType/describe`) return ok({
+        name: 'WorkType', queryable: true, fields: [{ name: 'Name', type: 'string', nameField: true }],
+      });
+      if (path === intentRoute && method === 'POST') return ok([{ isSuccess: true, errors: null,
+        outputValues: { workTypeId: WT_ID, errorMessage: null, Flow__InterviewStatus: 'Finished' } }]);
+      if (path === `${ROOT}/sobjects/WorkType/${WT_ID}`) return ok({ Id: WT_ID, Name: 'Oil Change' });
+      return notFound();
+    };
+    const result = await invokeAgentFlowWithProducerContext({ root: ROOT, route: intentRoute, request, build });
+    expect(result.contextSchema?.verified).toBe(true);
+    expect(result.cleanupError).toBeUndefined();
+    const agentPost = posts.find((entry) => entry.path === intentRoute);
+    expect(agentPost?.body).toEqual({ inputs: [{ contextualIntent: 'Oil Change' }] });
+  });
+  test('intent path fails unbindable when the matched id does not resolve', async () => {
+    const intentRoute = `${ROOT}/actions/custom/flow/FldSvcAiAgents__MatchWorkType`;
+    const request = async (path: string, method = 'GET', body?: any): Promise<Result> => {
+      if (path === intentRoute && method === 'GET') return ok({
+        inputs: [{ name: 'contextualIntent', type: 'STRING', required: false }],
+        outputs: [{ name: 'workTypeId', type: 'STRING' }],
+      });
+      if (path.includes('/query?')) {
+        if (path.includes('EntityDefinition')) return ok({ records: [{ QualifiedApiName: 'WorkType' }] });
+        if (path.includes('WorkType')) return ok({ records: [{ Name: 'Oil Change' }] });
+        return ok({ records: [] });
+      }
+      if (path === `${ROOT}/sobjects/WorkType/describe`) return ok({
+        name: 'WorkType', queryable: true, fields: [{ name: 'Name', type: 'string', nameField: true }],
+      });
+      if (path === intentRoute && method === 'POST') return ok([{ isSuccess: true, errors: null,
+        outputValues: { workTypeId: '08q000000000009EAA', Flow__InterviewStatus: 'Finished' } }]);
+      return notFound();
+    };
+    const result = await invokeAgentFlowWithProducerContext({ root: ROOT, route: intentRoute, request, build });
+    expect(result.body.errorCode).toBe('FLOW_AGENT_CONTEXT_UNBINDABLE');
+    expect(result.contextSchema?.verified).toBe(false);
   });
   test('unverifiable cleanup surfaces without flipping the outcome', async () => {
     const request = async (path: string, method = 'GET', body?: any): Promise<Result> => {

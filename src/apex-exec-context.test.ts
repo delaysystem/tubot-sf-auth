@@ -5,9 +5,15 @@ import {
   apexExecAddressShaped,
   apexExecGeoQueryBinding,
   apexExecGeoQueryInputNames,
+  apexExecIdInputIsCollection,
   apexExecMatchObjects,
   apexExecNestedFlags,
   apexExecOutputIds,
+  apexExecTomorrowArg,
+  apexExecTriggerNpe400,
+  apexExecTriggerParentFields,
+  apexExecOwnerSeed,
+  apexExecPositionSeeds,
   apexExecProbeAddressValues,
   apexExecRecordFallbackObject,
   apexExecRequiredIdInputs,
@@ -32,6 +38,15 @@ test('stem aliases resolve cart and journal platform vocabulary', () => {
   expect(apexExecMatchObjects(['Account', 'Contact'], 'cartId')).toEqual([]);
   expect(apexExecMatchObjects(['Account'], 'recordId')).toEqual([]);
   expect(apexExecMatchObjects(null, 'cartId')).toEqual([]);
+});
+
+test('plural Id suffix and field-service aliases resolve short stems', () => {
+  expect(apexExecMatchObjects(['Account', 'ServiceAppointment'], 'serviceAppointmentIds'))
+    .toEqual(['ServiceAppointment']);
+  expect(apexExecMatchObjects(['Account', 'ServiceAppointment'], 'saID')).toEqual(['ServiceAppointment']);
+  expect(apexExecMatchObjects(['Account', 'maps__LiveAssetDailySummaryEvent__c'], 'sumEventId'))
+    .toEqual(['maps__LiveAssetDailySummaryEvent__c']);
+  expect(apexExecMatchObjects(['Account', 'Contact'], 'saID')).toEqual([]);
 });
 
 test('address shape matches geocode vocabulary only', () => {
@@ -99,21 +114,102 @@ test('static args and acceptance keep legacy semantics', () => {
   expect(apexExecOutputIds({ id: CART_ID })).toEqual([CART_ID]);
 });
 
+test('static args bind equal-tomorrow dates; collections and id arrays', () => {
+  const args = apexExecStaticArgs([
+    { name: 'serviceAppointmentIds', type: 'ID', required: true, maxOccurs: 2000 },
+    { name: 'fromDate', type: 'DATE', required: true },
+    { name: 'toDate', type: 'DATE', required: true },
+    { name: 'runAt', type: 'DATETIME', required: true },
+    { name: 'shouldSchedule', type: 'BOOLEAN', required: false },
+    { name: 'note', type: 'STRING', required: false },
+    { name: 'policyId', type: 'ID', required: false },
+  ], 'serviceAppointmentIds') as Record<string, string>;
+  expect(args.fromDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(args.toDate).toBe(args.fromDate);
+  expect(args.runAt).toBe(`${args.fromDate}T00:00:00.000Z`);
+  expect(args.shouldSchedule).toBe(false);
+  expect('note' in args).toBe(false);
+  expect('policyId' in args).toBe(false);
+  expect(apexExecTomorrowArg('DATE')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(apexExecIdInputIsCollection([
+    { name: 'serviceAppointmentIds', type: 'ID', required: true, maxOccurs: 2000 },
+    { name: 'territoryId', type: 'ID', required: true },
+  ], 'serviceAppointmentIds')).toBe(true);
+  expect(apexExecIdInputIsCollection([
+    { name: 'territoryId', type: 'ID', required: true },
+  ], 'territoryId')).toBe(false);
+  expect(apexExecIdInputIsCollection([], 'missing')).toBe(false);
+  const cloneId = '08p000000000001AAA';
+  expect(apexExecOutputIds({ clonedServiceAppointmentIds: [cloneId], id: CART_ID }))
+    .toEqual([cloneId, CART_ID]);
+  expect(apexExecOutputIds({ nested: { id: CART_ID } })).toEqual([]);
+});
+
+test('trigger-NPE retry matches managed before-insert dereferences only', () => {
+  const npe = [{ message: 'FSL.TR001_Service_BeforeInsert: execution of BeforeInsert caused by: System.NullPointerException: Attempt to de-reference a null object', errorCode: 'CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY' }];
+  expect(apexExecTriggerNpe400({ status: 400, body: npe })).toBe(true);
+  expect(apexExecTriggerNpe400({ status: 400, body: [{ message: 'Required fields are missing', errorCode: 'REQUIRED_FIELD_MISSING' }] })).toBe(false);
+  expect(apexExecTriggerNpe400({ status: 200, body: npe })).toBe(false);
+  expect(apexExecTriggerNpe400({ status: 400, body: null })).toBe(false);
+});
+
+test('position seeds bind createable components, skip the rest', () => {
+  expect(apexExecPositionSeeds([
+    { name: 'maps__Position__c', type: 'location' },
+    { name: 'maps__Position__Latitude__s', type: 'double', createable: true },
+    { name: 'maps__Position__Longitude__s', type: 'double', createable: true },
+    { name: 'Name', type: 'string' },
+  ])).toEqual({ maps__Position__Latitude__s: 37.7749, maps__Position__Longitude__s: -122.4194 });
+  expect(apexExecPositionSeeds([
+    { name: 'maps__Position__c', type: 'location' },
+    { name: 'maps__Position__Latitude__s', type: 'double', createable: false },
+    { name: 'maps__Position__Longitude__s', type: 'double', createable: true },
+  ])).toEqual({});
+  expect(apexExecPositionSeeds([{ name: 'Name', type: 'string' }])).toEqual({});
+  expect(apexExecPositionSeeds([])).toEqual({});
+});
+
+test('owner seed follows the live describe, never assumed', () => {
+  const owner = '005000000000001AAA';
+  expect(apexExecOwnerSeed([{ name: 'OwnerId', type: 'reference' }], owner)).toEqual({ OwnerId: owner });
+  expect(apexExecOwnerSeed([{ name: 'Name', type: 'string' }], owner)).toEqual({});
+  expect(apexExecOwnerSeed([], owner)).toEqual({});
+});
+
+test('trigger-parent fields find nillable ParentRecordId references only', () => {
+  const fields = [
+    { name: 'ParentRecordId', type: 'reference', nillable: true, createable: true, referenceTo: ['Account', 'WorkOrder'] },
+    { name: 'ServiceTerritoryId', type: 'reference', nillable: true, createable: true, referenceTo: ['ServiceTerritory'] },
+    { name: 'OwnerId', type: 'reference', nillable: false, createable: true, referenceTo: ['User'] },
+    { name: 'Subject', type: 'string', nillable: true, createable: true },
+  ];
+  expect(apexExecTriggerParentFields(fields)).toEqual([
+    { field: 'ParentRecordId', targets: ['Account', 'WorkOrder'] },
+  ]);
+  expect(apexExecTriggerParentFields([])).toEqual([]);
+});
+
 type HarnessOptions = {
   inputs?: any[];
   catalog?: string[];
   describe?: any;
   parents?: Record<string, string | null>;
   invoke?: any;
+  /** Object name whose first POST fails with a trigger-NPE 400 (retry path). */
+  npeFirstPost?: string;
 };
 function harness(route: string, options: HarnessOptions = {}) {
   const calls: Array<{ path: string; method: string; body?: any }> = [];
   let fixture: any = null;
   let fixtureId = CART_ID;
-  const describe = options.describe ?? {
+  const postCounts = new Map<string, number>();
+  const defaultDescribe = {
     createable: true, deletable: true, queryable: true,
     fields: [{ name: 'Name', type: 'string', length: 80, createable: true, filterable: true }],
   };
+  const rawDescribe = options.describe ?? defaultDescribe;
+  // A describe WITH fields applies to every object; without, it maps names.
+  const describeFor = (name: string) => ('fields' in rawDescribe ? rawDescribe : (rawDescribe[name] ?? defaultDescribe));
   const request = async (path: string, method = 'GET', body?: any) => {
     calls.push({ path, method, body });
     if (method === 'GET' && path === route) return result({ inputs: options.inputs ?? [] });
@@ -121,7 +217,7 @@ function harness(route: string, options: HarnessOptions = {}) {
       return result({ sobjects: (options.catalog ?? ['Account', 'WebCart']).map((name) => ({ name })) });
     }
     const describeMatch = path.match(new RegExp(`^${ROOT.replace(/\//g, '\\/')}/sobjects/([A-Za-z][A-Za-z0-9_]+)/describe$`));
-    if (method === 'GET' && describeMatch) return result(describe);
+    if (method === 'GET' && describeMatch) return result(describeFor(describeMatch[1]));
     if (path.startsWith(`${ROOT}/query?q=`)) {
       const soql = decodeURIComponent(path.slice(`${ROOT}/query?q=`.length));
       if (soql.startsWith('SELECT COUNT()')) return result({ totalSize: 0 });
@@ -132,6 +228,11 @@ function harness(route: string, options: HarnessOptions = {}) {
     }
     const objectMatch = path.match(new RegExp(`^${ROOT.replace(/\//g, '\\/')}/sobjects/([A-Za-z][A-Za-z0-9_]+)$`));
     if (method === 'POST' && objectMatch) {
+      const seen = (postCounts.get(objectMatch[1]) ?? 0) + 1;
+      postCounts.set(objectMatch[1], seen);
+      if (options.npeFirstPost === objectMatch[1] && seen === 1) {
+        return result([{ message: 'TR001_X: execution of BeforeInsert caused by: System.NullPointerException: Attempt to de-reference a null object', errorCode: 'CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY' }], 400);
+      }
       fixtureId = objectMatch[1] === 'Account' ? ACCOUNT_ID : CART_ID;
       fixture = { ...body, Id: fixtureId };
       return result({ id: fixtureId }, 201);
@@ -159,6 +260,7 @@ const WEB_CART_DESCRIBE = {
   createable: true, deletable: true, queryable: true,
   fields: [
     { name: 'Name', type: 'string', length: 80, createable: true, filterable: true },
+    { name: 'OwnerId', type: 'reference', nillable: false, createable: false, referenceTo: ['User'] },
     { name: 'WebStoreId', type: 'reference', nillable: false, createable: true, referenceTo: ['WebStore'] },
     { name: 'AccountId', type: 'reference', nillable: false, createable: true, referenceTo: ['Account'] },
   ],
@@ -201,6 +303,61 @@ test('polymorphic required parents refuse as ambiguous', async () => {
   expect(outcome.status).toBe(422);
   expect(outcome.body.errorCode).toBe('APEX_EXEC_PARENT_AMBIGUOUS');
   expect(h.calls.some((call) => call.method === 'POST' && call.path === CART_ROUTE)).toBe(false);
+});
+
+test('rowless single-target parents mint one owned row, child cleaned first', async () => {
+  const route = `${ROOT}/actions/custom/apex/NS__TicketAction`;
+  const h = harness(route, {
+    inputs: [{ name: 'ticketId', type: 'ID', required: true }],
+    catalog: ['Account', 'Ticket__c'],
+    describe: {
+      Ticket__c: { createable: true, deletable: true, queryable: true, fields: [
+        { name: 'Name', type: 'string', length: 80, createable: true, filterable: true },
+        { name: 'SummaryRef__c', type: 'reference', nillable: false, createable: true, referenceTo: ['Summary__c'] },
+      ] },
+      Summary__c: { createable: true, deletable: true, queryable: true, fields: [
+        { name: 'Name', type: 'string', length: 80, createable: true, filterable: true },
+      ] },
+    },
+    invoke: [{ isSuccess: true, errors: null, outputValues: {} }],
+  });
+  const outcome = await invokeApexExecWithContext({ root: ROOT, route,
+    ownerUserId: OWNER, request: h.request, build: h.build });
+  expect(outcome.status).toBe(200);
+  expect(h.builds).toHaveLength(2);
+  expect(h.builds[0].name).toBe('Summary__c');
+  expect(h.builds[0].values.Name).toMatch(/^AE [0-9a-f]{12}$/);
+  expect(h.builds[1].name).toBe('Ticket__c');
+  expect(h.builds[1].values.SummaryRef__c).toBe(CART_ID);
+  const deletes = h.calls.filter((call) => call.method === 'DELETE').map((call) => call.path);
+  expect(deletes).toEqual([
+    `${ROOT}/sobjects/Ticket__c/${CART_ID}`,
+    `${ROOT}/sobjects/Summary__c/${CART_ID}`,
+  ]);
+  expect(outcome.cleanupError).toBeUndefined();
+});
+
+test('trigger-NPE fixture retries once with a live parent bound', async () => {
+  const route = `${ROOT}/actions/custom/apex/NS__TicketQuery`;
+  const h = harness(route, {
+    inputs: [{ name: 'ticketId', type: 'ID', required: true }],
+    catalog: ['Account', 'Ticket__c'],
+    describe: { createable: true, deletable: true, queryable: true, fields: [
+      { name: 'Name', type: 'string', length: 80, createable: true, filterable: true },
+      { name: 'ParentRecordId', type: 'reference', nillable: true, createable: true, referenceTo: ['Account'] },
+    ] },
+    parents: { Account: ACCOUNT_ID },
+    npeFirstPost: 'Ticket__c',
+    invoke: [{ isSuccess: true, errors: null, outputValues: {} }],
+  });
+  const outcome = await invokeApexExecWithContext({ root: ROOT, route,
+    ownerUserId: OWNER, request: h.request, build: h.build });
+  expect(outcome.status).toBe(200);
+  const posts = h.calls.filter((call) => call.method === 'POST' && call.path === `${ROOT}/sobjects/Ticket__c`);
+  expect(posts).toHaveLength(2);
+  expect(posts[0].body.ParentRecordId).toBeUndefined();
+  expect(posts[1].body.ParentRecordId).toBe(ACCOUNT_ID);
+  expect(outcome.cleanupError).toBeUndefined();
 });
 
 const GEO_ROUTE = `${ROOT}/actions/custom/apex/maps__GeocodeRecordInvocable`;
@@ -311,6 +468,26 @@ test('geo-query invokes with bound names when the event object exists', async ()
   expect(posted?.body).toEqual({ inputs: [{
     queryObjApiName: 'Account', latLongGeoFieldApiName: 'SDO_SFS_ShippingGeo__c', sumEventId: CART_ID,
   }] });
+});
+
+test('geo-query foreign hits verify; other lanes fail unadopted ids', async () => {
+  const foreign = '001000000000001AAA';
+  const geo = harness(GEO_QUERY_ROUTE, { inputs: GEO_QUERY_INPUTS, catalog: ['Account', 'SumEvent__c'],
+    describe: LOCATION_DESCRIBE,
+    invoke: [{ isSuccess: true, errors: null, outputValues: { distanceKM: 1.78, objId: foreign } }] });
+  const geoOutcome = await invokeApexExecWithContext({ root: ROOT, route: GEO_QUERY_ROUTE,
+    ownerUserId: OWNER, request: geo.request, build: geo.build });
+  expect(geoOutcome.status).toBe(200);
+  expect(geoOutcome.contextSchema?.verified).toBe(true);
+  expect(geoOutcome.cleanupError).toBeUndefined();
+  // Non-query lane: the same foreign id is an unverified side effect.
+  const plain = harness(CART_ROUTE, { inputs: CART_INPUTS, describe: WEB_CART_DESCRIBE,
+    parents: { WebStore: STORE_ID, Account: ACCOUNT_ID },
+    invoke: [{ isSuccess: true, errors: null, outputValues: { objId: foreign } }] });
+  const plainOutcome = await invokeApexExecWithContext({ root: ROOT, route: CART_ROUTE,
+    ownerUserId: OWNER, request: plain.request, build: plain.build });
+  expect(plainOutcome.status).toBe(200);
+  expect(plainOutcome.contextSchema?.verified).toBe(false);
 });
 
 test('builder version is pinned', () => {

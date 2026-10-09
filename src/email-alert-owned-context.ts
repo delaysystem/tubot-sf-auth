@@ -652,30 +652,24 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
         return fail("EMAIL_ALERT_RECIPIENT_UNSAFE",
           "The owned fixture creator is not the integration user; the send is refused.");
       }
-      const ownerId = actual.body?.OwnerId;
-      if (typeof ownerId === "string" && !sameSalesforceId(ownerId, input.selfUserId) &&
-        !sameSalesforceId(ownerId, await liveExecutorId()) &&
-        recipientProof.some((entry) => entry === "owner")) {
-        return fail("EMAIL_ALERT_RECIPIENT_UNSAFE",
-          "The alert resolves to the record owner, who is not the integration user; the send is refused.");
-      }
-      // Queue-routed fixtures (Case assignment rules move the owned fixture
-      // to a queue on insert) are unowned for cleanup: DELETE faults
-      // INSUFFICIENT_ACCESS_OR_READONLY and the row ends cleanup-unverified
-      // after a successful send. Reclaim ownership to the verified creator
-      // (proven the integration user above) before the send, and prove the
-      // PATCH stuck on re-read: org automation can 204-accept a PATCH and
-      // silently revert it, which must refuse honestly instead of sending
-      // against a record cleanup cannot delete.
+      // Reclaim an exact marker-verified fixture to its verified creator before
+      // assessing owner recipients. A queue default is not a foreign recipient
+      // once PATCH plus readback proves that the integration user owns it.
       const creatorId = actual.body?.CreatedById;
       if (typeof creatorId === "string") fixtureCreatorId = creatorId;
-      if (typeof ownerId === "string" && typeof creatorId === "string" && !sameSalesforceId(ownerId, creatorId)) {
+      if (typeof actual.body?.OwnerId === "string" && typeof creatorId === "string" && !sameSalesforceId(actual.body.OwnerId, creatorId)) {
         const reclaim = await request(`${root}/sobjects/${parts.objectName}/${ownedId}`, "PATCH", { OwnerId: creatorId });
         const reread = reclaim.ok ? await request(`${root}/sobjects/${parts.objectName}/${ownedId}`) : null;
         if (!reclaim.ok || !reread?.ok || !record(reread.body) || !sameSalesforceId(reread.body.OwnerId, creatorId)) {
           return fail("EMAIL_ALERT_RECLAIM_UNVERIFIED",
-            `The owned ${parts.objectName} fixture routed to an owner the integration user cannot reclaim (reclaim ${reclaim.status}); the send is refused so cleanup stays verifiable.`);
+            `The owned ${parts.objectName} fixture could not be reclaimed to its verified creator (reclaim ${reclaim.status}); the send is refused.`);
         }
+        actual.body = reread.body;
+      }
+      const ownerId = actual.body?.OwnerId;
+      if (typeof ownerId === "string" && !sameSalesforceId(ownerId, input.selfUserId) &&
+        !sameSalesforceId(ownerId, await liveExecutorId()) && recipientProof.some(entry => entry === "owner")) {
+        return fail("EMAIL_ALERT_RECIPIENT_UNSAFE", "The alert resolves to an owner who is not the integration user; the send is refused.");
       }
       const invoked = await request(input.route, "POST", { inputs: [{ [rowIdField]: ownedId }] });
       verified = emailAlertSendAccepted(invoked.status, invoked.body);

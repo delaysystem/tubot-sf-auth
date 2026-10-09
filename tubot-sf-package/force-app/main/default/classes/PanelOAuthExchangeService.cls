@@ -5,85 +5,52 @@ public with sharing class PanelOAuthExchangeService {
         String code = (String) request.get('code');
         String redirectUri = (String) request.get('redirectUri');
         String verifier = (String) request.get('codeVerifier');
-        validateRequest(code, redirectUri, verifier);
         MCP_Config__c config = PanelAuthSupportService.getConfig();
+        Panel_Environment__mdt environment = PanelEnvironmentResolver.resolve(config);
+        String panelBaseUrl = environment.Panel_Base_URL__c.removeEnd('/');
+        validateRequest(code, redirectUri, verifier, panelBaseUrl);
         String clientId = String.isNotBlank(config.Panel_Client_Id__c)
-            ? config.Panel_Client_Id__c : PanelAuthSupportService.DEFAULT_CLIENT_ID;
+            ? config.Panel_Client_Id__c : environment.Client_Id__c;
         Map<String, Object> token = PanelOAuthTokenExchangeService.exchange(new Map<String, Object>{
             'code' => code, 'redirectUri' => redirectUri, 'codeVerifier' => verifier, 'clientId' => clientId
-        });
+        }, panelBaseUrl);
         String accessToken = (String) token.get('access_token');
-        Map<String, Object> profile = fetchProfile(accessToken);
-        PanelExternalCredentialTokenService.store(accessToken);
-        saveConnection(config, token, profile);
+        Map<String, Object> profile = fetchProfile(panelBaseUrl, accessToken);
+        if (profile.get('userId') != token.get('user_id') || profile.get('teamId') != token.get('team_id')) {
+            throw profileLookupFailed('OAuth identity mismatch', null);
+        }
+        PanelExternalCredentialTokenService.store(accessToken, (String) token.get('refresh_token'));
+        saveConnection(config, panelBaseUrl, token, profile);
         return PanelAuthController.getPanelAuthStatus();
     }
 
-    private static void validateRequest(String code, String redirectUri, String verifier) {
+    private static void validateRequest(String code, String redirectUri, String verifier, String panelBaseUrl) {
         if (String.isBlank(code)) { throw new AuraHandledException('Authorization code cannot be blank.'); }
-        if (redirectUri != PanelAuthSupportService.DEFAULT_PANEL_URL + '/oauth/callback') {
+        if (redirectUri != panelBaseUrl + '/oauth/callback') {
             throw new AuraHandledException('Invalid Panel OAuth redirect URI. Restart Panel login.');
         }
         if (String.isBlank(verifier)) { throw new AuraHandledException('PKCE verifier is required. Restart Panel login.'); }
     }
 
-    private static Map<String, Object> fetchProfile(String accessToken) {
-        Map<String, Object> profile = new Map<String, Object>{ 'role' => '', 'teamName' => '', 'permissions' => '', 'email' => '' };
-        fetchRole(profile, accessToken);
-        fetchEmail(profile, accessToken);
-        if (String.isBlank((String) profile.get('role')) ||
-            String.isBlank((String) profile.get('teamName')) ||
-            String.isBlank((String) profile.get('email'))) {
-            throw profileLookupFailed('incomplete Panel account profile', null);
-        }
-        return profile;
-    }
-
-    private static void fetchRole(Map<String, Object> profile, String accessToken) {
-        HttpResponse response = fetchProfileEndpoint('/api/v1/team/role', accessToken);
-        if (response.getStatusCode() != 200) {
-            throw profileLookupFailed('team profile', response.getStatusCode());
-        }
-        try {
-            Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(response.getBody());
-            Map<String, Object> role = (Map<String, Object>) body.get('role');
-            if (role != null) { profile.put('role', (String) role.get('name')); }
-            profile.put('teamName', (String) body.get('teamName'));
-            profile.put('permissions', permissionText(body.get('permissions')));
-        } catch (Exception ex) {
-            throw profileLookupFailed('team profile', null);
-        }
-    }
-
-    private static String permissionText(Object rawPermissions) {
-        if (!(rawPermissions instanceof List<Object>)) { return ''; }
-        List<String> values = new List<String>();
-        for (Object permission : (List<Object>) rawPermissions) { values.add(String.valueOf(permission)); }
-        String result = String.join(values, ',');
-        if (result.length() <= 255) { return result; }
-        if (result.contains('edit_salesforce_settings')) {
-            result = 'edit_salesforce_settings,' + result.replace('edit_salesforce_settings,', '').replace(',edit_salesforce_settings', '');
-        }
-        return result.substring(0, Math.min(255, result.length()));
-    }
-
-    private static void fetchEmail(Map<String, Object> profile, String accessToken) {
-        HttpResponse response = fetchProfileEndpoint('/api/v1/user', accessToken);
+    private static Map<String, Object> fetchProfile(String panelBaseUrl, String accessToken) {
+        HttpResponse response = fetchProfileEndpoint(panelBaseUrl, '/api/oauth/userinfo', accessToken);
         if (response.getStatusCode() != 200) {
             throw profileLookupFailed('user profile', response.getStatusCode());
         }
-        try {
-            Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(response.getBody());
-            Map<String, Object> user = (Map<String, Object>) body.get('user');
-            if (user != null) { profile.put('email', (String) user.get('email')); }
-        } catch (Exception ex) {
-            throw profileLookupFailed('user profile', null);
+        Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(response.getBody());
+        if (String.isBlank((String) body.get('email')) || String.isBlank((String) body.get('team_name'))) {
+            throw profileLookupFailed('incomplete Panel account profile', null);
         }
+        return new Map<String, Object>{
+            'email' => body.get('email'), 'teamName' => body.get('team_name'),
+            'role' => null, 'permissions' => null,
+            'userId' => body.get('sub'), 'teamId' => body.get('team_id')
+        };
     }
 
-    private static HttpResponse fetchProfileEndpoint(String path, String accessToken) {
+    private static HttpResponse fetchProfileEndpoint(String panelBaseUrl, String path, String accessToken) {
         HttpRequest request = new HttpRequest();
-        request.setEndpoint(PanelAuthSupportService.DEFAULT_PANEL_URL + path);
+        request.setEndpoint(panelBaseUrl + path);
         request.setMethod('GET');
         // Runtime credential is minted in this same OAuth login flow: storing it in External Credentials first performs DML and blocks these profile callouts (uncommitted work pending, verified live on scratch), and endpoint-only named credentials cannot deploy (SecuredEndpoint requires an Authentication parameter). The host is allowlisted in the Panel_Tubot remote site.
         request.setHeader('Authorization', 'Bearer ' + accessToken); //NOPMD ApexSuggestUsingNamedCred
@@ -103,8 +70,9 @@ public with sharing class PanelOAuthExchangeService {
         );
     }
 
-    private static void saveConnection(MCP_Config__c config, Map<String, Object> token, Map<String, Object> profile) {
-        config.Panel_Base_URL__c = PanelAuthSupportService.DEFAULT_PANEL_URL;
+    private static void saveConnection(MCP_Config__c config, String panelBaseUrl, Map<String, Object> token, Map<String, Object> profile) {
+        config.Panel_Token_Expires_At__c = System.now().addSeconds(Integer.valueOf(String.valueOf(token.get('expires_in'))));
+        config.Panel_Base_URL__c = panelBaseUrl;
         config.Panel_User_Email__c = (String) profile.get('email');
         config.Panel_User_Role__c = (String) profile.get('role');
         config.Panel_Team_Id__c = (String) token.get('team_id');

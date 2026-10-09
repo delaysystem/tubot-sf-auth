@@ -4,11 +4,22 @@ public with sharing class PanelExternalCredentialTokenService {
 
     public static void store(String accessToken) {
         if (Test.isRunningTest() && bypassCredentialWriteForTest) { return; }
+        storeCredential(PanelAuthSupportService.getExternalCredentialApiName(), accessToken);
+    }
+
+    public static void store(String accessToken, String refreshToken) {
+        if (Test.isRunningTest() && bypassCredentialWriteForTest) { return; }
+        if (String.isBlank(refreshToken)) throw new AuraHandledException('Panel did not return a refresh credential. Reconnect Panel.');
+        storeCredential(PanelAuthSupportService.getRefreshExternalCredentialApiName(), refreshToken);
+        store(accessToken);
+    }
+
+    private static void storeCredential(String baseName, String accessToken) {
         List<String> credentialNames = new List<String>();
-        String qualified = PanelAuthSupportService.getExternalCredentialName();
+        String qualified = PanelAuthSupportService.getNamespacePrefix() + baseName;
         credentialNames.add(qualified);
-        if (qualified != PanelAuthSupportService.EXTERNAL_AUTH_NAME) {
-            credentialNames.add(PanelAuthSupportService.EXTERNAL_AUTH_NAME);
+        if (qualified != baseName) {
+            credentialNames.add(baseName);
         }
 
         for (String credName : credentialNames) {
@@ -29,7 +40,7 @@ public with sharing class PanelExternalCredentialTokenService {
                     return;
                 } catch (Exception createError) {
                     // Try next candidate credential name; log without secrets for diagnostics.
-                    System.debug('>>> [PanelExternalCredentialTokenService] Credential write failed for ' + credName + ': ' + createError.getMessage());
+                    System.debug('Panel credential write failed for ' + credName);
                 }
             }
         }
@@ -40,6 +51,6 @@ public with sharing class PanelExternalCredentialTokenService {
     }
 
     public static void clear() {
-        store('revoked');
+        store('revoked', 'revoked');
     }
 }

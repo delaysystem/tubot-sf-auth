@@ -20,9 +20,32 @@
  * namespaces appear here; every tenant value is caller-supplied or read
  * live. Identifiers are never invented: ID/REFERENCE inputs bind only
  * owned fixture ids, caller-supplied live ids, or live-discovered ids.
+ *
+ * R7 skip-exempt wave (blind-verified 2026-10-06 on the sweep org): the
+ * engine also owns invocable-apex shapes (owned SOBJECT-record updates,
+ * body-screened scalar pure functions, external-callout refusals),
+ * definition-scoped context-dynamic twins (empty-build exemption, twin
+ * refusals), org-wide batch-job submissions (refused), and the remaining
+ * unownable standards (social publish, hidden-contract appointment save,
+ * routing-address email resend). Matching stays type + route shape + live
+ * descriptor contract; no action, class, or object name is enumerated.
  */
 
 import { nativeActionSucceeded } from "./action-outcome";
+import { apexExecNestedFlags } from "./apex-exec-context";
+import {
+  apexNeedsLiveObjectName,
+  apexRecordCompanionValue,
+  apexSimpleClassName,
+  apexSobjectShapePlan,
+  contextNamespaceAbsent,
+  firstQueryableObjectName,
+  isApexExternalCalloutInputSet,
+  isApexScalarOnlyInputSet,
+  planApexScalarArgs,
+  screenApexBody,
+  verifyOwnedSobjectUpdate,
+} from "./apex-effect-screen";
 import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
 import { denialGrantForRestOutcome, type DenialGrant } from "./permission-denial-grants";
 import {
@@ -33,6 +56,7 @@ import {
   type DescriptorField,
   type TargetField,
 } from "./skipped-standards-context";
+import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -43,6 +67,12 @@ const ENTITY_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const STANDARD_ROUTE = /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
 const CUSTOM_ROUTE =
   /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/(dynamicSendSurveyInvitation|runDecisionMatrix)\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
+const APEX_ROUTE =
+  /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
+const BATCH_ROUTE =
+  /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/batchJobAction\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
+const DYNAMIC_ROUTE =
+  /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/(addContextRecordsDynamic|buildContextDynamic|queryContextRecordsDynamic|queryContextTagsDynamic|updateContextAttributesDynamic)\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
 
 /**
  * Family builder version (first worker-owned version for the skipped-standard
@@ -68,8 +98,11 @@ const CUSTOM_ROUTE =
  * 145: required inputs missed through empty discovery propose the
  * backing object for a read grant (hidden-gap heal attempt), and
  * discovery failures carry their upstream codes.
+ * 146: asset-activity refuses terminally (input_unresolved): the
+ * flow-managed ConnectApi rep shape is undiscoverable from live
+ * metadata, so no invented shape is ever sent.
  */
-export const SKIPPED_STANDARD_BUILDER_VERSION = 145;
+export const SKIPPED_STANDARD_BUILDER_VERSION = 146;
 
 /** Families this engine executes: wave-2 remainder plus wave-1 owned fall-throughs. */
 export const SKIPPED_STANDARD_ENGINE_FAMILIES = [
@@ -118,6 +151,14 @@ export const SKIPPED_STANDARD_ENGINE_FAMILIES = [
   "goals",
   "return-order",
   "search-rule",
+  "social-publish",
+  "appointment-save",
+  "routing-verify",
+  "context-dynamic",
+  "batch-submit",
+  "apex-sobject-shape",
+  "apex-scalar-pure",
+  "apex-external-callout",
 ] as const;
 export type SkippedStandardEngineFamily = (typeof SKIPPED_STANDARD_ENGINE_FAMILIES)[number];
 const ENGINE_FAMILY_SET: ReadonlySet<string> = new Set(SKIPPED_STANDARD_ENGINE_FAMILIES);
@@ -136,14 +177,26 @@ export function skippedStandardCode(family: SkippedStandardEngineFamily, reason:
   return `SKIPPED_STANDARD_${slug}_${tail}`;
 }
 
+export type SkippedStandardDynamicKind =
+  | "addContextRecordsDynamic"
+  | "buildContextDynamic"
+  | "queryContextRecordsDynamic"
+  | "queryContextTagsDynamic"
+  | "updateContextAttributesDynamic";
+
 export type SkippedStandardRouteInfo = {
-  kind: "standard" | "custom";
+  kind: "standard" | "custom" | "apex" | "batch" | "dynamic";
   apiVersion: string;
   action: string;
   customKind?: "dynamicSendSurveyInvitation" | "runDecisionMatrix";
+  dynamicKind?: SkippedStandardDynamicKind;
 };
 
-/** Parses a live standard or survey/matrix custom route; null otherwise. */
+/**
+ * Parses a live standard, survey/matrix custom, invocable-apex,
+ * batch-job, or context-dynamic route; null otherwise. Tenant flows,
+ * quick actions, prompts, and every other custom type still refuse.
+ */
 export function skippedStandardRouteInfo(route: unknown): SkippedStandardRouteInfo | null {
   if (typeof route !== "string") return null;
   const standard = route.match(STANDARD_ROUTE);
@@ -155,6 +208,19 @@ export function skippedStandardRouteInfo(route: unknown): SkippedStandardRouteIn
       apiVersion: custom[1],
       action: custom[3],
       customKind: custom[2] as "dynamicSendSurveyInvitation" | "runDecisionMatrix",
+    };
+  }
+  const apex = route.match(APEX_ROUTE);
+  if (apex) return { kind: "apex", apiVersion: apex[1], action: apex[2] };
+  const batch = route.match(BATCH_ROUTE);
+  if (batch) return { kind: "batch", apiVersion: batch[1], action: batch[2] };
+  const dynamic = route.match(DYNAMIC_ROUTE);
+  if (dynamic) {
+    return {
+      kind: "dynamic",
+      apiVersion: dynamic[1],
+      action: dynamic[3],
+      dynamicKind: dynamic[2] as SkippedStandardDynamicKind,
     };
   }
   return null;
@@ -191,7 +257,9 @@ export type SkippedStandardArgSource =
   | { fixed: unknown }
   | { fixedFn: (marker: string) => unknown }
   | { builtSObject: string }
-  | { updateShape: string };
+  | { updateShape: string }
+  | { describedChoice: true }
+  | { wrapped: { field: string; discovered: string } };
 
 export type SkippedStandardInputBinding = { match: RegExp; use: SkippedStandardArgSource };
 
@@ -214,6 +282,18 @@ function descriptorPicklistChoice(input: DescriptorField): string | undefined {
     if (typeof entry === "string" && entry) return entry;
     if (record(entry) && typeof entry.value === "string" && entry.value && entry.active !== false) return entry.value;
   }
+  return undefined;
+}
+
+/**
+ * First descriptor-documented valid value (`Valid values are "A" and "B"`)
+ * for STRING inputs whose backend enumerates literals in prose. Undefined
+ * when the description names none, so the planner misses honestly.
+ */
+export function descriptorValidValue(input: DescriptorField): string | undefined {
+  const description = typeof input?.description === "string" ? input.description : "";
+  const quoted = description.match(/valid values are\s+"([^"]+)"/i)?.[1];
+  if (quoted) return quoted;
   return undefined;
 }
 
@@ -307,13 +387,35 @@ export function planSkippedStandardArgs(
         const markerField = Object.keys(shaped).find((key) => shaped[key] === ctx.marker) ?? "Name";
         value = { Id: id, [markerField]: ctx.marker };
         bound = true;
+      } else if ("describedChoice" in use) {
+        const choice = descriptorValidValue(input);
+        if (choice === undefined) {
+          if (input.required === true) return { missing: input.name };
+          continue;
+        }
+        value = choice;
+        bound = true;
+      } else if ("wrapped" in use) {
+        const found = ctx.discovered[use.wrapped.discovered];
+        if (typeof found !== "string" || !found || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(use.wrapped.field)) {
+          if (input.required === true) return { missing: input.name };
+          continue;
+        }
+        value = { [use.wrapped.field]: found };
+        bound = true;
       }
     }
     if (!bound) {
       const upperType = String(input.type ?? "").toUpperCase();
-      if ((upperType === "PICKLIST" || upperType === "COMBOBOX") && input.required === true) {
+      if (upperType === "PICKLIST" || upperType === "COMBOBOX") {
         const choice = descriptorPicklistChoice(input);
-        if (choice === undefined) return { missing: input.name };
+        // Optional picklists bind their descriptor choice when one is
+        // offered (campaign status demands it) and skip cleanly when the
+        // descriptor offers no choice; only required gaps fail the plan.
+        if (choice === undefined) {
+          if (input.required === true) return { missing: input.name };
+          continue;
+        }
         value = choice;
         bound = true;
       } else if (input.required === true && ["BOOLEAN", "DATE", "DATETIME", "INTEGER", "INT", "LONG", "DOUBLE", "DECIMAL", "CURRENCY", "PERCENT", "TIME"].includes(upperType)) {
@@ -401,7 +503,11 @@ export function skippedStandardBindingSpec(
           { match: /^parameters$/i, use: { fixed: [] } },
           { match: /^apexclass$/i, use: { discovered: "apexClass" } },
           { match: /^expressionset$/i, use: { discovered: "expressionSet" } },
-          { match: /^applicationname$/i, use: { discovered: "applicationName" } },
+          // invokeRule: ApplicationName is runtime-required but freeform (any
+          // non-empty value is accepted live with the discovered ExpressionSet;
+          // no registry object enumerates valid values), so it binds the probe
+          // marker instead of an undiscoverable lookup.
+          { match: /^applicationname$/i, use: MARKER_BINDING },
           { match: /^dataspacename$/i, use: { discovered: "dataSpace" } },
         ],
       };
@@ -439,7 +545,6 @@ export function skippedStandardBindingSpec(
     case "engagement-topic":
     case "interest-tag":
     case "referral-record":
-    case "service-campaign":
     case "loyalty-points":
     case "member-verification":
     case "timesheet-validate":
@@ -479,6 +584,17 @@ export function skippedStandardBindingSpec(
       };
     case "goals":
       return { bindings: sharedRecordBindings(family, lowerAction) };
+    case "service-campaign":
+      return {
+        bindings: [
+          { match: /^commsubscriptionid$/i, use: { fixture: "CommSubscription" } },
+          // Conditional ASA demand: resolutionType=AGENTFORCE_SERVICE_AGENT
+          // faults MISSING_ARGUMENT unless the service prompt is bound
+          // (live probe of createServiceCampaign).
+          { match: /^serviceagentprompt$/i, use: MARKER_BINDING },
+          ...sharedRecordBindings(family, lowerAction),
+        ],
+      };
     case "inventory-slot":
       // Release binds live statuses scoped to an owned allocation fixture;
       // the warning notify uses a synthetic status matching nothing, so no
@@ -577,13 +693,25 @@ export function skippedStandardBindingSpec(
           { match: /^payloadcurrentvalue$/i, use: { fixedFn: (marker) => JSON.stringify({ probe: marker }) } },
         ],
       };
+    case "order-summary":
+      return { bindings: sharedRecordBindings(family, lowerAction) };
     case "research":
     case "payment":
-    case "order-summary":
     case "return-order":
     case "search-rule":
     case "flow-plugin-plan":
       return { bindings: fallbackBindings(family) };
+    case "social-publish":
+    case "appointment-save":
+    case "routing-verify":
+    case "context-dynamic":
+    case "batch-submit":
+    case "apex-sobject-shape":
+    case "apex-scalar-pure":
+    case "apex-external-callout":
+      // R7: dedicated runners and terminal refusals plan their own
+      // declared inputs; the generic binder never runs for these.
+      return { bindings: [] };
   }
 }
 
@@ -603,6 +731,12 @@ function sharedRecordBindings(family: SkippedStandardEngineFamily, lowerAction: 
     { match: /^(tasksubjectname|swarmrecordname|tagname|workordersteplabel|campaignname|topicname|goalname)$/i, use: MARKER_BINDING },
     { match: /^(campaigndescription|tagdescription|swarmdescription|taskcomments|referralnotes)$/i, use: MARKER_BINDING },
     { match: /^taskuseassigneduserlookup$/i, use: { fixed: false } },
+    { match: /^taskassignedto$/i, use: OWNER_BINDING },
+    { match: /^taskassignedtotype$/i, use: SCALAR_BINDING },
+    { match: /^taskduedatetz$/i, use: SCALAR_BINDING },
+    { match: /^taskpriority$/i, use: { discovered: "taskPriority" } },
+    { match: /^taskstatus$/i, use: { discovered: "taskStatus" } },
+    { match: /^tasksubject$/i, use: MARKER_BINDING },
     { match: /^campaignid$/i, use: { fixture: "Campaign" } },
     { match: /^categoryid$/i, use: { discovered: "categoryId" } },
     { match: /^topicid$/i, use: { fixture: "Topic" } },
@@ -642,7 +776,8 @@ function sharedRecordBindings(family: SkippedStandardEngineFamily, lowerAction: 
     { match: /^recipientids$/i, use: OWNER_BINDING },
     { match: /^relatedrecordids$/i, use: { fixture: "Case" } },
     { match: /^messagetemplateid$/i, use: { discovered: "messageTemplateId" } },
-    { match: /^engagementchannel$/i, use: { discovered: "engagementChannel" } },
+    { match: /^engagementchannel$/i, use: { describedChoice: true } },
+    { match: /^messagetypehandler$/i, use: { describedChoice: true } },
     { match: /^messagingenduserids$/i, use: { fixture: "MessagingEndUser" } },
     { match: /^messagedefinitionname$/i, use: { discovered: "messageDefinition" } },
     { match: /^isenforcemessagingchannelconsent$/i, use: { fixed: true } },
@@ -661,6 +796,10 @@ function sharedRecordBindings(family: SkippedStandardEngineFamily, lowerAction: 
     { match: /^channeldevelopername$/i, use: { discovered: "messageChannel" } },
     { match: /^contextrecordid$/i, use: { fixture: "Case" } },
     { match: /^recipientrecordid$/i, use: { fixture: "Contact" } },
+    { match: /^ordersummaryid$/i, use: { discovered: "orderSummaryId" } },
+    { match: /^webstoreid$/i, use: { discovered: "webStoreId" } },
+    { match: /^ensurefundsasyncinput$/i, use: { wrapped: { field: "invoiceId", discovered: "invoiceId" } } },
+    { match: /^performers$/i, use: { discovered: "performerIds" } },
     { match: PROSE_PATTERN, use: MARKER_BINDING },
   ];
   return table;
@@ -670,6 +809,12 @@ function fallbackBindings(family: SkippedStandardEngineFamily): SkippedStandardI
   switch (family) {
     case "flow-plugin-plan":
       return [{ match: /^work_item$/i, use: { fixedFn: (marker) => ({ goal: marker, artifacts: [] }) } }];
+    // Search shapes execute with synthetic text (live-verified).
+    case "research":
+      return [
+        { match: /^searchtext$/i, use: MARKER_BINDING },
+        { match: /^knowledgespacesearchindexid$/i, use: MARKER_BINDING },
+      ];
     default:
       return [];
   }
@@ -690,6 +835,11 @@ export function skippedStandardDiscoveries(
   switch (family) {
     case "record-assignment":
       return [{ key: "queueId", queryId: ["SELECT Id FROM Group WHERE Type = 'Queue' LIMIT 1"] }];
+    case "task-record":
+      return [
+        { key: "taskPriority", picklist: ["Task"], fieldMatch: /^priority$/i },
+        { key: "taskStatus", picklist: ["Task"], fieldMatch: /^status$/i },
+      ];
     case "prospect-convert":
       return [{ key: "convertedStatus", queryValue: ["SELECT MasterLabel FROM LeadStatus WHERE IsConverted = true LIMIT 1"], field: "MasterLabel" }];
     case "record-convert":
@@ -701,7 +851,7 @@ export function skippedStandardDiscoveries(
       ];
     case "synthetic-eval":
       return [
-        { key: "expressionSet", queryValue: ["SELECT DeveloperName FROM ExpressionSet LIMIT 1"], field: "DeveloperName" },
+        { key: "expressionSet", queryValue: ["SELECT ApiName FROM ExpressionSet LIMIT 1"], field: "ApiName" },
       ];
     case "service-appointment":
       return [
@@ -751,12 +901,30 @@ export function skippedStandardDiscoveries(
       return [{ key: "integrationDefinition", queryValue: ["SELECT DeveloperName FROM IntegrationDefinition LIMIT 1"], field: "DeveloperName" }];
     case "call-experience":
       return [{ key: "endedCallId", queryId: ["SELECT Id FROM VoiceCall WHERE CallEndDateTime != null LIMIT 1"] }];
+    case "timesheet-validate":
+      return [{ key: "serviceResourceId", queryId: ["SELECT Id FROM ServiceResource LIMIT 1"] }];
     case "member-verification":
       return [{ key: "processDefinition", queryValue: ["SELECT DeveloperName FROM IdentityVerificationProcDef LIMIT 1"], field: "DeveloperName" }];
     case "integration-plan":
       return [
         { key: "contextDefinition", queryValue: ["SELECT DeveloperName FROM ContextDefinition LIMIT 1"], field: "DeveloperName" },
-        { key: "expressionSet", queryValue: ["SELECT DeveloperName FROM ExpressionSet LIMIT 1"], field: "DeveloperName" },
+        { key: "expressionSet", queryValue: ["SELECT ApiName FROM ExpressionSet LIMIT 1"], field: "ApiName" },
+      ];
+    case "order-summary":
+      return [
+        { key: "orderSummaryId", queryId: ["SELECT Id FROM OrderSummary LIMIT 1"] },
+        { key: "webStoreId", queryId: ["SELECT Id FROM WebStore LIMIT 1"] },
+        { key: "invoiceId", queryId: ["SELECT Id FROM Invoice LIMIT 1"] },
+      ];
+    case "referral-record":
+      return [
+        { key: "performerIds", queryIdList: ["SELECT Id FROM Account LIMIT 3"], limit: 3 },
+      ];
+    case "visualization":
+      return [{ key: "analyticsWorkspaceId", queryId: ["SELECT Id FROM AnalyticsWorkspace LIMIT 1"] }];
+    case "campaign-member":
+      return [
+        { key: "campaignMemberStatus", queryValue: ["SELECT Label FROM CampaignMemberStatus LIMIT 1"], field: "Label" },
       ];
     default:
       return [];
@@ -803,10 +971,18 @@ export function skippedStandardFixtures(
     case "campaign-member":
       return [{ objects: ["Campaign"] }];
     case "service-appointment":
-      return [{ objects: ["ServiceAppointment"] }];
+      // TR001 NPEs parentless SA inserts (verified); ride an owned WorkOrder.
+      return [
+        { objects: ["WorkOrder"] },
+        { objects: ["ServiceAppointment"], parents: { ParentRecordId: { fixture: "WorkOrder" } } },
+      ];
     case "message-send":
     case "notification":
       if (/^notify/i.test(action)) return [];
+      // sendChannelMessage binds owner + discovered + descriptor-documented
+      // values only; minted fixtures would add nothing but cleanup risk
+      // (Case assignment rules route them to queues the worker cannot own).
+      if (/^sendchannelmessage$/i.test(action)) return [];
       if (/conversationmessages/i.test(action)) {
         return [
           { objects: ["Contact"] },
@@ -844,7 +1020,8 @@ export function skippedStandardFixtures(
     case "referral-record":
       return [];
     case "service-campaign":
-      return [{ objects: ["Contact"] }];
+      // CommSubscription is fixture-mintable (verified round-trip).
+      return [{ objects: ["Contact"] }, { objects: ["CommSubscription"] }];
     case "loyalty-points":
       return [{ objects: ["LoyaltyProgramMember"], parents: { LoyaltyProgramId: { discovered: "loyaltyProgramId" } }, optional: true }];
     case "inventory-slot":
@@ -852,7 +1029,7 @@ export function skippedStandardFixtures(
     case "member-verification":
       return [{ objects: ["EngagementInteraction"] }, { objects: ["Contact"] }];
     case "timesheet-validate":
-      return [{ objects: ["TimeSheet"] }];
+      return [{ objects: ["TimeSheet"], parents: { ServiceResourceId: { discovered: "serviceResourceId" } } }];
     case "content-publish":
       return [{ objects: ["ManagedContentRelease"] }];
     case "approval-override":
@@ -866,7 +1043,7 @@ export function skippedStandardFixtures(
     case "industries-async":
       return /extasync/i.test(action) ? [] : [{ objects: ["Case"] }];
     case "visualization":
-      return [{ objects: ["AnalyticsVisualization"] }];
+      return [{ objects: ["AnalyticsVisualization"], parents: { AnalyticsWorkspaceId: { discovered: "analyticsWorkspaceId" } } }];
     case "enablement":
       return [];
     case "goals":
@@ -879,6 +1056,17 @@ export function skippedStandardFixtures(
     case "return-order":
     case "search-rule":
     case "flow-plugin-plan":
+      return [];
+    case "social-publish":
+    case "appointment-save":
+    case "routing-verify":
+    case "context-dynamic":
+    case "batch-submit":
+    case "apex-sobject-shape":
+    case "apex-scalar-pure":
+    case "apex-external-callout":
+      // R7: terminal refusals mint no fixtures; dedicated runners own
+      // descriptor-driven fixtures directly through the run context.
       return [];
   }
 }
@@ -1187,6 +1375,122 @@ async function referenceOverrides(
   return overrides;
 }
 
+/**
+ * Reclaim a fresh fixture routed to a queue by assignment rules: later
+ * DELETEs 400 INSUFFICIENT_ACCESS_OR_READONLY on unowned records, so
+ * ownership is restored to the creator immediately after the marker
+ * readback. The creator comes from the readback itself (CreatedById), never
+ * the credential's integration-user field, which can point at a different
+ * identity. Returns a fixture failure (with the record queued for
+ * best-effort cleanup) when the reclaim is refused; null when the owner
+ * already matches or ownership is unknown. Shared by every mint path.
+ */
+/**
+ * Engine-shaped ServiceAppointment completion. The generic builder leaves
+ * territory, work type, duration, and window at now-shaped defaults; the
+ * FSL engine needs an STM-covered territory, a live work type with a
+ * duration, and a forward window. Territory binds member-covered first
+ * (an arbitrary territory pick has no capacity); duration converts the
+ * bound work type's estimate by its unit; caller datetimes survive only
+ * when already forward. Verified live: a fully-grounded appointment in
+ * the proven territory still refuses when the org has no schedulable
+ * capacity, which the scheduling-substrate terminal reports.
+ */
+async function completeServiceAppointmentFixture(ctx: RunContext, fields: TargetField[], values: Value): Promise<void> {
+  const want = (name: string): boolean => {
+    const field = fields.find((entry) => entry.name === name && entry.createable === true);
+    return !!field && (values[name] == null || values[name] === "");
+  };
+  const firstRow = (body: unknown, key: string): Value | undefined => {
+    if (!record(body) || !Array.isArray(body.records)) return undefined;
+    return body.records.filter(record).find((entry) => identity(entry[key]));
+  };
+  if (want("ServiceTerritoryId")) {
+    const covered = await ctx.request(
+      `${ctx.root}/query?q=${encodeURIComponent("SELECT ServiceTerritoryId FROM ServiceTerritoryMember LIMIT 1")}`).catch(() => null);
+    const coveredRow = covered ? firstRow(covered.body, "ServiceTerritoryId") : undefined;
+    if (coveredRow) {
+      values.ServiceTerritoryId = coveredRow.ServiceTerritoryId;
+    } else {
+      const territories = await ctx.request(
+        `${ctx.root}/query?q=${encodeURIComponent("SELECT Id FROM ServiceTerritory LIMIT 1")}`).catch(() => null);
+      const row = territories ? firstRow(territories.body, "Id") : undefined;
+      if (row) values.ServiceTerritoryId = row.Id;
+    }
+  }
+  if (want("WorkTypeId")) {
+    const worktypes = await ctx.request(
+      `${ctx.root}/query?q=${encodeURIComponent("SELECT Id, EstimatedDuration, DurationType FROM WorkType LIMIT 1")}`).catch(() => null);
+    const row = worktypes ? firstRow(worktypes.body, "Id") : undefined;
+    if (row) {
+      values.WorkTypeId = row.Id;
+      if (want("Duration") && typeof row.EstimatedDuration === "number" && row.EstimatedDuration > 0) {
+        values.Duration = row.DurationType === "Hours" ? row.EstimatedDuration * 60 : row.EstimatedDuration;
+      }
+    }
+  }
+  if (want("Duration")) values.Duration = 60;
+  const floor60 = (t: number): number => Math.floor(t / 60000) * 60000;
+  const winNow = Date.now();
+  const earliestMs = Date.parse(String(values.EarliestStartTime ?? ""));
+  const dueMs = Date.parse(String(values.DueDate ?? ""));
+  const earliest = Number.isFinite(earliestMs) && earliestMs > winNow + 1800000 ? earliestMs : floor60(winNow + 3600000);
+  const due = Number.isFinite(dueMs) && dueMs > earliest ? dueMs : earliest + 3600000;
+  if (fields.some((entry) => entry.name === "EarliestStartTime" && entry.createable === true)) {
+    values.EarliestStartTime = new Date(earliest).toISOString();
+  }
+  if (fields.some((entry) => entry.name === "DueDate" && entry.createable === true)) {
+    values.DueDate = new Date(due).toISOString();
+  }
+  // Scheduled times: formatting consumers read SchedStartTime (an
+  // unscheduled fixture faults their own adjustment), and the fields are
+  // createable. Derive from the forward window, clamped inside it.
+  const spanMin = typeof values.Duration === "number" && values.Duration > 0 ? values.Duration : 60;
+  const schedStart = earliest;
+  const schedEnd = Math.min(schedStart + spanMin * 60000, due);
+  if (fields.some((entry) => entry.name === "SchedStartTime" && entry.createable === true)) {
+    values.SchedStartTime = new Date(schedStart).toISOString();
+  }
+  if (fields.some((entry) => entry.name === "SchedEndTime" && entry.createable === true)) {
+    values.SchedEndTime = new Date(schedEnd).toISOString();
+  }
+  // Grounding witness: the scheduling-substrate terminal fires only when
+  // the fixture provably carries engine shape (never on a gap refusal).
+  if (identity(values.ServiceTerritoryId) && identity(values.WorkTypeId) &&
+    typeof values.Duration === "number" && values.Duration > 0 &&
+    Number.isFinite(Date.parse(String(values.EarliestStartTime ?? ""))) &&
+    Number.isFinite(Date.parse(String(values.DueDate ?? "")))) {
+    ctx.schedulingGrounded = true;
+  }
+}
+
+/** Native actions-envelope error messages, bounded. */
+function nativeErrorMessages(body: unknown): string[] {
+  const out: string[] = [];
+  const outcomes = Array.isArray(body) ? body : [body];
+  for (const outcome of outcomes.slice(0, 8)) {
+    if (!record(outcome) || !Array.isArray(outcome.errors)) continue;
+    for (const entry of outcome.errors.slice(0, 8)) {
+      if (record(entry) && typeof entry.message === "string" && entry.message) out.push(entry.message);
+    }
+  }
+  return out;
+}
+
+async function reclaimFixtureOwner(ctx: RunContext, object: string, madeId: string,
+  readback: unknown, marker: string, markerField: string): Promise<Result | null> {
+  const actualOwner = record(readback) && typeof readback.OwnerId === "string" ? readback.OwnerId : null;
+  const creator = record(readback) && typeof readback.CreatedById === "string" ? readback.CreatedById : null;
+  if (!actualOwner || !creator || actualOwner === creator) return null;
+  const reclaim = await ctx.request(`${ctx.root}/sobjects/${object}/${madeId}`, "PATCH", { OwnerId: creator });
+  if (!reclaim.ok) {
+    ctx.cleanup.push({ object, id: madeId, marker, markerField });
+    return fail(ctxCode(ctx, "fixture_unavailable"),
+      `The owned ${object} fixture routed to a queue the execution user cannot own (reclaim ${reclaim.status}).`);
+  }
+  return null;
+}
+
 async function createFixtures(ctx: RunContext): Promise<Result | null> {
   for (const plan of skippedStandardFixtures(ctx.family, ctx.action)) {
     let created: { object: string; id: string; markerField: string } | null = null;
@@ -1194,6 +1498,11 @@ async function createFixtures(ctx: RunContext): Promise<Result | null> {
     for (const object of plan.objects) {
       if (!ENTITY_NAME.test(object)) continue;
       const probe = await ctx.request(`${ctx.root}/sobjects/${object}/describe`);
+      if (!probe.ok && probe.status === 404) {
+        return fail(ctxCode(ctx, "package_required"),
+          `The ${object} object is not installed in this org; install the managed package that provides it, then retry.`,
+          { setupRequirement: `Install the ${object} managed package (the ${object} object is absent from this org), then retry.` });
+      }
       if (!probe.ok || !record(probe.body) || probe.body.createable !== true ||
         probe.body.queryable !== true || probe.body.deletable !== true || !Array.isArray(probe.body.fields)) {
         lastFailure = fail(
@@ -1243,6 +1552,9 @@ async function createFixtures(ctx: RunContext): Promise<Result | null> {
         lastFailure = built.failure;
         continue;
       }
+      if (object === "ServiceAppointment") {
+        await completeServiceAppointmentFixture(ctx, fields, built.values);
+      }
       if (built.values[markerPick.name] !== marker) {
         lastFailure = fail(ctxCode(ctx, "fixture_unavailable"), "The fixture builder changed a planned ownership field.");
         continue;
@@ -1259,6 +1571,11 @@ async function createFixtures(ctx: RunContext): Promise<Result | null> {
         lastFailure = fail(ctxCode(ctx, "fixture_unverified"), "The owned fixture readback did not carry the marker.");
         continue;
       }
+      const reclaimFailure = await reclaimFixtureOwner(ctx, object, madeId as string, actual.body, marker, markerPick.name);
+      if (reclaimFailure) {
+        lastFailure = reclaimFailure;
+        continue;
+      }
       created = { object, id: madeId, markerField: markerPick.name };
       ctx.fixtures[object] = madeId;
       ctx.fixtureMarkers[object] = markerPick.name;
@@ -1267,6 +1584,11 @@ async function createFixtures(ctx: RunContext): Promise<Result | null> {
     }
     if (!created) {
       if (plan.optional) continue;
+      if (ctx.family === "billing-contact" && plan.objects.some((name) => name === "Invoice" || name === "blng__Invoice__c")) {
+        return fail(ctxCode(ctx, "package_required"),
+          `No invoice substrate resolved (${plan.objects.join("/")}); install the Salesforce Billing managed package or provision invoice substrate, then retry.`,
+          { setupRequirement: "Install the Salesforce Billing managed package (invoice substrate) or grant invoice create/read/delete access, then retry." });
+      }
       return lastFailure ?? fail(ctxCode(ctx, "fixture_unavailable"), "The owned fixture could not be prepared.");
     }
   }
@@ -1299,10 +1621,16 @@ async function buildShapedSObjects(ctx: RunContext, inputs: DescriptorField[]): 
 async function cleanupFixtures(ctx: RunContext): Promise<string | undefined> {
   for (const entry of [...ctx.cleanup].reverse()) {
     if (!ENTITY_NAME.test(entry.object) || !identity(entry.id)) continue;
-    await ctx.request(`${ctx.root}/sobjects/${entry.object}/${entry.id}`, "DELETE");
+    if (typeof ctx.ownerUserId === "string" && identity(ctx.ownerUserId)) {
+      await reclaimFixtureOwnerForDelete({ root: ctx.root, objectName: entry.object, id: entry.id, ownerId: ctx.ownerUserId, request: ctx.request }).catch(() => null);
+    }
+    const removed = await ctx.request(`${ctx.root}/sobjects/${entry.object}/${entry.id}`, "DELETE");
     const check = await ctx.request(`${ctx.root}/sobjects/${entry.object}/${entry.id}`);
     if (check.status !== 404) {
-      return "Owned skipped-standard fixture cleanup could not be verified; the record may still exist.";
+      const first = Array.isArray(removed.body) ? removed.body[0] : removed.body;
+      const denial = record(first) && typeof first.errorCode === "string"
+        ? ` ${first.errorCode}${typeof first.message === "string" ? `: ${first.message.slice(0, 120)}` : ""}` : "";
+      return `Owned ${entry.object} fixture cleanup could not be verified (delete ${removed.status}${denial}, readback ${check.status}); the record may still exist.`;
     }
     if (entry.marker && entry.markerField && !entry.marker.includes("'")) {
       const swept = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(
@@ -1447,7 +1775,8 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
     // return zero rows instead of 403 for underprivileged identities), so
     // propose the backing object for grant self-heal when no true denial
     // was recorded. Genuinely empty substrate re-fails honestly after the
-    // single heal attempt; non-discovery inputs propose nothing.
+    // single heal attempt; missing objects (INVALID_TYPE) and non-discovery
+    // inputs propose nothing.
     if (!ctx.discoveryDenial) {
       const hidden = discoveryObjectForMissingInput(spec.bindings, skippedStandardDiscoveries(ctx.family, ctx.action), planned.missing);
       const keyFailedAbsent = hidden !== null && ctx.discoveryFailures.some(note =>
@@ -1469,7 +1798,26 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
     : null;
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
   if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
-  if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
+  if (!nativeActionSucceeded(invoked.status, invoked.body)) {
+    // Scheduling-substrate terminal: the engine refused a fully-grounded
+    // appointment (member-covered territory, live work type, forward
+    // window, live policy). Blind-verified: a perfect fixture in the
+    // proven territory plus a published covering shift still refuses, so
+    // the gap is org schedulable capacity, never the fixture. Scoped to
+    // the exact native refusal so other faults pass through unmasked.
+    if (ctx.family === "service-appointment" && /schedule/i.test(ctx.action) && ctx.schedulingGrounded === true &&
+      nativeErrorMessages(invoked.body).some((message) => /unable to schedule service appointment/i.test(message))) {
+      const requirement = "Provision schedulable FSL capacity covering the probe window (a territory with member coverage plus operating-hours availability for a resource in that territory), then retry.";
+      return {
+        outcome: fail(code("scheduling_substrate_unavailable"),
+          "The scheduling engine refused a fully-grounded appointment; no schedulable capacity exists for the window.",
+          { setupRequirement: requirement }),
+        verified: false,
+        extra: {},
+      };
+    }
+    return { outcome: invoked, verified: false, extra: {} };
+  }
   const createdPlan = createdPlanFor(ctx.family, ctx.action);
   if (createdPlan) {
     const created = await verifyCreated(ctx, createdPlan, invoked);
@@ -1491,19 +1839,343 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
   return { outcome: invoked, verified: true, extra: {} };
 }
 
+type TerminalRefusal = { reason: string; requirement: string };
+
+/**
+ * Terminal refusals: real-world effects no owned fixture can own, or
+ * contracts no live discovery can satisfy. Each carries a precise
+ * terminal code so the row parks instead of churning. Blind evidence for
+ * the r7 entries: social publish posts to an external network, appointment
+ * save faults MISSING_ARGUMENT across owned shapes, routing verification
+ * resends an email, batch jobs execute org-wide definitions, and
+ * external-callout apex writes to a vendor business unit.
+ */
+function terminalRefusalFor(family: SkippedStandardEngineFamily): TerminalRefusal | null {
+  switch (family) {
+    case "outbound-call":
+      return {
+        reason: "unownable",
+        requirement: "Real-world calls are placed only through human-driven flows; the probe never dials.",
+      };
+    case "credential-reset":
+      return {
+        reason: "unownable",
+        requirement: "Credentials are reset only through human-driven flows; the probe never resets.",
+      };
+    case "social-publish":
+      return {
+        reason: "unownable",
+        requirement: "Social posts publish to an external network no fixture can own, read back, or delete; the probe never publishes.",
+      };
+    case "appointment-save":
+      return {
+        reason: "input_unresolved",
+        requirement: "The appointment save contract is flow-managed and undiscoverable (MISSING_ARGUMENT across owned lead, work-type, resource, and time shapes); a live booking-slots token chain is required before execution.",
+      };
+    case "routing-verify":
+      return {
+        reason: "unownable",
+        requirement: "Routing verification resends an email to an arbitrary address no fixture can own; the probe never resends.",
+      };
+    case "batch-submit":
+      return {
+        reason: "unownable",
+        requirement: "Batch-job actions invoke org-wide job definitions whose processed set no fixture can own; the probe never submits.",
+      };
+    case "apex-external-callout":
+      return {
+        reason: "unownable",
+        requirement: "The invocable writes to an external business unit through a callout credential; no Salesforce-side fixture, readback, or cleanup applies.",
+      };
+    case "asset-activity":
+      return {
+        reason: "input_unresolved",
+        requirement: "The asset-activity contract is a flow-managed ConnectApi representation (ConnectApi__AssetsWithActivity*Representation) whose shape no live metadata exposes: the descriptor carries the apex class name only, and eleven blind-verified shapes (update maps, typed sObjects, ID lists, rep lists) all reject with flow-variable or malformed-sObject faults. No invented shape is ever sent.",
+      };
+    default:
+      return null;
+  }
+}
+
 async function runTerminalRefusal(ctx: RunContext): Promise<RunnerOutcome> {
   await ctx.request(ctx.route);
-  const requirement = ctx.family === "outbound-call"
-    ? "Real-world calls are placed only through human-driven flows; the probe never dials."
-    : "Credentials are reset only through human-driven flows; the probe never resets.";
+  const refusal = terminalRefusalFor(ctx.family) ?? {
+    reason: "unownable",
+    requirement: "No owned fixture can own this effect; the probe never invokes.",
+  };
   return {
-    outcome: fail(ctxCode(ctx, "unownable"), requirement, { setupRequirement: requirement }),
+    outcome: fail(ctxCode(ctx, refusal.reason), refusal.requirement, { setupRequirement: refusal.requirement }),
     verified: false,
     extra: {},
   };
 }
 
-async function runResearchFallback(ctx: RunContext): Promise<RunnerOutcome> {
+async function runContextDynamic(ctx: RunContext, windowMs?: number): Promise<RunnerOutcome> {
+  const code = (reason: string): string => ctxCode(ctx, reason);
+  const dynamicKind = skippedStandardRouteInfo(ctx.route)?.dynamicKind;
+  const descriptor = await ctx.request(ctx.route);
+  if (!descriptor.ok) return { outcome: descriptor, verified: false, extra: {} };
+  const inputs = descriptorInputsOf(descriptor.body);
+  if (!inputs) {
+    return { outcome: fail(code("input_unresolved"), "The live descriptor exposes no usable input schema."), verified: false, extra: {} };
+  }
+  // Only the build twin is ownable: an empty invoke is accepted live and
+  // persists nothing (absence verified). Add/query/update twins need
+  // definition-scoped record variables no live discovery exposes, and
+  // definition namespaces cannot be opened generically — they refuse
+  // without any POST.
+  if (dynamicKind !== "buildContextDynamic") {
+    return {
+      outcome: fail(code("input_unresolved"), "No live-discoverable value exists for the definition-scoped record contract.", {
+        setupRequirement: setupRequirementFor(ctx.family, "contextRecordData"),
+        dynamicKind: dynamicKind ?? null,
+      }),
+      verified: false,
+      extra: { dynamicKind: dynamicKind ?? null },
+    };
+  }
+  const planned = planSkippedStandardArgs({ bindings: [] }, inputs, {
+    marker: ctx.marker,
+    ownerUserId: ctx.ownerUserId,
+    fixtures: ctx.fixtures,
+    discovered: ctx.discovered,
+  });
+  if ("missing" in planned) {
+    return {
+      outcome: fail(code("input_unresolved"), `No discovered live value for required input ${planned.missing}.`, {
+        setupRequirement: setupRequirementFor(ctx.family, planned.missing),
+      }),
+      verified: false,
+      extra: {},
+    };
+  }
+  const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
+  const contextId = firstOutputText(invoked.body, /^contextid$/i);
+  const mappingId = firstOutputText(invoked.body, /contextmappingid/i);
+  const definitionId = firstOutputText(invoked.body, /contextdefinitionid/i);
+  if (!contextId) return { outcome: invoked, verified: false, extra: {} };
+  // Cleanup: the namespace either deletes (accepted) or never persisted
+  // (absent shape). Both prove no residue; anything else is unverified.
+  const cleared = await ctx.request(`${ctx.root}/actions/standard/deleteContextCache`, "POST", { inputs: [{ contextId }] });
+  const clean = nativeActionSucceeded(cleared.status, cleared.body) || contextNamespaceAbsent(cleared.body);
+  if (!clean) {
+    return { outcome: invoked, verified: false, extra: { contextId, cleanupError: "Owned dynamic-context namespace cleanup could not be verified." } };
+  }
+  return { outcome: invoked, verified: true, extra: { contextId, contextMappingId: mappingId ?? null, contextDefinitionId: definitionId ?? null } };
+}
+
+async function runApexSobjectShape(ctx: RunContext, windowMs?: number): Promise<RunnerOutcome> {
+  const code = (reason: string): string => ctxCode(ctx, reason);
+  const descriptor = await ctx.request(ctx.route);
+  if (!descriptor.ok) return { outcome: descriptor, verified: false, extra: {} };
+  const inputs = descriptorInputsOf(descriptor.body);
+  if (!inputs) {
+    return { outcome: fail(code("input_unresolved"), "The live descriptor exposes no usable input schema."), verified: false, extra: {} };
+  }
+  // Defense in depth: external-callout contracts never reach the owned
+  // shape runner, even when misrouted.
+  if (isApexExternalCalloutInputSet(inputs)) {
+    const refusal = terminalRefusalFor("apex-external-callout") as { reason: string; requirement: string };
+    return {
+      outcome: fail(ctxCode(ctx, refusal.reason), refusal.requirement, { setupRequirement: refusal.requirement }),
+      verified: false,
+      extra: {},
+    };
+  }
+  const plan = apexSobjectShapePlan(inputs);
+  if ("refuse" in plan) {
+    return {
+      outcome: fail(code("input_unresolved"), `The live descriptor does not declare the owned-shape contract (${plan.refuse}).`, {
+        setupRequirement: setupRequirementFor(ctx.family, plan.refuse),
+      }),
+      verified: false,
+      extra: {},
+    };
+  }
+  const object = plan.objectName;
+  if (!ENTITY_NAME.test(object)) {
+    return { outcome: fail(code("input_unresolved"), "The descriptor-declared fixture object is invalid."), verified: false, extra: {} };
+  }
+  const probe = await ctx.request(`${ctx.root}/sobjects/${object}/describe`);
+  if (!probe.ok || !record(probe.body) || probe.body.createable !== true ||
+    probe.body.queryable !== true || probe.body.deletable !== true || !Array.isArray(probe.body.fields)) {
+    return {
+      outcome: fail(code("fixture_unavailable"), `Automatic ${object} context requires live create, read and delete access.`, {
+        setupRequirement: `${object} create/read/delete access for the execution user.`,
+      }),
+      verified: false,
+      extra: {},
+    };
+  }
+  const fields = (probe.body.fields as unknown[]).filter(
+    (field): field is TargetField => record(field) && typeof field.name === "string" && FIELD_NAME.test(field.name),
+  );
+  ctx.describes.set(object, fields);
+  const markerPick = markerFieldFor(fields);
+  if (!markerPick) {
+    return {
+      outcome: fail(code("fixture_unavailable"), `The live ${object} object exposes no writable, filterable marker field for independent verification.`),
+      verified: false,
+      extra: {},
+    };
+  }
+  const marker = newSkippedStandardsMarker(Math.min(markerPick.length, 80));
+  const refs = await referenceOverrides(ctx, fields);
+  const built = await ctx.build(object, marker, { ...refs, [markerPick.name]: marker });
+  if ("failure" in built) return { outcome: built.failure, verified: false, extra: {} };
+  if (built.values[markerPick.name] !== marker) {
+    return { outcome: fail(code("fixture_unavailable"), "The fixture builder changed a planned ownership field."), verified: false, extra: {} };
+  }
+  const made = await ctx.request(`${ctx.root}/sobjects/${object}`, "POST", built.values);
+  const madeId: unknown = made.body?.id ?? made.body?.Id;
+  if (!made.ok || !identity(madeId)) return { outcome: made, verified: false, extra: {} };
+  const gate = await ctx.request(`${ctx.root}/sobjects/${object}/${madeId}`);
+  if (!gate.ok || gate.body?.[markerPick.name] !== marker) {
+    ctx.cleanup.push({ object, id: madeId, marker, markerField: markerPick.name });
+    return { outcome: fail(code("fixture_unverified"), "The owned fixture readback did not carry the marker."), verified: false, extra: {} };
+  }
+  const reclaimFailure = await reclaimFixtureOwner(ctx, object, madeId as string, gate.body, marker, markerPick.name);
+  if (reclaimFailure) return { outcome: reclaimFailure, verified: false, extra: {} };
+  ctx.fixtures[object] = madeId;
+  ctx.fixtureMarkers[object] = markerPick.name;
+  ctx.cleanup.push({ object, id: madeId, marker, markerField: markerPick.name });
+  const scalarArgs: Record<string, unknown> = {};
+  for (const name of plan.scalarInputs) {
+    const def = inputs.find((entry) => entry.name === name);
+    const value = def ? apexRecordCompanionValue(def, marker) : undefined;
+    if (value === undefined) {
+      return {
+        outcome: fail(code("input_unresolved"), `No discovered live value for required input ${name}.`, {
+          setupRequirement: setupRequirementFor(ctx.family, name),
+        }),
+        verified: false,
+        extra: {},
+      };
+    }
+    scalarArgs[name] = value;
+  }
+  const invoked = await ctx.request(ctx.route, "POST", {
+    inputs: [{ [plan.sobjectInput]: { attributes: { type: object }, Id: madeId }, ...scalarArgs }],
+  });
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (!nativeActionSucceeded(invoked.status, invoked.body)) {
+    return { outcome: invoked, verified: false, extra: { fixtureId: madeId, object } };
+  }
+  const after = await ctx.request(`${ctx.root}/sobjects/${object}/${madeId}`);
+  const effect = verifyOwnedSobjectUpdate({
+    marker,
+    markerField: markerPick.name,
+    before: record(gate.body) ? (gate.body as Record<string, unknown>) : null,
+    after: record(after.body) ? (after.body as Record<string, unknown>) : null,
+    scalarValues: Object.values(scalarArgs),
+  });
+  // Contact fixtures prove no Community-User side-effect: the live updater
+  // bodies touch only the passed row, and this query evidences it.
+  let userClean = true;
+  if (object.toLowerCase() === "contact") {
+    const users = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(
+      `SELECT Id FROM User WHERE ContactId = '${madeId}' LIMIT 1`)}`);
+    userClean = users.ok && queryRows(users.body).length === 0;
+  }
+  return {
+    outcome: invoked,
+    verified: effect.verified && userClean,
+    extra: { fixtureId: madeId, object, effectField: effect.effectField, userClean },
+  };
+}
+
+async function runApexScalarPure(ctx: RunContext, windowMs?: number): Promise<RunnerOutcome> {
+  const code = (reason: string): string => ctxCode(ctx, reason);
+  const descriptor = await ctx.request(ctx.route);
+  if (!descriptor.ok) return { outcome: descriptor, verified: false, extra: {} };
+  const inputs = descriptorInputsOf(descriptor.body);
+  if (!inputs) {
+    return { outcome: fail(code("input_unresolved"), "The live descriptor exposes no usable input schema."), verified: false, extra: {} };
+  }
+  if (isApexExternalCalloutInputSet(inputs)) {
+    const refusal = terminalRefusalFor("apex-external-callout") as { reason: string; requirement: string };
+    return {
+      outcome: fail(ctxCode(ctx, refusal.reason), refusal.requirement, { setupRequirement: refusal.requirement }),
+      verified: false,
+      extra: {},
+    };
+  }
+  if (!isApexScalarOnlyInputSet(inputs)) {
+    return {
+      outcome: fail(code("input_unresolved"), "The live descriptor is not a scalar-only contract.", {
+        setupRequirement: setupRequirementFor(ctx.family, "input_schema"),
+      }),
+      verified: false,
+      extra: {},
+    };
+  }
+  const simple = apexSimpleClassName(ctx.action);
+  if (simple === null) {
+    return { outcome: fail(code("action_invalid"), "The invocable route names no valid class reference."), verified: false, extra: {} };
+  }
+  const bodyRows = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(
+    `SELECT Body FROM ApexClass WHERE Name = '${simple}' LIMIT 1`)}`);
+  const bodyText = bodyRows.ok ? queryRows(bodyRows.body)[0]?.Body : undefined;
+  const screen = screenApexBody(typeof bodyText === "string" ? bodyText : null);
+  if (screen.verdict === "refuse") {
+    const reason = screen.effect === "DML" ? "effect_dml_unownable"
+      : screen.effect === "CALLOUT" ? "effect_callout_unownable"
+      : screen.effect === "SEND" ? "effect_send_unownable"
+      : screen.effect === "ASYNC" ? "effect_async_unownable"
+      : "body_unverifiable";
+    return {
+      outcome: fail(code(reason), `The invocable refuses: ${screen.detail}; no synthetic probe is attempted.`, {
+        setupRequirement: setupRequirementFor(ctx.family, "class_body"),
+      }),
+      verified: false,
+      extra: {},
+    };
+  }
+  let liveObjectName: string | undefined;
+  if (apexNeedsLiveObjectName(inputs)) {
+    const catalog = await ctx.request(`${ctx.root}/sobjects/`);
+    const body = catalog.ok && record(catalog.body) && Array.isArray(catalog.body.sobjects) ? catalog.body.sobjects : null;
+    liveObjectName = firstQueryableObjectName(body) ?? undefined;
+    if (!liveObjectName) {
+      return {
+        outcome: fail(code("input_unresolved"), "No discovered live value for required input objectApiName.", {
+          setupRequirement: setupRequirementFor(ctx.family, "objectApiName"),
+        }),
+        verified: false,
+        extra: {},
+      };
+    }
+  }
+  const planned = planApexScalarArgs(inputs, ctx.marker, liveObjectName ? { objectName: liveObjectName } : undefined);
+  if ("missing" in planned) {
+    return {
+      outcome: fail(code("input_unresolved"), `No discovered live value for required input ${planned.missing}.`, {
+        setupRequirement: setupRequirementFor(ctx.family, planned.missing),
+      }),
+      verified: false,
+      extra: {},
+    };
+  }
+  const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
+  const items = Array.isArray(invoked.body) ? invoked.body : [invoked.body];
+  const outputValues = items.map((item) => (record(item) ? item.outputValues : null)).find(record) ?? null;
+  const answered = outputValues !== null && Object.keys(outputValues).length > 0;
+  const nested = outputValues !== null && apexExecNestedFlags(outputValues);
+  return { outcome: invoked, verified: answered && !nested, extra: { outputs: outputValues ? Object.keys(outputValues) : [] } };
+}
+
+async function runResearchFallback(ctx: RunContext, windowMs?: number): Promise<RunnerOutcome> {
+  const descriptor = await ctx.request(ctx.route);
+  if (!descriptor.ok) return { outcome: descriptor, verified: false, extra: {} };
+  const inputs = record(descriptor.body) && Array.isArray(descriptor.body.inputs)
+    ? descriptor.body.inputs.filter((field): field is { name?: unknown } & Record<string, unknown> => record(field)) : [];
+  if (inputs.length > 0 && !inputs.some((field) => typeof field.name === "string" && field.name.toLowerCase() === "researchid")) {
+    return runGeneric(ctx, windowMs);
+  }
   const { researchSubstrateStatus } = await import("./research-lifecycle-context");
   const status = await researchSubstrateStatus({ root: ctx.root, request: ctx.request });
   if ("failure" in status) {
@@ -1554,6 +2226,14 @@ function setupRequirementFor(family: SkippedStandardEngineFamily, missing: strin
       return `A live context definition and mapping names for input ${missing} are required before execution.`;
     case "member-verification":
       return "A live identity verification process definition is required before execution.";
+    case "appointment-save":
+      return "A live booking-slots token chain for the hidden flow-managed appointment contract is required before execution.";
+    case "context-dynamic":
+      return "A live context-definition contract with discoverable record variables is required before execution.";
+    case "apex-sobject-shape":
+      return "A live descriptor declaring exactly one SOBJECT input with a usable sObjectType target is required before execution.";
+    case "apex-scalar-pure":
+      return "A live readable class body proving effect-free execution is required before execution.";
     default:
       return `A discovered live value for required input ${missing} is required before execution.`;
   }
@@ -2156,6 +2836,19 @@ export async function invokeSkippedStandardWithOwnedContext(
   if (routeInfo.kind === "custom" && family !== "survey-invitation" && family !== "decision-matrix") {
     return done(fail(skippedStandardCode(family, "family_mismatch"), "The custom route kind does not match the lifecycle family."), { verified: false });
   }
+  const apexFamily = family === "apex-sobject-shape" || family === "apex-scalar-pure" || family === "apex-external-callout";
+  if (routeInfo.kind === "apex" && !apexFamily) {
+    return done(fail(skippedStandardCode(family, "family_mismatch"), "The invocable-apex route kind does not match the lifecycle family."), { verified: false });
+  }
+  if (routeInfo.kind === "batch" && family !== "batch-submit") {
+    return done(fail(skippedStandardCode(family, "family_mismatch"), "The batch-job route kind does not match the lifecycle family."), { verified: false });
+  }
+  if (routeInfo.kind === "dynamic" && family !== "context-dynamic") {
+    return done(fail(skippedStandardCode(family, "family_mismatch"), "The context-dynamic route kind does not match the lifecycle family."), { verified: false });
+  }
+  if (routeInfo.kind === "standard" && (apexFamily || family === "batch-submit" || family === "context-dynamic")) {
+    return done(fail(skippedStandardCode(family, "family_mismatch"), "The standard route kind does not match the lifecycle family."), { verified: false });
+  }
   if (input.verificationWindowMs !== undefined &&
     (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
     return done(fail(skippedStandardCode(family, "window_invalid"), "A bounded verification window is required."), { verified: false });
@@ -2186,9 +2879,21 @@ export async function invokeSkippedStandardWithOwnedContext(
       switch (family) {
         case "outbound-call":
         case "credential-reset":
+        case "social-publish":
+        case "appointment-save":
+        case "routing-verify":
+        case "batch-submit":
+        case "apex-external-callout":
+        case "asset-activity":
           return runTerminalRefusal(ctx);
+        case "context-dynamic":
+          return runContextDynamic(ctx, input.verificationWindowMs);
+        case "apex-sobject-shape":
+          return runApexSobjectShape(ctx, input.verificationWindowMs);
+        case "apex-scalar-pure":
+          return runApexScalarPure(ctx, input.verificationWindowMs);
         case "research":
-          return runResearchFallback(ctx);
+          return runResearchFallback(ctx, input.verificationWindowMs);
         case "context-record":
           return runContextChain(ctx, input.verificationWindowMs);
         case "survey-invitation":
@@ -2229,7 +2934,9 @@ export async function invokeSkippedStandardWithOwnedContext(
   }
   // Upstream REST denials map to planner-only grant-family requirements;
   // non-denial outcomes (successes included) attach nothing. Grants are
-  // never applied here.
+  // never applied here. A discovery-query denial backs input_unresolved
+  // outcomes (worker-side, no upstream signal of their own) so grant
+  // self-heal provisions the object and re-probes.
   const denialGrant = nativeActionSucceeded(outcome.status, outcome.body)
     ? null
     : (denialGrantForRestOutcome(outcome.status, outcome.body) ?? ctx.discoveryDenial ?? null);

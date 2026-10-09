@@ -93,7 +93,7 @@ public with sharing class PanelApiAssignmentQueueable implements Queueable {
         String wantNs = here.contains('.') ? here.substringBefore('.') : null;
         List<PermissionSet> permissionSets = [
             SELECT Id, NamespacePrefix FROM PermissionSet
-            WHERE Name = :PanelSalesforceChannelService.PERMISSION_SET
+            WHERE Name = :PanelSalesforceChannelSupportService.PERMISSION_SET
             WITH USER_MODE
         ];
         for (PermissionSet permissionSet : permissionSets) {

@@ -32,7 +32,7 @@ Every deletion is blind-verified by re-querying ground truth. Run with
 ==============================================================================
 """
 
-TEARDOWN_VERSION = "1.2.0"
+TEARDOWN_VERSION = "1.2.1"
 
 import argparse
 import json
@@ -72,16 +72,59 @@ try:
         run_apex,
         run_sf,
         select_target_org,
+        sf_error,
     )
-except ImportError as exc:
-    print(f"[ERROR] Could not import tubot_postinstall module: {exc}", file=sys.stderr)
-    print("[ERROR] Teardown must run from tubot-sf-auth/tubot-sf-package/scripts/ (or alongside it).", file=sys.stderr)
-    sys.exit(1)
+except ImportError:
+    try:
+        from tubot_postinstall import (  # noqa: E402
+            BOLD,
+            CYAN,
+            RESET,
+            extract_debug_values,
+            log_error,
+            log_info,
+            log_phase,
+            log_success,
+            log_warn,
+            prompt,
+            resolve_org,
+            run_apex,
+            run_sf,
+            select_target_org,
+        )
+        def sf_error(res: Dict[str, Any]) -> str:  # type: ignore
+            if not isinstance(res, dict):
+                return str(res)
+            return res.get("error_msg") or res.get("stderr") or res.get("stdout") or "Unknown error"
+    except ImportError as exc:
+        print(f"[ERROR] Could not import tubot_postinstall module: {exc}", file=sys.stderr)
+        print("[ERROR] Teardown must run from tubot-sf-auth/tubot-sf-package/scripts/ (or alongside it).", file=sys.stderr)
+        sys.exit(1)
 
 
 # ==============================================================================
 # Inventory (read-only discovery)
 # ==============================================================================
+def _is_invalid_type_error(res: Dict[str, Any]) -> bool:
+    """Return True if Salesforce returned INVALID_TYPE / sObject not supported."""
+    err = (
+        (res.get("error_msg") or "")
+        + "\n"
+        + (res.get("stderr") or "")
+        + "\n"
+        + (res.get("stdout") or "")
+        + "\n"
+        + sf_error(res)
+    ).lower()
+    data = res.get("data")
+    if isinstance(data, dict):
+        if str(data.get("name", "")).lower() == "invalid_type":
+            return True
+        if str(data.get("data", {}).get("errorCode", "")).lower() == "invalid_type":
+            return True
+    return "invalid_type" in err or "not supported" in err
+
+
 def list_api_channel_records(org: Dict[str, str], channel_filter: Optional[str] = None) -> List[Dict[str, Any]]:
     """List tubot__Tubot_API_Channel__c records, optionally filtered to one channel."""
     soql = (
@@ -90,9 +133,11 @@ def list_api_channel_records(org: Dict[str, str], channel_filter: Optional[str] 
     )
     res = run_sf(["data", "query", "--query", soql, "--target-org", org["target_flag"]])
     if res["returncode"] != 0:
-        log_error(f"Failed to query Tubot API channel records: {res['stderr'] or res['stdout']}")
+        if _is_invalid_type_error(res):
+            return []
+        log_error(f"Failed to query Tubot API channel records: {sf_error(res)}")
         sys.exit(1)
-    records = res["data"].get("result", {}).get("records", [])
+    records = (res["data"].get("result") or {}).get("records", []) or []
     if channel_filter:
         records = [r for r in records if channel_filter in (r.get("Id"), r.get("tubot__Channel_Id__c"))]
     return records
@@ -175,14 +220,13 @@ def list_mcp_token_rows(org: Dict[str, str]) -> List[Dict[str, Any]]:
         "--target-org", org["target_flag"],
     ])
     if res["returncode"] != 0:
-        err = res.get("error_msg") or res["stderr"] or ""
-        if "INVALID_TYPE" in err or "not supported" in err:
-            log_info("MCP config object absent (older package); nothing legacy to clear.")
+        if _is_invalid_type_error(res):
+            log_info("MCP config object absent (older package or uninstalled); nothing legacy to clear.")
             return []
-        log_error(f"Failed to query MCP config: {res['stderr'] or res['stdout']}")
+        log_error(f"Failed to query MCP config: {sf_error(res)}")
         sys.exit(1)
     populated = []
-    for row in res["data"].get("result", {}).get("records", []):
+    for row in (res["data"].get("result") or {}).get("records", []) or []:
         if any((row.get(f) or "") for f in MCP_TOKEN_FIELDS):
             populated.append(row)
     return populated
@@ -208,7 +252,7 @@ def list_credential_definitions(org: Dict[str, str]) -> Dict[str, Any]:
         "--target-org", flag,
     ])
     if ext_res["returncode"] != 0:
-        log_error(f"Failed to query ExternalCredential: {ext_res['stderr'] or ext_res['stdout']}")
+        log_error(f"Failed to query ExternalCredential: {sf_error(ext_res)}")
         sys.exit(1)
     named_res = run_sf([
         "data", "query", "--query",
@@ -216,15 +260,18 @@ def list_credential_definitions(org: Dict[str, str]) -> Dict[str, Any]:
         "--target-org", flag,
     ])
     if named_res["returncode"] != 0:
-        log_error(f"Failed to query NamedCredential: {named_res['stderr'] or named_res['stdout']}")
+        log_error(f"Failed to query NamedCredential: {sf_error(named_res)}")
         sys.exit(1)
     site_res = run_sf([
         "data", "query", "--use-tooling-api", "--query",
-        "SELECT SiteName, NamespacePrefix, FullName FROM RemoteProxy",
+        # Tooling API rejects a multi-row RemoteProxy query when FullName is
+        # selected. SiteName is the RemoteSiteSetting metadata name for local
+        # entries; namespaced entries are kept above as package-owned.
+        "SELECT SiteName, NamespacePrefix FROM RemoteProxy",
         "--target-org", flag,
     ])
     if site_res["returncode"] != 0:
-        log_error(f"Failed to query remote sites: {site_res['stderr'] or site_res['stdout']}")
+        log_error(f"Failed to query remote sites: {sf_error(site_res)}")
         sys.exit(1)
     perm_res = run_sf([
         "data", "query", "--query",
@@ -233,7 +280,7 @@ def list_credential_definitions(org: Dict[str, str]) -> Dict[str, Any]:
         "--target-org", flag,
     ])
     if perm_res["returncode"] != 0:
-        log_error(f"Failed to query repair permission set: {perm_res['stderr'] or perm_res['stdout']}")
+        log_error(f"Failed to query repair permission set: {sf_error(perm_res)}")
         sys.exit(1)
 
     delete: List[Tuple[str, str]] = []
@@ -321,16 +368,51 @@ System.debug('LIST_BODY=' + res.getBody());
 # ==============================================================================
 def list_installed_tubot_packages(org: Dict[str, str]) -> List[Dict[str, Any]]:
     """List installed TuBot package versions (any version, beta or released)."""
-    res = run_sf(["package", "installed", "list", "--target-org", org["target_flag"]])
-    if res["returncode"] != 0:
-        log_error(f"Failed to list installed packages: {res['stderr'] or res['stdout']}")
-        sys.exit(1)
-    found = []
-    for row in res["data"].get("result", []) or []:
-        name = row.get("SubscriberPackageName") or ""
-        if "tubot" in name.lower():
-            found.append(row)
-    return found
+    # 1. Fast path: Tooling API query (resilient SOQL, no packaging plugin dependency)
+    soql = (
+        "SELECT Id, SubscriberPackageId, SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, "
+        "SubscriberPackageVersion.Id, SubscriberPackageVersion.Name, "
+        "SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion, "
+        "SubscriberPackageVersion.PatchVersion, SubscriberPackageVersion.BuildNumber "
+        "FROM InstalledSubscriberPackage"
+    )
+    t_res = run_sf(["data", "query", "--use-tooling-api", "--query", soql, "--target-org", org["target_flag"]])
+    if t_res["returncode"] == 0:
+        found = []
+        for r in t_res["data"].get("result", {}).get("records", []) or []:
+            sp = r.get("SubscriberPackage") or {}
+            spv = r.get("SubscriberPackageVersion") or {}
+            name = sp.get("Name") or ""
+            if "tubot" in name.lower():
+                v_num = f"{spv.get('MajorVersion', 0)}.{spv.get('MinorVersion', 0)}.{spv.get('PatchVersion', 0)}.{spv.get('BuildNumber', 0)}"
+                found.append({
+                    "Id": r.get("Id"),
+                    "SubscriberPackageId": r.get("SubscriberPackageId"),
+                    "SubscriberPackageName": name,
+                    "SubscriberPackageNamespace": sp.get("NamespacePrefix") or "",
+                    "SubscriberPackageVersionId": spv.get("Id") or "",
+                    "SubscriberPackageVersionName": spv.get("Name") or "",
+                    "SubscriberPackageVersionNumber": v_num,
+                    "VersionSettings": "packageId",
+                })
+        return found
+
+    # 2. Fallback: sf package installed list with retries for transient network fetch errors
+    last_res = None
+    for attempt in range(2):
+        res = run_sf(["package", "installed", "list", "--target-org", org["target_flag"]])
+        if res["returncode"] == 0:
+            found = []
+            for row in res["data"].get("result", []) or []:
+                name = row.get("SubscriberPackageName") or ""
+                if "tubot" in name.lower():
+                    found.append(row)
+            return found
+        last_res = res
+        time.sleep(2)
+
+    log_error(f"Failed to list installed packages: {sf_error(last_res or t_res)}")
+    sys.exit(1)
 
 
 def list_unpackaged_tubot_permsets(org: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -342,7 +424,7 @@ def list_unpackaged_tubot_permsets(org: Dict[str, str]) -> List[Dict[str, Any]]:
         "--target-org", org["target_flag"],
     ])
     if res["returncode"] != 0:
-        log_error(f"Failed to query unpackaged permission sets: {res['stderr'] or res['stdout']}")
+        log_error(f"Failed to query unpackaged permission sets: {sf_error(res)}")
         sys.exit(1)
     return res["data"].get("result", {}).get("records", [])
 
@@ -371,6 +453,20 @@ def find_subscriber_policies_name(org: Dict[str, str]) -> Optional[str]:
     Returns the metadata record name, or None when no subscriber policies
     exist (already gone, e.g. removed by a package uninstall).
     """
+    # Fast path: query ExtlClntAppOauthPlcyCnfg via Tooling API (~1-2s)
+    soql = (
+        "SELECT Id, DeveloperName, ExternalClientApplication.DeveloperName "
+        "FROM ExtlClntAppOauthPlcyCnfg"
+    )
+    res = run_sf(["data", "query", "--use-tooling-api", "--query", soql, "--target-org", org["target_flag"]])
+    if res["returncode"] == 0:
+        for r in res["data"].get("result", {}).get("records", []) or []:
+            eca = (r.get("ExternalClientApplication") or {}).get("DeveloperName") or ""
+            if eca.endswith("Tubot_Channel_API"):
+                return r.get("DeveloperName")
+        return None
+
+    # Fallback: metadata retrieve via temporary project
     with tempfile.TemporaryDirectory() as temp_dir:
         with open(os.path.join(temp_dir, "sfdx-project.json"), "w") as f:
             json.dump({
@@ -500,7 +596,7 @@ def delete_api_channel_records(org: Dict[str, str], records: List[Dict[str, Any]
         if res["returncode"] == 0:
             log_success(f"Deleted channel config record {rec['Id']} (channel {rec.get('tubot__Channel_Id__c')})")
         else:
-            log_warn(f"Could not delete record {rec['Id']}: {res.get('error_msg') or res['stderr']}")
+            log_warn(f"Could not delete record {rec['Id']}: {sf_error(res)}")
             failed.append(rec["Id"])
     return failed
 
@@ -516,7 +612,7 @@ def delete_perm_assignments(org: Dict[str, str], assignments: List[Dict[str, Any
         if res["returncode"] == 0:
             log_success(f"Removed permission from user {a.get('AssigneeId')}")
         else:
-            log_warn(f"Could not remove assignment {a['Id']}: {res.get('error_msg') or res['stderr']}")
+            log_warn(f"Could not remove assignment {a['Id']}: {sf_error(res)}")
             failed.append(a["Id"])
     return failed
 
@@ -530,7 +626,7 @@ def delete_eca(org: Dict[str, str], app_name: str) -> bool:
             "--target-org", org["target_flag"], "--no-prompt",
         ])
         if res["returncode"] != 0:
-            log_warn(f"ECA delete attempt {attempt} note: {res.get('error_msg') or res['stderr'] or res['stdout']}")
+            log_warn(f"ECA delete attempt {attempt} note: {sf_error(res)}")
         time.sleep(5)
         remaining = list_tubot_ecas(org)
         names = [(a.get("developerName") or "") for a in remaining] if remaining is not None else None
@@ -557,7 +653,7 @@ def delete_panel_credentials(org: Dict[str, str], rows: List[Dict[str, Any]]) ->
         if res["returncode"] == 0:
             log_success(f"Removed Panel login credential row {row['Id']}")
         else:
-            log_warn(f"Could not remove credential row {row['Id']}: {res.get('error_msg') or res['stderr']}")
+            log_warn(f"Could not remove credential row {row['Id']}: {sf_error(res)}")
             failed.append(row["Id"])
     return failed
 
@@ -575,7 +671,7 @@ def clear_mcp_tokens(org: Dict[str, str], rows: List[Dict[str, Any]]) -> List[st
         if res["returncode"] == 0:
             log_success(f"Cleared legacy tokens on MCP config row {row['Id']}")
         else:
-            log_warn(f"Could not clear MCP row {row['Id']}: {res.get('error_msg') or res['stderr']}")
+            log_warn(f"Could not clear MCP row {row['Id']}: {sf_error(res)}")
             failed.append(row["Id"])
     return failed
 
@@ -602,7 +698,7 @@ def delete_credential_definitions(
         if res["returncode"] == 0:
             log_success(f"Removed repair permission from user {a.get('AssigneeId')}")
         else:
-            log_warn(f"Could not remove repair assignment {a['Id']}: {res.get('error_msg') or res['stderr']}")
+            log_warn(f"Could not remove repair assignment {a['Id']}: {sf_error(res)}")
             failed.append(f"repair assignment {a['Id']}")
     for meta, name in sorted(targets, key=lambda t: _DEFINITION_DELETE_RANK.get(t[0], 9)):
         label = f"{meta}:{name}"
@@ -618,7 +714,7 @@ def delete_credential_definitions(
         if res["returncode"] == 0:
             log_success(f"Deleted {label}.")
         else:
-            log_warn(f"Could not delete {label}: {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+            log_warn(f"Could not delete {label}: {sf_error(res)[-300:]}")
             failed.append(label)
     return failed
 
@@ -651,7 +747,7 @@ def uninstall_package(org: Dict[str, str], version_id: str) -> bool:
             log_success(f"Package version {version_id} is already gone (idempotent).")
             return True
         if res["returncode"] != 0:
-            log_warn(f"Package uninstall note: {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+            log_warn(f"Package uninstall note: {sf_error(res)[-300:]}")
         for poll in range(4):
             time.sleep(30)
             remaining = [p for p in list_installed_tubot_packages(org) if p.get("SubscriberPackageVersionId") == version_id]
@@ -696,7 +792,7 @@ def delete_unpackaged_permsets(org: Dict[str, str], permsets: List[Dict[str, Any
         if res["returncode"] == 0:
             log_success(f"Deleted unpackaged permission set '{name}'.")
         else:
-            log_warn(f"Could not delete permission set '{name}': {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+            log_warn(f"Could not delete permission set '{name}': {sf_error(res)[-300:]}")
             failed.append(name)
     return failed
 
@@ -709,7 +805,7 @@ def delete_subscriber_policies(org: Dict[str, str], policies_name: str) -> bool:
         "--target-org", org["target_flag"], "--no-prompt",
     ])
     if res["returncode"] != 0:
-        log_warn(f"Policies delete note: {(res.get('error_msg') or res['stderr'] or '')[-300:]}")
+        log_warn(f"Policies delete note: {sf_error(res)[-300:]}")
     time.sleep(3)
     if find_subscriber_policies_name(org) is None:
         log_success(f"Subscriber ECA policies '{policies_name}' deleted and verified gone.")
@@ -743,11 +839,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="TuBot Salesforce De-Setup Wizard: remove the package and all setup artifacts, keeping only MessagingChannels"
     )
+    parser.add_argument("-o", "--target-org", help="Salesforce org username or alias (bypasses interactive org selection)")
     parser.add_argument("-c", "--channel", help="Limit teardown to one channel config (record Id or channel Id)")
     parser.add_argument("-n", "--app-name", default="Tubot_SF_Channel_API", help="Legacy local ECA DeveloperName to remove (default: Tubot_SF_Channel_API)")
     parser.add_argument("--skip-panel", action="store_true", help="Skip Panel-side credential revocation (local cleanup only)")
     parser.add_argument("--inventory-only", action="store_true", help="List setup artifacts without deleting anything")
-    parser.add_argument("--non-interactive", action="store_true", help="Skip confirmation prompts (requires --force; org selection stays interactive)")
+    parser.add_argument("--non-interactive", action="store_true", help="Skip confirmation prompts (requires --force; org selection stays interactive unless --target-org is provided)")
     parser.add_argument("--force", action="store_true", help="Confirm all deletions without prompting (requires --non-interactive)")
     parser.add_argument("--json", action="store_true", help="Output JSON result only")
     parser.add_argument("--version", action="store_true", help="Print teardown version and exit")
@@ -766,18 +863,20 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         log_error("Refusing destructive teardown without --force. Re-run with --non-interactive --force, or interactively.")
         sys.exit(1)
 
-    # 0. Org selection is ALWAYS interactive (never auto-selected).
-    target_org = select_target_org(False)
+    # 0. Org selection (interactive unless --target-org is provided).
+    target_org = getattr(args, "target_org", None) or select_target_org(False)
     org = resolve_org(target_org)
 
     # Step 2: inventory.
     log_phase("Step 2: Inventory of setup artifacts")
+    log_info("Querying channel configs, permissions, and credential records...")
     records = list_api_channel_records(org, args.channel)
     user_ids = [r.get("tubot__Integration_User_Id__c") for r in records if r.get("tubot__Integration_User_Id__c")]
     assignments = list_api_perm_assignments(org, user_ids)
     cred_rows = list_panel_credential_rows(org)
     mcp_rows = list_mcp_token_rows(org)
     cred_defs = list_credential_definitions(org)
+    log_info("Querying External Client Apps and pre-authorizations...")
     ecas = list_tubot_ecas(org)
     panel_connected, panel_channels = (False, []) if args.skip_panel else list_panel_channels(org)
     panel_ids = [c.get("channelId") for c in panel_channels if c.get("channelId")]
@@ -790,6 +889,7 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
     other_ecas = [n for n in (eca_names or []) if n != args.app_name]
     jwt_assignments = list_jwt_preauth_assignments(org)
     unpackaged_permsets = list_unpackaged_tubot_permsets(org)
+    log_info("Querying subscriber policies and installed packages...")
     subscriber_policies = find_subscriber_policies_name(org)
     installed_packages = list_installed_tubot_packages(org)
 

@@ -53,8 +53,15 @@ export async function planOwnedContext(input: {
     const marker = markers.find(field => field.nameField) ?? markers.find(field => field.nillable === false) ?? markers[0];
     if (!marker) reject('OWNED_CONTEXT_MARKER_UNAVAILABLE', name, dependencyPath);
     const values = { ...input.values?.[name] }, references: ContextNode['references'] = [];
+    // Triggers can require nillable refs (FSL.TR001 NPEs parentless SA
+    // inserts); those ride owned parents. Forced only when the live
+    // describe offers the target, so non-FSL shapes keep their plan.
+    const triggerForcedTarget = (field: ContextField): string | undefined =>
+      name === 'ServiceAppointment' && field.name === 'ParentRecordId' && field.createable === true &&
+      (field.referenceTo ?? []).includes('WorkOrder') ? 'WorkOrder' : undefined;
     for (const field of schema!.fields) {
-      if (field.type !== 'reference' || field.nillable !== false || field.defaultedOnCreate || field.calculated || field.autoNumber) continue;
+      if (field.type !== 'reference' || field.defaultedOnCreate || field.calculated || field.autoNumber) continue;
+      if (field.nillable !== false && !triggerForcedTarget(field)) continue;
       if (!identifier(field.name) || !field.createable) reject('OWNED_CONTEXT_REFERENCE_NOT_WRITABLE', name, dependencyPath, field.name);
       const targets = [...new Set(field.referenceTo?.filter(identifier) ?? [])];
       if (Object.hasOwn(values, field.name)) {
@@ -64,7 +71,10 @@ export async function planOwnedContext(input: {
         continue;
       }
       const selected = input.referenceTargets?.[`${name}.${field.name}`];
-      const target = selected && targets.includes(selected) ? selected : !selected && targets.length === 1 ? targets[0] : undefined;
+      const forced = triggerForcedTarget(field);
+      const target = selected && targets.includes(selected) ? selected
+        : !selected && forced ? forced
+        : !selected && targets.length === 1 ? targets[0] : undefined;
       if (!target) reject('OWNED_CONTEXT_REFERENCE_AMBIGUOUS', name, dependencyPath, field.name, targets);
       const anchor = input.retained?.[target!];
       if (anchor !== undefined) {

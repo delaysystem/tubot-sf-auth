@@ -12,6 +12,7 @@ describe('flow-record-context', () => {
     expect(FLOW_RECORD_CONTEXT_BUILDER_VERSION).toBeGreaterThan(102);
     expect(FLOW_RECORD_CONTEXT_BUILDER_VERSION).toBeGreaterThan(106);
     expect(FLOW_RECORD_CONTEXT_BUILDER_VERSION).toBeGreaterThan(108);
+    expect(FLOW_RECORD_CONTEXT_BUILDER_VERSION).toBeGreaterThan(114);
   });
 
   test('collects declared types plus field-name fallbacks as candidates', () => {

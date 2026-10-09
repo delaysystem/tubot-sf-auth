@@ -652,14 +652,68 @@ async function runNarrowEvidenceRepair(
   }
 }
 
-/** Self-contained reshapes from the live descriptor plus prior args,
- * then one native re-probe. `live-values` needs searcher-owned
- * discovery: park with the machine-readable directive. */
+function liveValuesNeutral(field: Value): unknown {
+  switch (String(field.type ?? "STRING").toUpperCase()) {
+    case "BOOLEAN": return false;
+    case "INTEGER": case "INT": case "LONG": case "DOUBLE": case "DECIMAL": case "CURRENCY": case "PERCENT": return 0;
+    case "DATE": return "1970-01-01";
+    case "DATETIME": return "1970-01-01T00:00:00.000Z";
+    case "TIME": return "00:00:00.000Z";
+    default: return `probe-nonexistent-${crypto.randomUUID()}`;
+  }
+}
+function liveValuesPicklist(field: Value): string | undefined {
+  const raw = field as Value & { values?: unknown; picklistValues?: unknown };
+  const candidates = Array.isArray(raw.values) ? raw.values : Array.isArray(raw.picklistValues) ? raw.picklistValues : [];
+  for (const entry of candidates) {
+    if (typeof entry === "string" && entry) return entry;
+    if (record(entry) && typeof entry.value === "string" && entry.value && entry.active !== false) return entry.value;
+  }
+  return undefined;
+}
+function liveValuesScalarArgs(descriptorBody: unknown, carried: Value): Value | null {
+  if (!record(descriptorBody) || !Array.isArray(descriptorBody.inputs)) return null;
+  const shaped: Value = { ...carried };
+  let added = 0;
+  for (const field of descriptorBody.inputs.filter(record)) {
+    if (typeof field.name !== "string" || !IDENTIFIER.test(field.name)) continue;
+    if (Object.hasOwn(shaped, field.name)) continue;
+    if (field.required === true) continue;
+    if (field.isCollection === true || (typeof field.maxOccurs === "number" && field.maxOccurs > 1)) continue;
+    if (typeof field.apexClass === "string" && field.apexClass.length > 0) continue;
+    const type = String(field.type ?? "STRING").toUpperCase();
+    if (type === "SOBJECT" || type === "ID" || type === "REFERENCE") continue;
+    if (/(?:ids?|ids?list)$/i.test(field.name)) continue;
+    shaped[field.name] = liveValuesPicklist(field) ?? liveValuesNeutral(field);
+    added += 1;
+    if (added >= FLOW_FAULT_REPAIR_BOUNDS.priorArgs) break;
+  }
+  return added > 0 ? shaped : null;
+}
+async function liveValuesScalarReprobe(
+  input: FlowFaultRepairInput,
+  plan: FlowFaultRepairPlan,
+): Promise<FlowFaultRepairOutcome | null> {
+  if (!FLOW_ROUTE.test(input.route)) return null;
+  const carried = carryPriorArgs(input.priorArgs) ?? (record(input.priorArgs) ? {} : null);
+  if (!carried) return null;
+  const descriptor = await safeRequest(input.request, input.route);
+  if (!descriptor?.ok) return null;
+  const shaped = liveValuesScalarArgs(descriptor.body, carried);
+  if (!shaped) return null;
+  return reprobeWithArgs(input, plan, shaped);
+}
+/** Self-contained reshapes plus one re-probe. `live-values` on flow
+ * routes first binds omitted optional non-reference scalars from the
+ * live descriptor (verified DeleteAppt/SendConf convert) and re-probes
+ * once; reference gaps still park with the directive. */
 async function runReshapeRepair(
   input: FlowFaultRepairInput,
   plan: FlowFaultRepairPlan,
 ): Promise<FlowFaultRepairOutcome> {
   if (plan.reshape === "live-values" || !plan.reshape) {
+    const populated = await liveValuesScalarReprobe(input, plan);
+    if (populated) return populated;
     return {
       disposition: "parked",
       plan,

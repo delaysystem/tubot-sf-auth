@@ -5,12 +5,11 @@ private class SimpleSetupControllerTest {
     }
 
     private static User createStandardUser(String marker) {
-        Profile standardProfile = [SELECT Id FROM Profile WHERE Name = 'Standard User' LIMIT 1];
         User candidate = new User(
             Alias = 'ss' + marker, Email = 'simple-setup-' + marker + '@example.com',
             EmailEncodingKey = 'UTF-8', LastName = 'SimpleSetup' + marker,
             LanguageLocaleKey = 'en_US', LocaleSidKey = 'en_US',
-            ProfileId = standardProfile.Id, TimeZoneSidKey = 'America/Los_Angeles',
+            ProfileId = UserInfo.getProfileId(), TimeZoneSidKey = 'America/Los_Angeles',
             Username = 'simple-setup-' + marker + '-' + Crypto.getRandomInteger() + '@example.com'
         );
         insert candidate;
@@ -62,6 +61,18 @@ private class SimpleSetupControllerTest {
         System.assert(status.containsKey('channel'));
         System.assertEquals('Tubot_Channel_API', String.valueOf(status.get('ecaAppName')));
         System.assert(status.containsKey('ecaExists'));
+    }
+
+    @IsTest
+    static void ecaMembershipCheckRejectsAnUnassignedLiveUser() {
+        grantAdmin();
+        Boolean rejected = false;
+        try {
+            SimpleSetupController.checkEcaAuthorization(String.valueOf(UserInfo.getUserId()));
+        } catch (AuraHandledException expected) {
+            rejected = true;
+        }
+        System.assertEquals(true, rejected, 'A real user without a pre-authorization assignment must be rejected.');
     }
 
     @IsTest
@@ -134,6 +145,36 @@ private class SimpleSetupControllerTest {
             WHERE GroupId = :(Id) channels[0].SessionHandlerId AND UserOrGroupId = :candidate.Id
         ];
         System.assertEquals(1, memberCount);
+
+        SimpleSetupChannelStep.ChannelSpec repeatSpec = new SimpleSetupChannelStep.ChannelSpec();
+        repeatSpec.channelName = SimpleSetupChannelStep.DEFAULT_CHANNEL_NAME;
+        repeatSpec.channelLabel = SimpleSetupChannelStep.DEFAULT_CHANNEL_LABEL;
+        repeatSpec.queueName = SimpleSetupChannelStep.DEFAULT_QUEUE_NAME;
+        repeatSpec.queueLabel = SimpleSetupChannelStep.DEFAULT_QUEUE_LABEL;
+        repeatSpec.userId = candidate.Id;
+        Map<String, Object> reused = SimpleSetupChannelStep.createChannelWithQueue(repeatSpec);
+        System.assertEquals(channel.get('id'), reused.get('id'));
+        System.assertEquals(1, [
+            SELECT COUNT() FROM GroupMember
+            WHERE GroupId = :(Id) channels[0].SessionHandlerId AND UserOrGroupId = :candidate.Id
+        ]);
+
+        SimpleSetupChannelStep.forceNoExistingChannel = false;
+        Map<String, Object> selectedAgain = SimpleSetupController.runStep(
+            'channel',
+            new Map<String, Object>{
+                'user' => new Map<String, Object>{ 'id' => candidate.Id },
+                'channel' => new Map<String, Object>{ 'id' => channel.get('id') }
+            }
+        );
+        System.assertEquals('done', String.valueOf(selectedAgain.get('status')));
+        System.assertEquals(false, selectedAgain.get('created'));
+
+        Map<String, Object> autoSelectedAgain = SimpleSetupController.runStep(
+            'channel', new Map<String, Object>{ 'user' => new Map<String, Object>{ 'id' => candidate.Id } }
+        );
+        System.assertEquals('done', String.valueOf(autoSelectedAgain.get('status')));
+        System.assertEquals(false, autoSelectedAgain.get('created'));
     }
 
     @IsTest
@@ -150,7 +191,7 @@ private class SimpleSetupControllerTest {
     }
 
     @IsTest
-    static void ecaRequestsPoliciesCommandWhenPreAuthMissing() {
+    static void ecaRequiresSelectedIntegrationUser() {
         grantAdmin();
         SimpleSetupEcaStep.forceEcaExists = true;
         SimpleSetupEcaStep.forcePreAuthExists = false;
@@ -159,14 +200,12 @@ private class SimpleSetupControllerTest {
             'eca', new Map<String, Object>()
         );
         Test.stopTest();
-        System.assertEquals('action-required', String.valueOf(result.get('status')));
-        Map<String, Object> eca = (Map<String, Object>) result.get('eca');
-        System.assert(String.valueOf(eca.get('cliCommand')).contains('setup-eca-policies.mjs'));
-        System.assert(String.valueOf(eca.get('setupUrl')).contains('/lightning/setup/ExternalClientApps/home'));
+        System.assertEquals('failed', String.valueOf(result.get('status')));
+        System.assert(String.valueOf(result.get('message')).contains('integration user'));
     }
 
     @IsTest
-    static void ecaDoneWhenAppAndPreAuthPresent() {
+    static void ecaDoesNotTreatPermissionSetExistenceAsPolicyProof() {
         grantAdmin();
         SimpleSetupEcaStep.forceEcaExists = true;
         SimpleSetupEcaStep.forcePreAuthExists = true;
@@ -175,8 +214,8 @@ private class SimpleSetupControllerTest {
             'eca', new Map<String, Object>()
         );
         Test.stopTest();
-        System.assertEquals('done', String.valueOf(result.get('status')));
-        System.assertEquals(true, result.get('ecaExists'));
+        System.assertEquals('failed', String.valueOf(result.get('status')));
+        System.assert(String.valueOf(result.get('message')).contains('integration user'));
     }
 
     @IsTest

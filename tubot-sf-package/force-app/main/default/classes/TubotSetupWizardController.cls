@@ -1,8 +1,5 @@
 /**
- * @description Controller for Administrator-Driven Setup Wizard.
- * Guides Salesforce System Administrators through org readiness health checks,
- * dedicated integration user discovery & assignment, External Client App (ECA)
- * OAuth policy guidance, and channel API verification.
+ * @description Provides user discovery and permission assignment for Simple Setup.
  */
 public with sharing class TubotSetupWizardController {
 
@@ -10,80 +7,7 @@ public with sharing class TubotSetupWizardController {
     // Subscriber-side pre-authorization membership for the packaged execution
     // client (JWT bearer flow). Created by the policies CLI command (unpackaged:
     // managed permsets cannot be pre-auth members) and assigned here by DML.
-    public static final String JWT_PREAUTH_PERMISSION_SET = 'Tubot_JWT_PreAuth';
-    public static final String SETTINGS_ADMIN_PERMISSION_SET = 'Panel_Settings_Admin_Access';
-    public static final String CHANNEL_ADMIN_PERMISSION_SET = 'Tubot_Channel_Connection_Admin_Access';
-
-    /**
-     * @description Returns complete prerequisites and health check status for tubot-sf-auth.
-     */
-    @AuraEnabled
-    public static Map<String, Object> getSetupHealthCheck() {
-        PanelAuthSupportService.requireSettingsAdmin();
-
-        // 1. Integration User Licenses check
-        Integer totalIntLicenses = 0;
-        Integer usedIntLicenses = 0;
-        for (UserLicense ul : [
-            SELECT TotalLicenses, UsedLicenses
-            FROM UserLicense
-            WHERE MasterLabel LIKE '%Integration%' OR LicenseDefinitionKey LIKE '%INTEGRATION%'
-            WITH USER_MODE
-        ]) {
-            totalIntLicenses += (ul.TotalLicenses != null ? ul.TotalLicenses : 0);
-            usedIntLicenses += (ul.UsedLicenses != null ? ul.UsedLicenses : 0);
-        }
-        Integer availableIntLicenses = Math.max(0, totalIntLicenses - usedIntLicenses);
-
-        // 2. Packaged Permission Sets check (supporting both unnamespaced and namespaced packaging)
-        Map<String, Boolean> psExists = new Map<String, Boolean>{
-            API_READ_PERMISSION_SET => false,
-            SETTINGS_ADMIN_PERMISSION_SET => false,
-            CHANNEL_ADMIN_PERMISSION_SET => false
-        };
-
-        for (PermissionSet ps : [
-            SELECT Name FROM PermissionSet
-            WHERE Name = :API_READ_PERMISSION_SET OR Name LIKE :('%__' + API_READ_PERMISSION_SET)
-               OR Name = :SETTINGS_ADMIN_PERMISSION_SET OR Name LIKE :('%__' + SETTINGS_ADMIN_PERMISSION_SET)
-               OR Name = :CHANNEL_ADMIN_PERMISSION_SET OR Name LIKE :('%__' + CHANNEL_ADMIN_PERMISSION_SET)
-            WITH USER_MODE
-        ]) {
-            String baseName = ps.Name.contains('__') ? ps.Name.substringAfter('__') : ps.Name;
-            if (psExists.containsKey(baseName)) {
-                psExists.put(baseName, true);
-            }
-        }
-
-        // 3. External Client Apps enabled in org
-        Boolean isEcaAvailable = Type.forName('Schema.ExternalClientApplication') != null;
-
-        // 4. Panel OAuth Connection status
-        MCP_Config__c config = PanelAuthSupportService.getConfig();
-        Boolean isPanelConnected = String.isNotBlank(config?.Panel_Team_Id__c);
-        String panelTeamName = config?.Panel_Team_Name__c;
-        String panelUserEmail = config?.Panel_User_Email__c;
-
-        // 5. Active channel connections count
-        Integer channelCount = [SELECT COUNT() FROM Tubot_API_Channel__c WITH USER_MODE];
-
-        return new Map<String, Object>{
-            'isPanelConnected' => isPanelConnected,
-            'panelTeamName' => panelTeamName,
-            'panelUserEmail' => panelUserEmail,
-            'isEcaAvailable' => isEcaAvailable,
-            'totalIntegrationLicenses' => totalIntLicenses,
-            'usedIntegrationLicenses' => usedIntLicenses,
-            'availableIntegrationLicenses' => availableIntLicenses,
-            'hasApiReadPermissionSet' => psExists.get(API_READ_PERMISSION_SET),
-            'hasSettingsAdminPermissionSet' => psExists.get(SETTINGS_ADMIN_PERMISSION_SET),
-            'hasChannelAdminPermissionSet' => psExists.get(CHANNEL_ADMIN_PERMISSION_SET),
-            'connectedChannelsCount' => channelCount,
-            'panelBaseUrl' => PanelAuthSupportService.DEFAULT_PANEL_URL,
-            'allPrerequisitesMet' => isPanelConnected && psExists.get(API_READ_PERMISSION_SET)
-        };
-    }
-
+    public static final String PERMISSION_SET_NAME = 'Tubot_JWT_PreAuth';
     /**
      * @description Discovers active integration users and standard users in the org,
      * including whether the required Tubot API Read permission set is assigned.
@@ -153,7 +77,7 @@ public with sharing class TubotSetupWizardController {
         }
         ensurePermissionSetAssigned(targetUserId, psId);
 
-        Id preAuthId = resolveSubscriberPermissionSetId(JWT_PREAUTH_PERMISSION_SET);
+        Id preAuthId = resolveSubscriberPermissionSetId(PERMISSION_SET_NAME);
         Boolean preAuthAssigned = false;
         if (preAuthId != null) {
             ensurePermissionSetAssigned(targetUserId, preAuthId);
@@ -185,59 +109,23 @@ public with sharing class TubotSetupWizardController {
     }
 
     private static Id resolveSubscriberPermissionSetId(String baseName) {
+        String className = TubotSetupWizardController.class.getName();
+        String namespace = className.contains('.') ? className.substringBefore('.') : null;
+        String qualifiedName = String.isBlank(namespace) ? baseName : namespace + '__' + baseName;
         List<PermissionSet> sets = [
-            SELECT Id FROM PermissionSet
-            WHERE Name = :baseName AND NamespacePrefix = null
+            SELECT Id, NamespacePrefix FROM PermissionSet
+            WHERE Name = :baseName OR Name = :qualifiedName
             WITH USER_MODE
-            LIMIT 1
         ];
-        return sets.isEmpty() ? null : sets[0].Id;
-    }
-
-    /**
-     * @description Returns the packaged execution-client details plus the
-     * subscriber pre-authorization guidance. Both OAuth clients ship in the
-     * package; the admin runs the policies CLI command once per org (no
-     * secrets, no Setup clicks), and setup assigns pre-auth membership by DML.
-     * Panel mints short-lived JWT tokens only for pre-authorized users.
-     */
-    @AuraEnabled
-    public static Map<String, Object> getEcaSetupGuidance() {
-        PanelAuthSupportService.requireSettingsAdmin();
-
-        return new Map<String, Object>{
-            'recommendedAppName' => 'Tubot_Channel_API',
-            'recommendedAppLabel' => 'TuBot Channel API',
-            'requiredScopes' => 'Api, OpenID, RefreshToken',
-            'oauthFlow' => 'JWT Bearer Flow',
-            'callbackUrl' => PanelAuthSupportService.DEFAULT_PANEL_URL + '/oauth/callback',
-            'setupUrl' => '/lightning/setup/ExternalClientApps/home',
-            'policiesCli' => 'bun scripts/setup-eca-policies.mjs --target-org YOUR_ORG_ALIAS'
-        };
-    }
-
-    /**
-     * @description Prepares a channel and enqueues API permission assignment.
-     */
-    @AuraEnabled
-    public static Map<String, Object> prepareChannel(String channelId, String userIdentifier) {
-        PanelSalesforceChannelService.prepareChannel(channelId, userIdentifier);
-        return new Map<String, Object>{
-            'success' => true,
-            'channelId' => channelId,
-            'userIdentifier' => userIdentifier
-        };
-    }
-
-    /**
-     * @description Connects and registers channel credentials with the Panel service.
-     */
-    @AuraEnabled
-    public static Map<String, Object> connectChannel(String requestJson) {
-        PanelSalesforceChannelService.connectChannel(requestJson);
-        return new Map<String, Object>{
-            'success' => true
-        };
+        for (PermissionSet candidate : sets) {
+            Boolean belongsToPackage = String.isBlank(namespace)
+                ? String.isBlank(candidate.NamespacePrefix)
+                : candidate.NamespacePrefix == namespace;
+            if (belongsToPackage) {
+                return candidate.Id;
+            }
+        }
+        return null;
     }
 
     // Resolve the permission set matching this code's own namespace. Dev orgs

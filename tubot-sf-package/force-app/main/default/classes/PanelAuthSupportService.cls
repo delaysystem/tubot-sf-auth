@@ -5,6 +5,7 @@ public with sharing class PanelAuthSupportService {
     public static final String EXTERNAL_AUTH_NAME = 'Panel_External_Credential';
     public static final String NAMED_AUTH_ALIAS = 'Panel_Named_Credential';
     public static final String PRINCIPAL_NAME = 'Panel_Principal';
+    private static Integer panelCalloutsCompleted = 0;
     private static final String SETTINGS_ADMIN_PERMISSION_SET = 'Panel_Settings_Admin_Access';
 
     // Test-only seam for existing Apex tests. Production authorization below
@@ -21,13 +22,51 @@ public with sharing class PanelAuthSupportService {
     }
 
     public static String getExternalCredentialName() {
-        String ns = getNamespacePrefix();
-        return String.isNotBlank(ns) ? ns + EXTERNAL_AUTH_NAME : EXTERNAL_AUTH_NAME;
+        return qualifyName(getExternalCredentialApiName());
+    }
+
+    public static String getExternalCredentialApiName() {
+        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
+        Panel_Environment__mdt environment = PanelEnvironmentResolver.resolve(config);
+        return environment.External_Credential__c;
     }
 
     public static String getNamedCredentialName() {
-        String ns = getNamespacePrefix();
-        return String.isNotBlank(ns) ? ns + NAMED_AUTH_ALIAS : NAMED_AUTH_ALIAS;
+        return qualifyName(getNamedCredentialApiName());
+    }
+
+    public static String getNamedCredentialApiName() {
+        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
+        return PanelEnvironmentResolver.resolve(config).Named_Credential__c;
+    }
+
+    public static String getRefreshNamedCredentialName() {
+        return qualifyName(getRefreshNamedCredentialApiName());
+    }
+
+    public static String getRefreshNamedCredentialApiName() {
+        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
+        return PanelEnvironmentResolver.resolve(config).Refresh_Named_Credential__c;
+    }
+
+    public static String getRefreshExternalCredentialName() {
+        return qualifyName(getRefreshExternalCredentialApiName());
+    }
+
+    public static String getRefreshExternalCredentialApiName() {
+        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
+        Panel_Environment__mdt environment = PanelEnvironmentResolver.resolve(config);
+        return environment.Refresh_External_Credential__c;
+    }
+
+    public static String getPanelBaseUrl() {
+        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
+        return PanelEnvironmentResolver.panelBaseUrl(config);
+    }
+
+    private static String qualifyName(String baseName) {
+        String namespace = getNamespacePrefix();
+        return String.isNotBlank(namespace) ? namespace + baseName : baseName;
     }
 
     public static MCP_Config__c getConfig() {
@@ -57,10 +96,11 @@ public with sharing class PanelAuthSupportService {
         }
 
         List<String> targetAliases = new List<String>();
-        String qualified = getNamedCredentialName();
+        String apiName = getNamedCredentialApiName();
+        String qualified = qualifyName(apiName);
         targetAliases.add(qualified);
-        if (qualified != NAMED_AUTH_ALIAS) {
-            targetAliases.add(NAMED_AUTH_ALIAS);
+        if (qualified != apiName) {
+            targetAliases.add(apiName);
         }
 
         CalloutException lastException;
@@ -74,7 +114,17 @@ public with sharing class PanelAuthSupportService {
                     request.setBody(body);
                 }
                 request.setEndpoint('callout:' + alias + path);
-                return new Http().send(request);
+                HttpResponse response = new Http().send(request);
+                if (response.getStatusCode() == 401 && response.getHeader('WWW-Authenticate') == 'Bearer error="invalid_token"') {
+                    // Retry a whole UI action only if no earlier Panel callout could have mutated remote state.
+                    String marker = panelCalloutsCompleted == 0 ? 'PANEL_REFRESH_REQUIRED' : 'PANEL_REAUTH_REQUIRED';
+                    String message = marker + ': Refresh the Panel session in a separate transaction.';
+                    AuraHandledException renewal = new AuraHandledException(message);
+                    renewal.setMessage(message);
+                    throw renewal;
+                }
+                panelCalloutsCompleted++;
+                return response;
             } catch (CalloutException e) {
                 lastException = e;
             }

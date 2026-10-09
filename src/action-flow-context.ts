@@ -44,3 +44,26 @@ export function flowFixtureValue(field: Record<string, unknown>, nonce: string):
     default: return undefined;
   }
 }
+/** Input names whose lookup binding filters on the object id field (the created fixture id binds them, never a synthesized value). */
+export function lookupIdBindings(bindings: FlowLookupBinding[], objectName: string): string[] {
+  if (!Array.isArray(bindings) || !identifier(objectName)) return [];
+  const names: string[] = [];
+  for (const binding of bindings) {
+    if (!record(binding) || binding.objectName !== objectName) continue;
+    if (typeof binding.fieldName !== "string" || binding.fieldName.toLowerCase() !== "id") continue;
+    if (!identifier(binding.inputName)) continue;
+    names.push(binding.inputName);
+  }
+  return names;
+}
+/**
+ * Comma-structured retry value for opaque flow faults over fixture-bound
+ * record inputs: vendors that split a scalar and index past its parts
+ * fault on unstructured text, so a part-less string retries as a four-part
+ * comma join of itself (street/city/state/zip shapes and generic indexed
+ * splits alike). Non-strings and already-structured values pass through.
+ */
+export function commaStructuredProbeValue(value: unknown): unknown {
+  if (typeof value !== "string" || value.length === 0 || value.length > 200 || value.includes(",")) return value;
+  return `${value},${value},${value},${value}`;
+}

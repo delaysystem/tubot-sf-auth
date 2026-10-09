@@ -2,46 +2,8 @@
 private class TubotSetupWizardControllerTest {
 
     private static User setupAdminAccess() {
-        // FeatureManagement ignores permission grants in test context, so the
-        // authorized-path tests below simulate the settings-admin grant here.
         PanelAuthSupportService.managePermissionTestOverride = true;
-        User thisUser = [SELECT Id, Username FROM User WHERE Id = :UserInfo.getUserId()];
-
-        System.runAs(thisUser) {
-            PanelTestPermissionHelper.assignPermissionSet(thisUser.Id, 'Panel_Settings_Admin_Access');
-        }
-
-        MCP_Config__c config = MCP_Config__c.getOrgDefaults();
-        if (config == null || config.Id == null) {
-            config = new MCP_Config__c(SetupOwnerId = UserInfo.getOrganizationId());
-        }
-        config.Panel_Base_URL__c = PanelAuthSupportService.DEFAULT_PANEL_URL;
-        config.Panel_Client_Id__c = 'pnl_client_salesforce_mcp';
-        config.Panel_User_Email__c = 'admin@example.com';
-        config.Panel_User_Role__c = 'admin';
-        config.Panel_Team_Id__c = 'team_mock_wizard_123';
-        config.Panel_Team_Name__c = 'Wizard Mock Team';
-        config.Panel_Permissions__c = 'access_dashboard,edit_salesforce_settings';
-        Database.upsert(config, AccessLevel.SYSTEM_MODE);
-
-        return thisUser;
-    }
-
-    @IsTest
-    static void testGetSetupHealthCheck() {
-        User adminUser = setupAdminAccess();
-
-        System.runAs(adminUser) {
-            Test.startTest();
-            Map<String, Object> health = TubotSetupWizardController.getSetupHealthCheck();
-            Test.stopTest();
-
-            System.assertNotEquals(null, health, 'Health check map should not be null.');
-            System.assertEquals(true, health.get('isPanelConnected'), 'Panel should be connected based on config.');
-            System.assertEquals('Wizard Mock Team', health.get('panelTeamName'), 'Team name should match config.');
-            System.assertNotEquals(null, health.get('hasApiReadPermissionSet'), 'hasApiReadPermissionSet should be reported.');
-            System.assertNotEquals(null, health.get('totalIntegrationLicenses'), 'totalIntegrationLicenses should be reported.');
-        }
+        return [SELECT Id, Username FROM User WHERE Id = :UserInfo.getUserId()];
     }
 
     @IsTest
@@ -73,23 +35,6 @@ private class TubotSetupWizardControllerTest {
             // Verify idempotency on second call
             Map<String, Object> repeatResult = TubotSetupWizardController.assignApiPermissionSet(String.valueOf(adminUser.Id));
             System.assertEquals(true, repeatResult.get('success'), 'Repeat assignment should be idempotent.');
-        }
-    }
-
-    @IsTest
-    static void testGetEcaSetupGuidance() {
-        User adminUser = setupAdminAccess();
-
-        System.runAs(adminUser) {
-            Test.startTest();
-            Map<String, Object> guidance = TubotSetupWizardController.getEcaSetupGuidance();
-            Test.stopTest();
-
-            System.assertNotEquals(null, guidance, 'Guidance should not be null.');
-            System.assertEquals('Tubot_Channel_API', guidance.get('recommendedAppName'));
-            System.assert(((String) guidance.get('requiredScopes')).contains('Api'));
-            System.assert(((String) guidance.get('setupUrl')).contains('ExternalClientApps'));
-            System.assert(((String) guidance.get('policiesCli')).contains('setup-eca-policies.mjs'));
         }
     }
 
@@ -128,7 +73,7 @@ private class TubotSetupWizardControllerTest {
         System.runAs(nonAdmin) {
             Boolean exceptionThrown = false;
             try {
-                TubotSetupWizardController.getSetupHealthCheck();
+                TubotSetupWizardController.getIntegrationCandidates();
             } catch (AuraHandledException e) {
                 exceptionThrown = true;
             }

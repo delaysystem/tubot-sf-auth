@@ -21,6 +21,15 @@ test('trigger-null signature matches the managed BeforeInsert fault only', () =>
     isTriggerNullInsertFault(400, [
       {
         message:
+          'FSL.TR001_Service_BeforeInsert: execution of BeforeInsert\n\ncaused by: System.NullPointerException: Attempt to de-reference a null object\n\n(System Code)',
+        errorCode: 'CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY',
+      },
+    ]),
+  ).toBe(true);
+  expect(
+    isTriggerNullInsertFault(400, [
+      {
+        message:
           'et4ae5.updateBURecord: execution of BeforeInsert caused by: System.QueryException: List has no rows for assignment to SObject (System Code)',
         errorCode: 'CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY',
       },

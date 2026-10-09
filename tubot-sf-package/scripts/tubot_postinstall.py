@@ -20,9 +20,9 @@ Runs the interactive post-install flow against ONE specific Salesforce org
   5. Verifies Panel authentication status (and guides the admin through Panel
      login in tubot__Panel_Settings if not already connected).
   6. Automatically provisions all external resources:
-     - Generates and deploys External Client App (ECA) with Client Credentials Flow.
-     - Programmatically extracts Consumer Key and Consumer Secret via REST API.
-     - Registers the channel credentials with the Panel API.
+     - Configures the packaged JWT execution client using the authenticated CLI session.
+     - Assigns subscriber pre-authorization to the selected integration user.
+     - Registers channel identity with Panel, which verifies the JWT grant.
      - Creates/upserts tubot__Tubot_API_Channel__c in Salesforce.
   7. Blind-verifies state across Salesforce and Panel (Zero Mocks self-test).
 
@@ -39,7 +39,7 @@ authenticated to the org (`sf org login web`; the wizard lists orgs to pick).
 ==============================================================================
 """
 
-TUBOT_POSTINSTALL_VERSION = "1.1.0"
+TUBOT_POSTINSTALL_VERSION = "1.1.1"
 
 # Fallback TuBot package version used only when sfdx-project.json cannot be
 # located (e.g. curl-downloaded standalone copy). Prefer --package-id.
@@ -123,6 +123,9 @@ def run_sf(args: List[str], cwd: Optional[str] = None, timeout: int = 600) -> Di
     cmd = ["sf"] + args
     if "--json" not in cmd:
         cmd.append("--json")
+    env = dict(os.environ)
+    env["SF_SKIP_NEW_VERSION_CHECK"] = "true"
+    env["SF_DISABLE_TELEMETRY"] = "true"
     try:
         proc = subprocess.run(
             cmd,
@@ -131,6 +134,7 @@ def run_sf(args: List[str], cwd: Optional[str] = None, timeout: int = 600) -> Di
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except FileNotFoundError:
         log_error("Salesforce CLI ('sf') is not installed or not in PATH.")
@@ -139,8 +143,23 @@ def run_sf(args: List[str], cwd: Optional[str] = None, timeout: int = 600) -> Di
         log_error(f"Command timed out after {timeout} seconds: {' '.join(cmd)}")
         sys.exit(1)
 
+    raw_stdout = (proc.stdout or "").strip()
+    candidate_json = raw_stdout
+    first_brace = raw_stdout.find("{")
+    first_bracket = raw_stdout.find("[")
+    first_json_idx = -1
+    if first_brace != -1 and first_bracket != -1:
+        first_json_idx = min(first_brace, first_bracket)
+    elif first_brace != -1:
+        first_json_idx = first_brace
+    elif first_bracket != -1:
+        first_json_idx = first_bracket
+
+    if first_json_idx > 0:
+        candidate_json = raw_stdout[first_json_idx:]
+
     try:
-        data = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        data = json.loads(candidate_json) if candidate_json else {}
     except json.JSONDecodeError:
         data = {"status": proc.returncode, "raw_stdout": proc.stdout, "raw_stderr": proc.stderr}
 
@@ -161,11 +180,50 @@ def run_sf(args: List[str], cwd: Optional[str] = None, timeout: int = 600) -> Di
                     except Exception:
                         err_msg = ""
         if not err_msg:
-            # Filter out warning lines
-            filtered_stderr = "\n".join(l for l in proc.stderr.splitlines() if "Warning:" not in l).strip()
+            # Filter out warning lines (e.g. CLI update warnings or oclif banners)
+            filtered_stderr = "\n".join(
+                l for l in proc.stderr.splitlines()
+                if "Warning:" not in l and not l.strip().startswith("›")
+            ).strip()
             err_msg = filtered_stderr or proc.stdout.strip()
 
     return {"returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr, "data": data, "error_msg": err_msg}
+
+
+def sf_error(res: Dict[str, Any]) -> str:
+    """Extract a clean, meaningful error message from a run_sf result, filtering CLI warnings."""
+    if not isinstance(res, dict):
+        return str(res)
+    if res.get("error_msg"):
+        return res["error_msg"]
+    data = res.get("data")
+    if isinstance(data, dict):
+        if data.get("message"):
+            return str(data["message"])
+        result = data.get("result")
+        if isinstance(result, list) and result and isinstance(result[0], dict):
+            msg = result[0].get("error") or result[0].get("state")
+            if msg:
+                return str(msg)
+        elif isinstance(result, dict):
+            try:
+                cfs = (result.get("details") or {}).get("componentFailures", []) or []
+                if cfs:
+                    return "; ".join(f"{c.get('componentType')}: {c.get('problem')}" for c in cfs)
+            except Exception:
+                pass
+    stderr_lines = [
+        l.strip()
+        for l in (res.get("stderr") or "").splitlines()
+        if l.strip() and "Warning:" not in l and not l.strip().startswith("›")
+    ]
+    if stderr_lines:
+        return "\n".join(stderr_lines)
+    stdout = (res.get("stdout") or "").strip()
+    if stdout:
+        return stdout[-300:]
+    return (res.get("stderr") or "Unknown CLI error").strip()
+
 
 
 def run_apex(code: str, target_org: str) -> Tuple[bool, str]:
@@ -207,7 +265,7 @@ def list_authenticated_orgs() -> List[Dict[str, Any]]:
     """List orgs the local sf CLI is authenticated to (non-scratch + active scratch)."""
     res = run_sf(["org", "list"])
     if res["returncode"] != 0:
-        log_error(f"Failed to list authenticated orgs: {res['stderr'] or res['stdout']}")
+        log_error(f"Failed to list authenticated orgs: {sf_error(res)}")
         sys.exit(1)
     result = res["data"].get("result", {})
     orgs: List[Dict[str, Any]] = []
@@ -294,7 +352,7 @@ def resolve_org(target_org: Optional[str]) -> Dict[str, str]:
         args.extend(["--target-org", target_org])
     res = run_sf(args)
     if res["returncode"] != 0:
-        log_error(f"Failed to connect to Salesforce org: {res['stderr'] or res['stdout']}")
+        log_error(f"Failed to connect to Salesforce org: {sf_error(res)}")
         sys.exit(1)
 
     result = res["data"].get("result", {})
@@ -335,7 +393,7 @@ def select_integration_user(org: Dict[str, str], requested_user: Optional[str], 
     )
     res = run_sf(["data", "query", "--query", soql, "--target-org", org["target_flag"]])
     if res["returncode"] != 0:
-        log_error(f"Failed to query active users: {res['stderr'] or res['stdout']}")
+        log_error(f"Failed to query active users: {sf_error(res)}")
         sys.exit(1)
 
     records = res["data"].get("result", {}).get("records", [])
@@ -1309,12 +1367,48 @@ def get_latest_package_version_id() -> str:
     return POSTINSTALL_FALLBACK_PACKAGE_VERSION_ID
 
 
+def query_installed_packages(target_org: str) -> List[Dict[str, Any]]:
+    """Query installed packages via fast Tooling API with fallback to sf package installed list."""
+    soql = (
+        "SELECT Id, SubscriberPackageId, SubscriberPackage.Name, SubscriberPackage.NamespacePrefix, "
+        "SubscriberPackageVersion.Id, SubscriberPackageVersion.Name, "
+        "SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion, "
+        "SubscriberPackageVersion.PatchVersion, SubscriberPackageVersion.BuildNumber "
+        "FROM InstalledSubscriberPackage"
+    )
+    t_res = run_sf(["data", "query", "--use-tooling-api", "--query", soql, "--target-org", target_org])
+    if t_res["returncode"] == 0:
+        records = t_res["data"].get("result", {}).get("records", []) or []
+        pkgs = []
+        for r in records:
+            sp = r.get("SubscriberPackage") or {}
+            spv = r.get("SubscriberPackageVersion") or {}
+            v_num = f"{spv.get('MajorVersion', 0)}.{spv.get('MinorVersion', 0)}.{spv.get('PatchVersion', 0)}.{spv.get('BuildNumber', 0)}"
+            pkgs.append({
+                "Id": r.get("Id"),
+                "SubscriberPackageId": r.get("SubscriberPackageId"),
+                "SubscriberPackageName": sp.get("Name") or "",
+                "SubscriberPackageNamespace": sp.get("NamespacePrefix") or "",
+                "SubscriberPackageVersionId": spv.get("Id") or "",
+                "SubscriberPackageVersionName": spv.get("Name") or "",
+                "SubscriberPackageVersionNumber": v_num,
+                "VersionSettings": "packageId",
+            })
+        return pkgs
+
+    # Fallback to sf package installed list with retry
+    for attempt in range(2):
+        res = run_sf(["package", "installed", "list", "--target-org", target_org])
+        if res["returncode"] == 0:
+            return res["data"].get("result", []) or []
+        if attempt < 1:
+            time.sleep(2)
+    return []
+
+
 def is_tubot_package_installed(target_org: str) -> Tuple[bool, Optional[str], Optional[str]]:
     """Check if TuBot package is already installed on the target org."""
-    res = run_sf(["package", "installed", "list", "--target-org", target_org])
-    if res["returncode"] != 0:
-        return False, None, None
-    for pkg in res["data"].get("result", []):
+    for pkg in query_installed_packages(target_org):
         name = pkg.get("SubscriberPackageName") or ""
         pkg_id = pkg.get("SubscriberPackageVersionId") or ""
         ver = pkg.get("SubscriberPackageVersionNumber") or ""
@@ -1362,7 +1456,7 @@ def ensure_tubot_package_installed(
 
     # Ensure admin permission sets are assigned
     log_info("Ensuring admin permission sets are assigned...")
-    for permset in ["tubot__Panel_Settings_Admin_Access", "tubot__Tubot_Channel_Connection_Admin_Access"]:
+    for permset in ["tubot__Panel_Settings_Admin_Access"]:
         p_res = run_sf(["org", "assign", "permset", "--name", permset, "--target-org", target_org])
         if p_res["returncode"] == 0:
             log_success(f"Permission set '{permset}' assigned.")
@@ -1597,7 +1691,7 @@ POSTINSTALL_CONSENT_STEPS = [
     {
         "id": "eca",
         "title": "Packaged execution client + pre-authorization",
-        "what": "Confirms the packaged JWT execution client, applies subscriber pre-authorization policies, and assigns Tubot_JWT_PreAuth to the integration user. No secrets exist on this path.",
+        "what": "Uses your authenticated CLI session to configure subscriber policies and assign Tubot_JWT_PreAuth. Browser alternative: Panel Settings → Simple Setup → Authorize & continue; or use its manual Setup steps.",
         "why": "Panel mints short-lived JWT tokens only for pre-authorized users.",
     },
     {
@@ -1622,6 +1716,8 @@ def print_postinstall_info(org: Dict[str, str]) -> None:
     print(f"\n{BOLD}{CYAN}=============================================================================={RESET}")
     print(f"{BOLD}{CYAN}Before you continue: what this wizard does (please read){RESET}")
     print(f"{BOLD}{CYAN}=============================================================================={RESET}")
+    print("Browser alternative: Panel Settings → Simple Setup offers an ephemeral Salesforce approval popup")
+    print("and manual Setup instructions. The browser flow does not require this CLI wizard.")
     print(f"\n{BOLD}WHAT{RESET} this wizard does, in order:")
     for idx, step in enumerate(POSTINSTALL_CONSENT_STEPS, start=1):
         print(f"  {idx}. {BOLD}{step['title']}{RESET} [{step['id']}]")

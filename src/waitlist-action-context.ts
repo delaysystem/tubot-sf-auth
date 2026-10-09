@@ -113,7 +113,7 @@ export async function invokeWaitlistContext(input: { root: string; route: string
       // hold an open primary membership (leaked or live), and field-less
       // creates default to Primary and collide 400 DUPLICATE_VALUE.
       const memberValues: Value = { ServiceTerritoryId: territory, ServiceResourceId: resource,
-        EffectiveStartDate: new Date(Math.floor((Date.now() - 60_000) / 1000) * 1000).toISOString() };
+        EffectiveStartDate: new Date(Math.floor((Date.now() - 60_000) / 60_000) * 60_000).toISOString() };
       if (schemas.ServiceTerritoryMember.fields.some((f: Value) => f.name === 'TerritoryType' && f.createable)) memberValues.TerritoryType = 'S';
       await create('ServiceTerritoryMember', memberValues);
       await create('ServiceTerritoryWorkType', { ServiceTerritoryId: territory, WorkTypeId: workType });

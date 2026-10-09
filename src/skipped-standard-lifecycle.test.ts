@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import {
   SKIPPED_STANDARD_BUILDER_VERSION,
   contextNamespaceExpired,
+  descriptorValidValue,
   invokeSkippedStandardWithOwnedContext,
   planSkippedStandardArgs,
   primaryFixtureFor,
@@ -21,8 +22,10 @@ const CASE_ID = '500000000000001AAA';
 const TASK_ID = '00T000000000001EAA';
 const USER_ID = '005000000000001AAA';
 const QUEUE_ID = '00G000000000001EAA';
+const ORDER_ID = '1Os000000000001EAA';
+const INVOICE_ID = '0c1000000000001EAA';
 
-test('route parsing accepts standard and survey/matrix custom routes only', () => {
+test('route parsing accepts standard, survey/matrix, apex, batch, and dynamic routes', () => {
   expect(skippedStandardRouteInfo(std('createTask'))).toEqual({ kind: 'standard', apiVersion: 'v67.0', action: 'createTask' });
   expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/dynamicSendSurveyInvitation/case_csat_nps_survey`)).toEqual({
     kind: 'custom', apiVersion: 'v67.0', action: 'case_csat_nps_survey', customKind: 'dynamicSendSurveyInvitation',
@@ -30,10 +33,20 @@ test('route parsing accepts standard and survey/matrix custom routes only', () =
   expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/runDecisionMatrix/SDO_Service_Cirrus_Locations`)).toEqual({
     kind: 'custom', apiVersion: 'v67.0', action: 'SDO_Service_Cirrus_Locations', customKind: 'runDecisionMatrix',
   });
+  // R7: owned apex shapes, batch refusals, and dynamic twins route here.
+  expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/apex/SDO_Service_BotsUpdateEmail`)).toEqual({
+    kind: 'apex', apiVersion: 'v67.0', action: 'SDO_Service_BotsUpdateEmail',
+  });
+  expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/batchJobAction/inv_replenishment__ReplenishInventory`)).toEqual({
+    kind: 'batch', apiVersion: 'v67.0', action: 'inv_replenishment__ReplenishInventory',
+  });
+  expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/buildContextDynamic/build_context_x`)).toEqual({
+    kind: 'dynamic', apiVersion: 'v67.0', action: 'build_context_x', dynamicKind: 'buildContextDynamic',
+  });
   expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/flow/Send_Survey`)).toBeNull();
-  expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/apex/Something`)).toBeNull();
   expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/quickAction/Case/Create_Task`)).toBeNull();
   expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/sendNotification/deal_won`)).toBeNull();
+  expect(skippedStandardRouteInfo(`${ROOT}/actions/custom/generatePromptResponse/x`)).toBeNull();
   expect(skippedStandardRouteInfo('not a route')).toBeNull();
   expect(skippedStandardRouteInfo(null)).toBeNull();
 });
@@ -107,6 +120,17 @@ test('binding plans use declared inputs only and refuse unresolvable required in
     { name: 'queueId', type: 'STRING', required: true },
   ], { marker: 'AS probe m', fixtures: {}, discovered: { queueId: QUEUE_ID } });
   expect(queue).toEqual({ args: { queueId: QUEUE_ID } });
+  // Opaque id wrappers bind shaped live ids; rowless orgs refuse the wrapper.
+  const funds = planSkippedStandardArgs(skippedStandardBindingSpec('order-summary', 'ensureFundsOrderSummaryAsync'), [
+    { name: 'orderSummaryId', type: 'ID', required: true },
+    { name: 'ensureFundsAsyncInput', type: 'APEX', required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: { orderSummaryId: ORDER_ID, invoiceId: INVOICE_ID } });
+  expect(funds).toEqual({ args: { orderSummaryId: ORDER_ID, ensureFundsAsyncInput: { invoiceId: INVOICE_ID } } });
+  expect(planSkippedStandardArgs(skippedStandardBindingSpec('order-summary', 'ensureFundsOrderSummaryAsync'), [
+    { name: 'orderSummaryId', type: 'ID', required: true },
+    { name: 'ensureFundsAsyncInput', type: 'APEX', required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: { orderSummaryId: ORDER_ID } }))
+    .toEqual({ missing: 'ensureFundsAsyncInput' });
   expect(planSkippedStandardArgs(skippedStandardBindingSpec('record-assignment', 'assignToQueue'), [
     { name: 'queueId', type: 'STRING', required: true },
   ], { marker: 'AS probe m', fixtures: {}, discovered: {} })).toEqual({ missing: 'queueId' });
@@ -135,6 +159,71 @@ test('binding plans use declared inputs only and refuse unresolvable required in
   ], { marker: 'AS probe m', fixtures: {}, discovered: {} })).toEqual({ missing: 'input_schema' });
 });
 
+test('synthetic-eval binds freeform ApplicationName to the probe marker', () => {
+  const planned = planSkippedStandardArgs(skippedStandardBindingSpec('synthetic-eval', 'invokeRule'), [
+    { name: 'ExpressionSet', type: 'STRING', required: true },
+    { name: 'ApplicationName', type: 'STRING', required: true },
+    { name: 'Parameters', type: 'APEX', required: false },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: { expressionSet: 'SDO_Service_Repair_Eligibility' } });
+  expect(planned).toEqual({ args: { ExpressionSet: 'SDO_Service_Repair_Eligibility', ApplicationName: 'AS probe m', Parameters: [] } });
+});
+
+test('order-summary binds discovered ids and discovers live rows', () => {
+  const discoveries = skippedStandardDiscoveries('order-summary', 'ensureFundsOrderSummaryAsync');
+  expect(discoveries).toEqual([
+    { key: 'orderSummaryId', queryId: ['SELECT Id FROM OrderSummary LIMIT 1'] },
+    { key: 'webStoreId', queryId: ['SELECT Id FROM WebStore LIMIT 1'] },
+    { key: 'invoiceId', queryId: ['SELECT Id FROM Invoice LIMIT 1'] },
+  ]);
+  const planned = planSkippedStandardArgs(skippedStandardBindingSpec('order-summary', 'ensureFundsOrderSummaryAsync'), [
+    { name: 'orderSummaryId', type: 'ID', required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: { orderSummaryId: '1Os000000000001EAA' } });
+  expect(planned).toEqual({ args: { orderSummaryId: '1Os000000000001EAA' } });
+  expect(planSkippedStandardArgs(skippedStandardBindingSpec('order-summary', 'generateOrderSummaryUrl'), [
+    { name: 'webStoreId', type: 'ID', required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: {} })).toEqual({ missing: 'webStoreId' });
+});
+
+test('opaque id wrappers bind a shaped live id or miss', () => {
+  const planned = planSkippedStandardArgs(skippedStandardBindingSpec('order-summary', 'ensureFundsOrderSummaryAsync'), [
+    { name: 'ensureFundsAsyncInput', type: null, required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: { invoiceId: '3tt000000000001AAA' } });
+  expect(planned).toEqual({ args: { ensureFundsAsyncInput: { invoiceId: '3tt000000000001AAA' } } });
+  expect(planSkippedStandardArgs(skippedStandardBindingSpec('order-summary', 'ensureFundsOrderSummaryAsync'), [
+    { name: 'ensureFundsAsyncInput', type: null, required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: {} })).toEqual({ missing: 'ensureFundsAsyncInput' });
+});
+
+test('descriptor-documented valid values bind first literals', () => {
+  expect(descriptorValidValue({ name: 'x', description: 'Valid values are "Email".' } as never)).toBe('Email');
+  expect(descriptorValidValue({ name: 'x', description: 'The handler. Valid values are "Appointment Confirmation" and "Other".' } as never))
+    .toBe('Appointment Confirmation');
+  expect(descriptorValidValue({ name: 'x', description: 'No enumerated values here.' } as never)).toBeUndefined();
+  expect(descriptorValidValue({ name: 'x' } as never)).toBeUndefined();
+  const planned = planSkippedStandardArgs(skippedStandardBindingSpec('message-send', 'sendChannelMessage'), [
+    { name: 'engagementChannel', type: 'STRING', required: true, description: 'Valid values are "Email".' },
+    { name: 'messageTypeHandler', type: 'STRING', required: true, description: 'Valid values are "Appointment Confirmation" and "Single".' },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: {} });
+  expect(planned).toEqual({ args: { engagementChannel: 'Email', messageTypeHandler: 'Appointment Confirmation' } });
+  expect(planSkippedStandardArgs(skippedStandardBindingSpec('message-send', 'sendChannelMessage'), [
+    { name: 'messageTypeHandler', type: 'STRING', required: true, description: 'Pick anything.' },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: {} })).toEqual({ missing: 'messageTypeHandler' });
+});
+
+test('referral performers bind a comma-joined live account list', () => {
+  const discoveries = skippedStandardDiscoveries('referral-record', 'createReferral');
+  expect(discoveries).toEqual([
+    { key: 'performerIds', queryIdList: ['SELECT Id FROM Account LIMIT 3'], limit: 3 },
+  ]);
+  const planned = planSkippedStandardArgs(skippedStandardBindingSpec('referral-record', 'createReferral'), [
+    { name: 'performers', type: 'STRING', required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: { performerIds: '001A,001B' } });
+  expect(planned).toEqual({ args: { performers: '001A,001B' } });
+  expect(planSkippedStandardArgs(skippedStandardBindingSpec('referral-record', 'createReferral'), [
+    { name: 'performers', type: 'STRING', required: true },
+  ], { marker: 'AS probe m', fixtures: {}, discovered: {} })).toEqual({ missing: 'performers' });
+});
+
 test('timesheet compute flags stay off and validation stays on', () => {
   const planned = planSkippedStandardArgs(skippedStandardBindingSpec('timesheet-validate', 'validateTimesheet'), [
     { name: 'TimeSheetId', type: 'STRING', required: true },
@@ -148,6 +237,15 @@ test('timesheet compute flags stay off and validation stays on', () => {
     ComputeWageTypeSummary: false,
     RunValidations: true,
   } });
+});
+
+test('timesheet-validate fixtures carry the discovered ServiceResourceId parent', () => {
+  expect(skippedStandardFixtures('timesheet-validate', 'validateTimesheet')).toEqual([
+    { objects: ['TimeSheet'], parents: { ServiceResourceId: { discovered: 'serviceResourceId' } } },
+  ]);
+  expect(skippedStandardDiscoveries('timesheet-validate', 'validateTimesheet').map((entry) => entry.key)).toEqual([
+    'serviceResourceId',
+  ]);
 });
 
 test('fixture and discovery plans stay platform-vocabulary', () => {
@@ -332,6 +430,32 @@ test('unverified cleanup flips verified false with a cleanup error', async () =>
   expect(outcome.contextSchema).toMatchObject({ verified: false });
 });
 
+test('unverified cleanup names the object and both statuses', async () => {
+  const route = std('createTask');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [{ name: 'taskSubjectName', type: 'STRING', required: true }] } }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: () => ({ status: 200, body: ACCEPTED }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/Task/describe'),
+      respond: () => describeFor('Task', [textField('Subject')]) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM Task WHERE Subject'),
+      respond: () => ({ status: 200, body: { records: [{ Id: TASK_ID }] } }) },
+    { match: (method) => method === 'DELETE',
+      respond: () => ({ status: 400, body: [{ errorCode: 'DELETE_FAILED', message: 'associated with cases' }] }) },
+    { match: (method, path) => method === 'GET' && path.endsWith(`/sobjects/Task/${TASK_ID}`),
+      respond: () => ({ status: 200, body: { Id: TASK_ID } }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'task-record', request: harness.request, build: harness.build,
+  });
+  expect(outcome.cleanupError).toContain('Task');
+  expect(outcome.cleanupError).toContain('delete 400');
+  expect(outcome.cleanupError).toContain('DELETE_FAILED');
+  expect(outcome.cleanupError).toContain('associated with cases');
+  expect(outcome.cleanupError).toContain('readback 200');
+});
+
 test('unresolvable required inputs fail closed and still clean owned fixtures', async () => {
   const route = std('convertRecord');
   const deleted = new Set<string>();
@@ -378,6 +502,91 @@ test('unresolvable required inputs fail closed and still clean owned fixtures', 
   expect(outcome.cleanupError).toBeUndefined();
   // The owned Case was still deleted with verified absence.
   expect(harness.calls.some((call) => call.method === 'DELETE' && call.path.endsWith(`/sobjects/Case/${CASE_ID}`))).toBe(true);
+});
+
+test('queue-routed fixtures are reclaimed to the execution user', async () => {
+  const route = std('convertRecord');
+  let marker = '';
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'sourceRecordId', type: 'STRING', required: true },
+        { name: 'contextDefinitionId', type: 'STRING', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM ContextDefinition'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/Case/describe'),
+      respond: () => describeFor('Case', [textField('Subject')]) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/Case'),
+      respond: () => ({ status: 201, body: { id: CASE_ID } }) },
+    { match: (method, path) => method === 'PATCH' && path.endsWith(`/sobjects/Case/${CASE_ID}`),
+      respond: () => ({ status: 204, body: null }) },
+  ]);
+  let ownerId = QUEUE_ID;
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if (method === 'PATCH' && path.endsWith(`/sobjects/Case/${CASE_ID}`) && typeof body?.OwnerId === 'string') {
+      ownerId = body.OwnerId;
+      return harness.request(path, method, body);
+    }
+    if (method === 'GET' && path.endsWith(`/sobjects/Case/${CASE_ID}`)) {
+      return { status: 200, ok: true, body: { Id: CASE_ID, Subject: marker, OwnerId: ownerId, CreatedById: USER_ID } };
+    }
+    return harness.request(path, method, body);
+  };
+  const build = async (_name: string, minted: string, values: Record<string, any>) => {
+    marker = minted;
+    return { values };
+  };
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'record-convert', ownerUserId: USER_ID, request, build,
+  });
+  const patches = harness.calls.filter((call) => call.method === 'PATCH');
+  expect(patches).toHaveLength(1);
+  expect(patches[0].body).toEqual({ OwnerId: USER_ID });
+  // Reclaim succeeded, so the flow continued past fixtures to the (still missing) input.
+  expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_RECORD_CONVERT_INPUT_UNRESOLVED');
+});
+
+test('unreclaimable queue fixtures fail before any invoke', async () => {
+  const route = std('convertRecord');
+  let marker = '';
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'sourceRecordId', type: 'STRING', required: true },
+        { name: 'contextDefinitionId', type: 'STRING', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM ContextDefinition'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/Case/describe'),
+      respond: () => describeFor('Case', [textField('Subject')]) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/Case'),
+      respond: () => ({ status: 201, body: { id: CASE_ID } }) },
+    { match: (method) => method === 'PATCH',
+      respond: () => ({ status: 403, body: [{ errorCode: 'INSUFFICIENT_ACCESS' }] }) },
+  ]);
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if (method === 'GET' && path.endsWith(`/sobjects/Case/${CASE_ID}`)) {
+      return { status: 200, ok: true, body: { Id: CASE_ID, Subject: marker, OwnerId: QUEUE_ID, CreatedById: USER_ID } };
+    }
+    return harness.request(path, method, body);
+  };
+  const build = async (_name: string, minted: string, values: Record<string, any>) => {
+    marker = minted;
+    return { values };
+  };
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'record-convert', ownerUserId: USER_ID, request, build,
+  });
+  expect(outcome.status).toBe(422);
+  expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_RECORD_CONVERT_FIXTURE_UNAVAILABLE');
+  expect(outcome.body.message).toContain('queue');
+  expect(harness.calls.some((call) => call.method === 'POST' && call.path === route)).toBe(false);
+});
+
+test('sendChannelMessage mints no fixtures', () => {
+  expect(skippedStandardFixtures('message-send', 'sendChannelMessage')).toEqual([]);
+  expect(skippedStandardFixtures('message-send', 'sendNotificationX').map((plan) => plan.objects)).toEqual([['Contact'], ['Case']]);
 });
 
 test('survey invitations verify the invitation row and clean everything', async () => {
@@ -671,6 +880,578 @@ test('non-denial failures attach no grant family', async () => {
   expect(outcome.status).toBe(400);
   expect(outcome.denialGrant).toBeUndefined();
   expect(outcome.contextSchema).not.toHaveProperty('denialGrant');
+});
+
+// ---------------------------------------------------------------------------
+// R7 skip-exempt wave: apex shapes, dynamic twins, batch, unownable standards.
+// ---------------------------------------------------------------------------
+
+const apex = (name: string) => `${ROOT}/actions/custom/apex/${name}`;
+const batch = (name: string) => `${ROOT}/actions/custom/batchJobAction/${name}`;
+const dyn = (kind: string, name: string) => `${ROOT}/actions/custom/${kind}/${name}`;
+
+test('r7 family slugs validate and terminal codes carry the family', () => {
+  for (const family of ['social-publish', 'appointment-save', 'routing-verify', 'context-dynamic',
+    'batch-submit', 'apex-sobject-shape', 'apex-scalar-pure', 'apex-external-callout']) {
+    expect(skippedStandardFamilySlug(family)).toBe(family);
+  }
+  expect(skippedStandardCode('apex-scalar-pure', 'effect_dml_unownable'))
+    .toBe('SKIPPED_STANDARD_APEX_SCALAR_PURE_EFFECT_DML_UNOWNABLE');
+  expect(skippedStandardCode('batch-submit', 'unownable')).toBe('SKIPPED_STANDARD_BATCH_SUBMIT_UNOWNABLE');
+  expect(skippedStandardCode('context-dynamic', 'input_unresolved'))
+    .toBe('SKIPPED_STANDARD_CONTEXT_DYNAMIC_INPUT_UNRESOLVED');
+});
+
+test('r7 terminal refusals carry precise codes and never POST', async () => {
+  const rows = [
+    [std('createSocialPost'), 'social-publish', 'SKIPPED_STANDARD_SOCIAL_PUBLISH_UNOWNABLE'],
+    [std('saveAppointment'), 'appointment-save', 'SKIPPED_STANDARD_APPOINTMENT_SAVE_INPUT_UNRESOLVED'],
+    [std('routingAddressVerification'), 'routing-verify', 'SKIPPED_STANDARD_ROUTING_VERIFY_UNOWNABLE'],
+    [batch('inv_replenishment__ReplenishInventory'), 'batch-submit', 'SKIPPED_STANDARD_BATCH_SUBMIT_UNOWNABLE'],
+    [apex('pi__CreateForm'), 'apex-external-callout', 'SKIPPED_STANDARD_APEX_EXTERNAL_CALLOUT_UNOWNABLE'],
+    [std('updateAssetWithActivity'), 'asset-activity', 'SKIPPED_STANDARD_ASSET_ACTIVITY_INPUT_UNRESOLVED'],
+    [std('createAssetWithActivity'), 'asset-activity', 'SKIPPED_STANDARD_ASSET_ACTIVITY_INPUT_UNRESOLVED'],
+  ] as const;
+  for (const [route, family, code] of rows) {
+    const harness = scripted([
+      { match: (method, path) => method === 'GET' && path === route,
+        respond: () => ({ status: 200, body: { inputs: [] } }) },
+    ]);
+    const outcome = await invokeSkippedStandardWithOwnedContext({
+      root: ROOT, route, family, ownerUserId: USER_ID, request: harness.request, build: harness.build,
+    });
+    expect(outcome.status).toBe(422);
+    expect(outcome.body.errorCode).toBe(code);
+    expect(outcome.body.setupRequirement).toBeTruthy();
+    expect(harness.calls.some((call) => call.method === 'POST')).toBe(false);
+    expect(outcome.contextSchema).toMatchObject({ verified: false, family });
+    expect(outcome.cleanupError).toBeUndefined();
+  }
+});
+
+test('r7 route kinds gate their families without touching existing pairs', async () => {
+  const harness = scripted([]);
+  const mismatches = [
+    [apex('SDO_Service_BotsUpdateEmail'), 'task-record'],
+    [std('createTask'), 'apex-sobject-shape'],
+    [std('createTask'), 'batch-submit'],
+    [std('createTask'), 'context-dynamic'],
+    [batch('x'), 'task-record'],
+    [dyn('buildContextDynamic', 'x'), 'task-record'],
+    [apex('x'), 'context-dynamic'],
+  ] as const;
+  for (const [route, family] of mismatches) {
+    const outcome = await invokeSkippedStandardWithOwnedContext({
+      root: ROOT, route, family, request: harness.request, build: harness.build,
+    });
+    expect(outcome.body.errorCode).toContain('FAMILY_MISMATCH');
+  }
+  expect(harness.calls.length).toBe(0);
+  // Existing cross-kind pairs still route: survey runs on standard routes.
+  expect(skippedStandardRouteInfo(std('sendSurveyInvitation'))?.kind).toBe('standard');
+});
+
+const BUILD_OUTPUT = [{ isSuccess: true, errors: [], outputValues: {
+  contextId: 'CTX00000000000000000000000001', contextMappingId: 'def/version/map', contextDefinitionId: 'def',
+} }];
+
+test('dynamic build verifies the minted namespace and deletes it', async () => {
+  const route = dyn('buildContextDynamic', 'build_context_x');
+  const posts: any[] = [];
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'contextMappingId', type: 'STRING', required: false },
+        { name: 'contextRecordData', type: null, required: false },
+      ] } }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: (_m, _p, body) => {
+        posts.push(body);
+        return { status: 200, body: BUILD_OUTPUT };
+      } },
+    { match: (method, path) => method === 'POST' && path.endsWith('/actions/standard/deleteContextCache'),
+      respond: () => ({ status: 200, body: ACCEPTED }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'context-dynamic', request: harness.request, build: harness.build,
+  });
+  expect(posts[0]).toEqual({ inputs: [{}] });
+  expect(outcome.status).toBe(200);
+  expect(outcome.contextSchema).toMatchObject({ verified: true, contextId: 'CTX00000000000000000000000001' });
+  expect(outcome.cleanupError).toBeUndefined();
+});
+
+test('dynamic build treats never-persisted namespaces as clean', async () => {
+  const route = dyn('buildContextDynamic', 'build_context_x');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [] } }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: () => ({ status: 200, body: BUILD_OUTPUT }) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/actions/standard/deleteContextCache'),
+      respond: () => ({ status: 400, body: [
+        { message: "Context with id CTX00000000000000000000000001 doesn't exist or expired.", errorCode: 'DELETE_FAILED' },
+      ] }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'context-dynamic', request: harness.request, build: harness.build,
+  });
+  expect(outcome.status).toBe(200);
+  expect(outcome.contextSchema).toMatchObject({ verified: true });
+  expect(outcome.cleanupError).toBeUndefined();
+});
+
+test('dynamic build with unverifiable cleanup flips verified false', async () => {
+  const route = dyn('buildContextDynamic', 'build_context_x');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [] } }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: () => ({ status: 200, body: BUILD_OUTPUT }) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/actions/standard/deleteContextCache'),
+      respond: () => ({ status: 400, body: [{ message: 'boom', errorCode: 'UNKNOWN_EXCEPTION' }] }) },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'context-dynamic', request: harness.request, build: harness.build,
+  });
+  expect(outcome.status).toBe(200);
+  expect(outcome.cleanupError).toContain('cleanup could not be verified');
+  expect(outcome.contextSchema).toMatchObject({ verified: false });
+});
+
+test('dynamic non-build twins refuse without any POST', async () => {
+  for (const kind of ['addContextRecordsDynamic', 'queryContextRecordsDynamic', 'queryContextTagsDynamic', 'updateContextAttributesDynamic']) {
+    const route = dyn(kind, 'twin_x');
+    const harness = scripted([
+      { match: (method, path) => method === 'GET' && path === route,
+        respond: () => ({ status: 200, body: { inputs: [
+          { name: 'contextId', type: 'STRING', required: true },
+          { name: 'contextRecordData', type: null, required: true },
+        ] } }) },
+    ]);
+    const outcome = await invokeSkippedStandardWithOwnedContext({
+      root: ROOT, route, family: 'context-dynamic', request: harness.request, build: harness.build,
+    });
+    expect(outcome.status).toBe(422);
+    expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_CONTEXT_DYNAMIC_INPUT_UNRESOLVED');
+    expect(outcome.body.setupRequirement).toContain('context-definition contract');
+    expect(harness.calls.some((call) => call.method === 'POST')).toBe(false);
+  }
+});
+
+test('sobject-shape updates verify the effect and prove no user side-effect', async () => {
+  const route = apex('SDO_Service_BotsUpdateEmail');
+  const deleted = new Set<string>();
+  let marker = '';
+  let postedEmail = '';
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'objContact', type: 'SOBJECT', required: true, sObjectType: 'Contact' },
+        { name: 'value', type: 'STRING', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/Contact/describe'),
+      respond: () => describeFor('Contact', [textField('LastName'), textField('Email')]) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/Contact'),
+      respond: (_m, _p, body) => {
+        marker = body.LastName;
+        return { status: 201, body: { id: CONTACT_ID } };
+      } },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: (_m, _p, body) => {
+        const input = body.inputs[0];
+        expect(input.objContact).toEqual({ attributes: { type: 'Contact' }, Id: CONTACT_ID });
+        postedEmail = input.value;
+        expect(postedEmail).toMatch(/^probe-[a-z0-9]+@example\.invalid$/);
+        return { status: 200, body: [{ isSuccess: true, errors: [], outputValues: { output: { Id: CONTACT_ID } } }] };
+      } },
+    { match: (method, path) => method === 'GET' && path.includes('FROM User WHERE ContactId'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/query?'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+  ]);
+  let invoked = false;
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if (method === 'POST' && path === route) invoked = true;
+    if (method === 'DELETE') {
+      deleted.add(path);
+      harness.calls.push({ method, path, body });
+      return { status: 204, ok: true, body: null };
+    }
+    if (method === 'GET' && path.endsWith(`/sobjects/Contact/${CONTACT_ID}`)) {
+      if (deleted.has(path)) return { status: 404, ok: false, body: { errorCode: 'NOT_FOUND' } };
+      return { status: 200, ok: true, body: invoked
+        ? { Id: CONTACT_ID, LastName: marker, Email: postedEmail }
+        : { Id: CONTACT_ID, LastName: marker, Email: 'placeholder@example.invalid' } };
+    }
+    return harness.request(path, method, body);
+  };
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'apex-sobject-shape', ownerUserId: USER_ID, request, build: harness.build,
+  });
+  expect(outcome.status).toBe(200);
+  expect(outcome.contextSchema).toMatchObject({ verified: true, effectField: 'Email', userClean: true, object: 'Contact' });
+  expect(outcome.cleanupError).toBeUndefined();
+  expect(harness.calls.some((call) => call.method === 'DELETE' && call.path.endsWith(`/sobjects/Contact/${CONTACT_ID}`))).toBe(true);
+});
+
+test('sobject-shape without a landed effect stays unverified', async () => {
+  const route = apex('SDO_Service_BotsUpdateEmail');
+  const deleted = new Set<string>();
+  let marker = '';
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'objContact', type: 'SOBJECT', required: true, sObjectType: 'Contact' },
+        { name: 'value', type: 'STRING', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/Contact/describe'),
+      respond: () => describeFor('Contact', [textField('LastName')]) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/Contact'),
+      respond: (_m, _p, body) => {
+        marker = body.LastName;
+        return { status: 201, body: { id: CONTACT_ID } };
+      } },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: () => ({ status: 200, body: ACCEPTED }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM User WHERE ContactId'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/query?'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+  ]);
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if (method === 'DELETE') {
+      deleted.add(path);
+      harness.calls.push({ method, path, body });
+      return { status: 204, ok: true, body: null };
+    }
+    if (method === 'GET' && path.endsWith(`/sobjects/Contact/${CONTACT_ID}`)) {
+      if (deleted.has(path)) return { status: 404, ok: false, body: { errorCode: 'NOT_FOUND' } };
+      return { status: 200, ok: true, body: { Id: CONTACT_ID, LastName: marker, Email: 'placeholder@example.invalid' } };
+    }
+    return harness.request(path, method, body);
+  };
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'apex-sobject-shape', ownerUserId: USER_ID, request, build: harness.build,
+  });
+  expect(outcome.status).toBe(200);
+  expect(outcome.contextSchema).toMatchObject({ verified: false });
+  expect(outcome.cleanupError).toBeUndefined();
+});
+
+test('sobject-shape reclaims queue-routed fixtures before invoke', async () => {
+  const route = apex('SDO_Service_BotsUpdateCaseSubject');
+  let marker = '';
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'objCase', type: 'SOBJECT', required: true, sObjectType: 'Case' },
+        { name: 'value', type: 'STRING', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/Case/describe'),
+      respond: () => describeFor('Case', [textField('Subject')]) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/Case'),
+      respond: (_m, _p, body) => {
+        marker = body.Subject;
+        return { status: 201, body: { id: CASE_ID } };
+      } },
+    { match: (method) => method === 'PATCH',
+      respond: () => ({ status: 204, body: null }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: () => ({ status: 200, body: ACCEPTED }) },
+    { match: (method, path) => method === 'GET' && path.includes('/query?'),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+  ]);
+  let ownerId = QUEUE_ID;
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if (method === 'PATCH' && path.endsWith(`/sobjects/Case/${CASE_ID}`) && typeof body?.OwnerId === 'string') {
+      ownerId = body.OwnerId;
+      return harness.request(path, method, body);
+    }
+    if (method === 'GET' && path.endsWith(`/sobjects/Case/${CASE_ID}`)) {
+      return { status: 200, ok: true, body: { Id: CASE_ID, Subject: marker, OwnerId: ownerId, CreatedById: USER_ID } };
+    }
+    return harness.request(path, method, body);
+  };
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'apex-sobject-shape', ownerUserId: USER_ID, request, build: harness.build,
+  });
+  const patches = harness.calls.filter((call) => call.method === 'PATCH');
+  expect(patches).toHaveLength(1);
+  expect(patches[0].body).toEqual({ OwnerId: USER_ID });
+  expect(outcome.status).toBe(200);
+  expect(outcome.body.errorCode ?? null).toBeNull();
+});
+
+test('sobject-shape refuses callout contracts and bad shapes before any fixture', async () => {
+  const callout = apex('pi__CreateListMembership');
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === callout,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'businessUnitId', type: 'STRING', required: true },
+        { name: 'namedCredential', type: 'STRING', required: true },
+      ] } }) },
+  ]);
+  const refused = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route: callout, family: 'apex-sobject-shape', request: harness.request, build: harness.build,
+  });
+  expect(refused.status).toBe(422);
+  expect(refused.body.errorCode).toBe('SKIPPED_STANDARD_APEX_SOBJECT_SHAPE_UNOWNABLE');
+  expect(harness.calls.some((call) => call.method === 'POST')).toBe(false);
+
+  const noshape = apex('SomethingElse');
+  const harness2 = scripted([
+    { match: (method, path) => method === 'GET' && path === noshape,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'record', type: 'SOBJECT', required: true },
+      ] } }) },
+  ]);
+  const missed = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route: noshape, family: 'apex-sobject-shape', request: harness2.request, build: harness2.build,
+  });
+  expect(missed.status).toBe(422);
+  expect(missed.body.errorCode).toBe('SKIPPED_STANDARD_APEX_SOBJECT_SHAPE_INPUT_UNRESOLVED');
+  expect(harness2.calls.some((call) => call.method === 'POST')).toBe(false);
+});
+
+const PURE_CLASS_BODY = `public with sharing class SDO_Service_ConvertToStringCollection {
+  @invocableMethod(label='Convert')
+  public static List<Response> execute(List<Request> requests) {
+    return new List<Response>();
+  }
+}`;
+
+test('scalar-pure invokes screened bodies and requires answered outputs', async () => {
+  const route = apex('SDO_Service_ConvertToStringCollection');
+  const posts: any[] = [];
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'delimiter', type: 'STRING', required: true },
+        { name: 'initialString', type: 'STRING', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM ApexClass'),
+      respond: () => ({ status: 200, body: { records: [{ Body: PURE_CLASS_BODY }] } }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: (_m, _p, body) => {
+        posts.push(body);
+        return { status: 200, body: [{ isSuccess: true, errors: [], outputValues: { stringCollection: ['a', 'b'] } }] };
+      } },
+  ]);
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route, family: 'apex-scalar-pure', request: harness.request, build: harness.build,
+  });
+  expect(posts[0].inputs[0].delimiter).toMatch(/^AS probe /);
+  expect(outcome.status).toBe(200);
+  expect(outcome.contextSchema).toMatchObject({ verified: true, outputs: ['stringCollection'] });
+  expect(outcome.cleanupError).toBeUndefined();
+  expect(harness.calls.some((call) => call.path.includes('/sobjects/'))).toBe(false);
+});
+
+test('scalar-pure refuses every screened effect class without invoking', async () => {
+  const bodies = [
+    ['update toUpdate;', 'SKIPPED_STANDARD_APEX_SCALAR_PURE_EFFECT_DML_UNOWNABLE'],
+    ['Http h = new Http();', 'SKIPPED_STANDARD_APEX_SCALAR_PURE_EFFECT_CALLOUT_UNOWNABLE'],
+    ['Messaging.sendEmail(m);', 'SKIPPED_STANDARD_APEX_SCALAR_PURE_EFFECT_SEND_UNOWNABLE'],
+    ['System.enqueueJob(q);', 'SKIPPED_STANDARD_APEX_SCALAR_PURE_EFFECT_ASYNC_UNOWNABLE'],
+    ["/* This file is generated and isn't the actual source code */", 'SKIPPED_STANDARD_APEX_SCALAR_PURE_BODY_UNVERIFIABLE'],
+  ] as const;
+  for (const [snippet, code] of bodies) {
+    const route = apex('SomeAction');
+    const harness = scripted([
+      { match: (method, path) => method === 'GET' && path === route,
+        respond: () => ({ status: 200, body: { inputs: [{ name: 'value', type: 'STRING', required: true }] } }) },
+      { match: (method, path) => method === 'GET' && path.includes('FROM ApexClass'),
+        respond: () => ({ status: 200, body: { records: [{ Body: `public class C { @InvocableMethod public static void m() { ${snippet} } }` }] } }) },
+    ]);
+    const outcome = await invokeSkippedStandardWithOwnedContext({
+      root: ROOT, route, family: 'apex-scalar-pure', request: harness.request, build: harness.build,
+    });
+    expect(outcome.status).toBe(422);
+    expect(outcome.body.errorCode).toBe(code);
+    expect(harness.calls.some((call) => call.method === 'POST' && call.path === route)).toBe(false);
+  }
+});
+
+test('scalar-pure stays unverified on empty or nested-flagged outputs', async () => {
+  for (const outputValues of [{}, { isSuccess: false }]) {
+    const route = apex('SDO_Service_ConvertToStringCollection');
+    const harness = scripted([
+      { match: (method, path) => method === 'GET' && path === route,
+        respond: () => ({ status: 200, body: { inputs: [{ name: 'delimiter', type: 'STRING', required: true }] } }) },
+      { match: (method, path) => method === 'GET' && path.includes('FROM ApexClass'),
+        respond: () => ({ status: 200, body: { records: [{ Body: PURE_CLASS_BODY }] } }) },
+      { match: (method, path) => method === 'POST' && path === route,
+        respond: () => ({ status: 200, body: [{ isSuccess: true, errors: [], outputValues }] }) },
+    ]);
+    const outcome = await invokeSkippedStandardWithOwnedContext({
+      root: ROOT, route, family: 'apex-scalar-pure', request: harness.request, build: harness.build,
+    });
+    expect(outcome.status).toBe(200);
+    expect(outcome.contextSchema).toMatchObject({ verified: false });
+  }
+});
+
+test('r7 builder version stays above every taken version', () => {
+  expect(SKIPPED_STANDARD_BUILDER_VERSION).toBeGreaterThan(137);
+  expect(SKIPPED_STANDARD_BUILDER_VERSION).toBeGreaterThan(140);
+  expect(SKIPPED_STANDARD_BUILDER_VERSION).toBeGreaterThan(141);
+});
+
+// ---------------------------------------------------------------------------
+// ServiceAppointment engine completion + scheduling-substrate terminal.
+// ---------------------------------------------------------------------------
+
+const SA_ID = '08p000000000001EAA';
+const WO_ID = '0WO000000000001EAA';
+const TERR_ID = '0Hh000000000001EAA';
+const TERR_FALLBACK_ID = '0Hh000000000002EAA';
+const WT_ID = '08q000000000001EAA';
+const POLICY_ID = 'a3M000000000001EAA';
+const FSL_RES_ID = '0Hn000000000001EAA';
+
+const refField = (name: string, referenceTo: string[]): Record<string, any> =>
+  ({ name, type: 'reference', createable: true, filterable: true, nillable: true, referenceTo });
+const dtField = (name: string): Record<string, any> =>
+  ({ name, type: 'datetime', createable: true, filterable: true, nillable: true });
+const numField = (name: string): Record<string, any> =>
+  ({ name, type: 'double', createable: true, filterable: true, nillable: true });
+
+const SA_DESCRIBE = () => describeFor('ServiceAppointment', [
+  textField('Subject'), refField('ParentRecordId', ['WorkOrder']), refField('ServiceTerritoryId', ['ServiceTerritory']),
+  refField('WorkTypeId', ['WorkType']), numField('Duration'), dtField('EarliestStartTime'), dtField('DueDate'),
+]);
+
+const NATIVE_SCHEDULE_REFUSAL = [{ actionName: 'scheduleServiceAppointment', isSuccess: false,
+  errors: [{ statusCode: 'UNKNOWN_EXCEPTION', message: 'unable to schedule service appointment', fields: [] }],
+  outputValues: null }];
+
+function scheduleHarness(options: {
+  stmRows: Array<Record<string, any>>;
+  territoryRows: Array<Record<string, any>>;
+  worktypeRows: Array<Record<string, any>>;
+  invokeBody: any;
+  invokeStatus?: number;
+}) {
+  const route = std('scheduleServiceAppointment');
+  const posts: Array<{ path: string; body: any }> = [];
+  const markers: Record<string, string> = {};
+  const deleted = new Set<string>();
+  const harness = scripted([
+    { match: (method, path) => method === 'GET' && path === route,
+      respond: () => ({ status: 200, body: { inputs: [
+        { name: 'serviceAppointmentId', type: 'ID', required: true },
+        { name: 'schedulingPolicyId', type: 'ID', required: true },
+      ] } }) },
+    { match: (method, path) => method === 'POST' && path === route,
+      respond: () => ({ status: options.invokeStatus ?? 200, body: options.invokeBody }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM FSL__Scheduling_Policy__c'),
+      respond: () => ({ status: 200, body: { records: [{ Id: POLICY_ID }] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM ServiceResource'),
+      respond: () => ({ status: 200, body: { records: [{ Id: FSL_RES_ID }] } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/WorkOrder/describe'),
+      respond: () => describeFor('WorkOrder', [textField('Subject')]) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/WorkOrder'),
+      respond: (_m, _p, body) => ({ status: 201, body: { id: WO_ID } }) },
+    { match: (method, path) => method === 'GET' && path.includes('/sobjects/ServiceAppointment/describe'),
+      respond: () => SA_DESCRIBE() },
+    { match: (method, path) => method === 'GET' && path.includes('FROM ServiceTerritoryMember'),
+      respond: () => ({ status: 200, body: { records: options.stmRows } }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM ServiceTerritory LIMIT'),
+      respond: () => ({ status: 200, body: { records: options.territoryRows } }) },
+    { match: (method, path) => method === 'GET' && path.includes('FROM WorkType'),
+      respond: () => ({ status: 200, body: { records: options.worktypeRows } }) },
+    { match: (method, path) => method === 'POST' && path.endsWith('/sobjects/ServiceAppointment'),
+      respond: () => ({ status: 201, body: { id: SA_ID } }) },
+    { match: (method, path) => method === 'GET' && path.includes('WHERE Subject = '),
+      respond: () => ({ status: 200, body: { records: [] } }) },
+  ]);
+  const request = async (path: string, method = 'GET', body?: any) => {
+    if ((method === 'POST' && (path.endsWith('/sobjects/WorkOrder') || path.endsWith('/sobjects/ServiceAppointment'))) ||
+      (method === 'POST' && path === route)) {
+      posts.push({ path, body });
+    }
+    if (method === 'POST' && path.endsWith('/sobjects/WorkOrder')) markers.WorkOrder = body?.Subject;
+    if (method === 'POST' && path.endsWith('/sobjects/ServiceAppointment')) markers.ServiceAppointment = body?.Subject;
+    if (method === 'DELETE') {
+      deleted.add(path);
+      harness.calls.push({ method, path, body });
+      return { status: 204, ok: true, body: null };
+    }
+    for (const [object, id] of [['WorkOrder', WO_ID], ['ServiceAppointment', SA_ID]] as const) {
+      if (method === 'GET' && path.endsWith(`/sobjects/${object}/${id}`)) {
+        return deleted.has(`${ROOT}/sobjects/${object}/${id}`) || deleted.has(path)
+          ? { status: 404, ok: false, body: { errorCode: 'NOT_FOUND' } }
+          : { status: 200, ok: true, body: { Id: id, Subject: markers[object] } };
+      }
+    }
+    return harness.request(path, method, body);
+  };
+  return { route, posts, request, build: harness.build };
+}
+
+test('scheduling refusal on a grounded appointment parks with the substrate terminal', async () => {
+  const harness = scheduleHarness({
+    stmRows: [{ ServiceTerritoryId: TERR_ID }],
+    territoryRows: [],
+    worktypeRows: [{ Id: WT_ID, EstimatedDuration: 2, DurationType: 'Hours' }],
+    invokeBody: NATIVE_SCHEDULE_REFUSAL,
+  });
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route: harness.route, family: 'service-appointment', ownerUserId: USER_ID,
+    request: harness.request, build: harness.build,
+  });
+  const saPost = harness.posts.find((post) => post.path.endsWith('/sobjects/ServiceAppointment'))?.body;
+  expect(saPost.ServiceTerritoryId).toBe(TERR_ID);
+  expect(saPost.WorkTypeId).toBe(WT_ID);
+  expect(saPost.Duration).toBe(120);
+  expect(Date.parse(saPost.EarliestStartTime)).toBeGreaterThan(Date.now());
+  expect(Date.parse(saPost.DueDate)).toBeGreaterThan(Date.parse(saPost.EarliestStartTime));
+  expect(saPost.ParentRecordId).toBe(WO_ID);
+  const invokePost = harness.posts.find((post) => post.path === harness.route)?.body;
+  expect(invokePost.inputs[0]).toEqual({ serviceAppointmentId: SA_ID, schedulingPolicyId: POLICY_ID });
+  expect(outcome.status).toBe(422);
+  expect(outcome.body.errorCode).toBe('SKIPPED_STANDARD_SERVICE_APPOINTMENT_SCHEDULING_SUBSTRATE_UNAVAILABLE');
+  expect(outcome.body.setupRequirement).toContain('schedulable FSL capacity');
+  expect(outcome.cleanupError).toBeUndefined();
+});
+
+test('scheduling refusal without grounding passes through unmasked', async () => {
+  const harness = scheduleHarness({
+    stmRows: [],
+    territoryRows: [],
+    worktypeRows: [],
+    invokeBody: NATIVE_SCHEDULE_REFUSAL,
+  });
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route: harness.route, family: 'service-appointment',
+    request: harness.request, build: harness.build,
+  });
+  const saPost = harness.posts.find((post) => post.path.endsWith('/sobjects/ServiceAppointment'))?.body;
+  expect(saPost.ServiceTerritoryId).toBeUndefined();
+  expect(saPost.Duration).toBe(60);
+  expect(outcome.status).toBe(200);
+  expect(Array.isArray(outcome.body)).toBe(true);
+  expect(outcome.cleanupError).toBeUndefined();
+});
+
+test('minutes estimates bind as-is with the fallback territory on the success path', async () => {
+  const harness = scheduleHarness({
+    stmRows: [],
+    territoryRows: [{ Id: TERR_FALLBACK_ID }],
+    worktypeRows: [{ Id: WT_ID, EstimatedDuration: 45, DurationType: 'Minutes' }],
+    invokeBody: ACCEPTED,
+  });
+  const outcome = await invokeSkippedStandardWithOwnedContext({
+    root: ROOT, route: harness.route, family: 'service-appointment',
+    request: harness.request, build: harness.build,
+  });
+  const saPost = harness.posts.find((post) => post.path.endsWith('/sobjects/ServiceAppointment'))?.body;
+  expect(saPost.ServiceTerritoryId).toBe(TERR_FALLBACK_ID);
+  expect(saPost.Duration).toBe(45);
+  expect(outcome.status).toBe(200);
+  expect(outcome.contextSchema).toMatchObject({ verified: true });
+  expect(outcome.cleanupError).toBeUndefined();
 });
 
 test('notification binds channel, template, and owned recipient end user', () => {

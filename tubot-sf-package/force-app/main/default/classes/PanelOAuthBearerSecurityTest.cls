@@ -9,17 +9,12 @@ private class PanelOAuthBearerSecurityTest {
             String endpoint = req.getEndpoint();
             if (endpoint.contains('/api/oauth/token')) {
                 return response(200, '{"access_token":"mock_pnl_at_12345","token_type":"Bearer",' +
-                    '"expires_in":2592000,"refresh_token":"mock_pnl_rt_12345",' +
+                    '"expires_in":900,"refresh_token":"mock_pnl_rt_12345",' +
                     '"team_id":"team_mock_tenant","user_id":"usr_mock_123"}');
             }
-            if (endpoint.contains('/api/v1/team/role')) {
-                return response(200, '{"teamName":"Acme Multi-Tenant Corp",' +
-                    '"role":{"name":"edit-salesforce-settings","isSystemRole":true},' +
-                    '"permissions":["access_dashboard","edit_salesforce_settings"]}');
-            }
-            if (endpoint.contains('/api/v1/user')) {
-                return response(200, '{"user":{"id":"usr_mock_123","email":"john@example.com",' +
-                    '"firstName":"John","lastName":"Doe"}}');
+            if (endpoint.contains('/api/oauth/userinfo')) {
+                return response(200, '{"sub":"usr_mock_123","email":"john@example.com",' +
+                    '"team_id":"team_mock_tenant","team_name":"Acme Multi-Tenant Corp"}');
             }
             return response(200, '{"success":true,"code":"pnl_code_mock_poll_123"}');
         }
@@ -53,7 +48,7 @@ private class PanelOAuthBearerSecurityTest {
         Test.stopTest();
         }
 
-        System.assertEquals(4, mock.seen.size(), 'Poll, token, role, and user callouts must all fire.');
+        System.assertEquals(3, mock.seen.size(), 'Poll, token, and verified userinfo callouts must all fire.');
         for (HttpRequest req : mock.seen) {
             assertBearerBehavior(req);
         }
@@ -61,7 +56,7 @@ private class PanelOAuthBearerSecurityTest {
 
     private static void assertBearerBehavior(HttpRequest req) {
         String endpoint = req.getEndpoint();
-        if (endpoint.contains('/api/v1/team/role') || endpoint.contains('/api/v1/user')) {
+        if (endpoint.contains('/api/oauth/userinfo')) {
             System.assertEquals('Bearer mock_pnl_at_12345', req.getHeader('Authorization'),
                 'Profile callouts must carry the freshly minted runtime bearer: ' + endpoint);
         } else {

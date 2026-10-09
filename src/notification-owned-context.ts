@@ -191,6 +191,7 @@ export async function invokeNotificationWithContext(input: NotificationLifecycle
   let verified = false;
   let ownedId: string | undefined;
   let fallbackFixture: string | undefined;
+  let fallbackSkipped: string | undefined;
   let recipientField: string | undefined;
   let recordField: string | undefined;
   let successMessage: string | null = null;
@@ -236,17 +237,26 @@ export async function invokeNotificationWithContext(input: NotificationLifecycle
       if (!accepted && notificationRecordIdRejected(invoked.status, invoked.body)) {
         // The notification type targets a different record shape (blind-verified:
         // high_priority_case accepts a Case). Retry once with a Case fixture.
+        // Each gate records its outcome: a skipped retry leaves explicit
+        // evidence instead of silently preserving the first rejection.
+        fallbackSkipped = "case-schema";
         const caseSchema = await request(`${root}/sobjects/Case/describe`);
         if (caseSchema.ok && record(caseSchema.body) && caseSchema.body.createable === true &&
           caseSchema.body.deletable === true && caseSchema.body.queryable === true && Array.isArray(caseSchema.body.fields)) {
-          const caseBuilt = await input.build("Case", marker, { Subject: marker });
-          if (!("failure" in caseBuilt) && caseBuilt.values.Subject === marker) {
-            const caseCreated = await request(`${root}/sobjects/Case`, "POST", caseBuilt.values);
+          // The Case retry bypasses the fixture builder: describe marks
+          // BusinessHoursId required-without-default (build refuses), but
+          // the server defaults it (bare-Subject insert verified live).
+          // The marker readback below still guards ownership.
+          fallbackSkipped = "case-create";
+          {
+            const caseCreated = await request(`${root}/sobjects/Case`, "POST", { Subject: marker, OwnerId: input.recipientUserId });
             const caseId: unknown = caseCreated.body?.id ?? caseCreated.body?.Id;
             if (caseCreated.ok && identity(caseId)) {
               owned.push({ objectName: "Case", id: caseId, markerField: "Subject" });
+              fallbackSkipped = "case-readback";
               const caseActual = await request(`${root}/sobjects/Case/${caseId}`);
               if (caseActual.ok && caseActual.body?.Subject === marker) {
+                fallbackSkipped = undefined;
                 fallbackFixture = "Case";
                 invoked = await request(input.route, "POST",
                   { inputs: [{ [recipientField]: [input.recipientUserId], [recordField]: caseId }] });
@@ -269,6 +279,11 @@ export async function invokeNotificationWithContext(input: NotificationLifecycle
     verified = false;
   } finally {
     for (const entry of owned.slice().reverse()) {
+      const before = await request(`${root}/sobjects/${entry.objectName}/${entry.id}`);
+      if (before.ok && record(before.body) && before.body[entry.markerField] === marker &&
+          typeof before.body.OwnerId === "string" && before.body.OwnerId !== input.recipientUserId) {
+        await request(`${root}/sobjects/${entry.objectName}/${entry.id}`, "PATCH", { OwnerId: input.recipientUserId });
+      }
       await request(`${root}/sobjects/${entry.objectName}/${entry.id}`, "DELETE");
       const check = await request(`${root}/sobjects/${entry.objectName}/${entry.id}`);
       if (check.status !== 404) {
@@ -288,6 +303,7 @@ export async function invokeNotificationWithContext(input: NotificationLifecycle
     marker, markerField: NOTIFICATION_FIXTURE_MARKER_FIELD,
     ownedRecordId: ownedId ?? null,
     ...(fallbackFixture ? { fallbackFixture } : {}),
+    ...(fallbackSkipped ? { fallbackSkipped } : {}),
     recipientField: recipientField ?? null, recordField: recordField ?? null,
     deliveryMessage: successMessage,
     verificationRecordIds: ownedId ? [ownedId] : [], ownedRecords: owned,

@@ -112,6 +112,9 @@ export async function invokeFlowScalarCreationContract(input: { root: string; ro
       for (const row of ownedRecords) {
         const path = root + '/sobjects/' + row.objectName + '/' + row.id, actual = await request(path);
         if (!actual.ok || actual.body?.[plan.markerField] !== marker) throw Error('Owned cleanup marker verification failed.');
+        if (identity(actual.body?.CreatedById) && identity(actual.body?.OwnerId) && actual.body.OwnerId !== actual.body.CreatedById) {
+          await request(path, 'PATCH', { OwnerId: actual.body.CreatedById });
+        }
         const removed = await request(path, 'DELETE');
         if (!removed.ok || (await request(path)).status !== 404) throw Error('Owned cleanup could not be verified.');
       }

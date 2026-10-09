@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RemoteSiteSetting xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>DEPRECATED inactive: Axiom telemetry removed; retained because 2GP cannot delete released remote sites. No code references this.</description>
+    <disableProtocolSecurity>false</disableProtocolSecurity>
+    <isActive>false</isActive>
+    <url>https://api.axiom.co</url>
+</RemoteSiteSetting>

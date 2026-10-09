@@ -12,11 +12,12 @@
  *       --channel <DeveloperName> [--flow t2]
  *       [--fallback-queue AI_Bot_Holding_Queue_100] [--check-only]
  */
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const STAGING = join(import.meta.dir, "restored-flows"); // project context
-const TMP = join(STAGING, ".tmp-channel");
+const STAGING = join(dirname(fileURLToPath(import.meta.url)), "restored-flows"); // project context
 
 function usage(exit = 1): never {
   console.error(
@@ -30,25 +31,15 @@ function flagValue(name: string): string | null {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : null;
 }
-const targetOrg = flagValue("--target-org");
-const channel = flagValue("--channel");
-if (!targetOrg || !channel) usage();
+const targetOrg: string = flagValue("--target-org") ?? usage();
+const channel: string = flagValue("--channel") ?? usage();
 const flow = flagValue("--flow") ?? "t2";
 const fallbackQueue = flagValue("--fallback-queue") ?? "AI_Bot_Holding_Queue_100";
 const checkOnly = args.includes("--check-only");
 
 async function runSf(cmdArgs: string[]) {
-  const proc = Bun.spawn(["sf", ...cmdArgs], {
-    cwd: STAGING,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { out, err, code };
+  const done = spawnSync("sf", cmdArgs, { cwd: STAGING, encoding: "utf8" });
+  return { out: done.stdout ?? "", err: done.stderr ?? "", code: done.status ?? 1 };
 }
 
 /** Retrieve one channel in metadata format; returns path to the XML. */

@@ -1,15 +1,30 @@
 {
   "packageDirectories": [
     {
-      "versionName": "Version 1.7",
-      "versionNumber": "1.7.0.NEXT",
+      "versionName": "Version 1.9",
+      "versionNumber": "1.9.0.NEXT",
       "ancestorVersion": "HIGHEST",
       "definitionFile": "config/project-scratch-def.json",
       "path": "force-app",
       "default": true,
       "package": "TuBot",
       "postInstallScript": "PackagePostInstallHandler",
-      "versionDescription": "Ephemeral Salesforce policy authorization in Simple Setup with a manual Setup alternative"
+      "versionDescription": "Verified Salesforce settings authorization and rotating Panel sessions"
+    },
+    {
+      "versionName": "ver 0.1",
+      "versionNumber": "0.1.0.NEXT",
+      "definitionFile": "config/extra-scratch-def.json",
+      "path": "extra-app",
+      "default": false,
+      "package": "tubot-sf-extra",
+      "dependencies": [
+        {
+          "package": "TuBot@1.10.0-1"
+        }
+      ],
+      "postInstallScript": "TubotExtraPostInstallHandler",
+      "versionDescription": "Internal messaging session escalation, Omni-Channel routing, and test bubbles"
     }
   ],
   "name": "salesforce-hosted-mcp-package",
@@ -68,6 +83,21 @@
     "TuBot@1.4.0-5": "04tg5000000FCldAAG",
     "TuBot@1.4.0-6": "04tg5000000FCqTAAW",
     "TuBot@1.5.0-5": "04tg5000000FG1FAAW",
-    "TuBot@1.7.0-1": "04tg5000000FG4TAAW"
+    "TuBot@1.7.0-1": "04tg5000000FG4TAAW",
+    "TuBot@1.8.0-1": "04tg5000000FGR3AAO",
+    "TuBot@1.9.0-3": "04tg5000000FGcLAAW",
+    "TuBot@1.9.0-4": "04tg5000000FGndAAG",
+    "TuBot@1.9.0-5": "04tg5000000FGqrAAG",
+    "TuBot@1.10.0-1": "04tg5000000FIW5AAO",
+    "tubot-sf-extra": "0Hog50000001PlxCAE",
+    "tubot-sf-extra@0.1.0-1": "04tg5000000FJ0jAAG",
+    "tubot-sf-extra@0.1.0-2": "04tg5000000FJ2LAAW",
+    "tubot-sf-extra@0.1.0-3": "04tg5000000FJ3xAAG",
+    "tubot-sf-extra@0.1.0-4": "04tg5000000FJ5ZAAW",
+    "TuBot@1.10.0-2": "04tg5000000FJ2MAAW",
+    "TuBot@1.10.0-3": "04tg5000000FJDdAAO",
+    "TuBot@1.10.0-4": "04tg5000000FJFFAA4",
+    "TuBot@1.10.0-5": "04tg5000000FJITAA4",
+    "TuBot@1.10.0-6": "04tg5000000FJK5AAO"
   }
 }

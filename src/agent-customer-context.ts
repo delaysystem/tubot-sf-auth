@@ -122,27 +122,36 @@ export function agentCustomerShape(descriptorInputs: unknown): AgentCustomerShap
 /** Bounded FlowDefinitionView list scoping namespace producer discovery. */
 export function agentProducerListQuery(namespace: string): string | null {
   if (!FIELD_NAME.test(namespace)) return null;
-  return `SELECT ApiName FROM FlowDefinitionView WHERE ApiName LIKE '${namespace}%' LIMIT ${PRODUCER_LIST_LIMIT}`;
+  // ApiName is bare in the live view; the namespace lives in NamespacePrefix.
+  return `SELECT ApiName FROM FlowDefinitionView WHERE NamespacePrefix='${namespace}' LIMIT ${PRODUCER_LIST_LIMIT}`;
 }
 
 /** Candidate producer flow API names from a view-list body (validated, capped). */
-export function agentProducerCandidates(body: unknown): string[] {
+export function agentProducerCandidates(body: unknown, namespace?: string): string[] {
   if (!record(body) || !Array.isArray(body.records)) return [];
+  const qualified = (name: string): string =>
+    typeof namespace === "string" && FIELD_NAME.test(namespace) && !name.includes("__") ? `${namespace}__${name}` : name;
   const names: string[] = [];
   for (const row of body.records.filter(record)) {
-    if (typeof row.ApiName === "string" && FLOW_NAME.test(row.ApiName) && !names.includes(row.ApiName)) {
-      names.push(row.ApiName);
+    if (typeof row.ApiName !== "string") continue;
+    const candidate = qualified(row.ApiName);
+    if (FLOW_NAME.test(candidate) && !names.includes(candidate)) {
+      names.push(candidate);
       if (names.length >= PRODUCER_DESCRIBE_CAP) break;
     }
   }
   return names;
 }
 
-/** Producer customer identity from a producer invoke body (outputValues scan). */
-export function agentProducerIdentity(body: unknown): { customerId: string; customerType?: string } | null {
+/**
+ * Output entries from an invoke body. The Actions REST API returns
+ * outputValues as an OBJECT (name -> value); interview-style callers use
+ * an ARRAY of {name, value} entries. Both shapes collect here: the
+ * array-only scan silently missed every REST object response.
+ */
+export function agentOutputEntries(body: unknown): Value[] {
   const outputs: Value[] = [];
   const visit = (node: unknown): void => {
-    if (outputs.length > 0) return;
     if (Array.isArray(node)) {
       for (const item of node) visit(item);
       return;
@@ -150,13 +159,20 @@ export function agentProducerIdentity(body: unknown): { customerId: string; cust
     if (!record(node)) return;
     if (Array.isArray(node.outputValues)) {
       for (const entry of node.outputValues.filter(record)) outputs.push(entry);
-      return;
+    } else if (record(node.outputValues)) {
+      for (const [name, value] of Object.entries(node.outputValues)) outputs.push({ name, value });
     }
     for (const key of ["output", "result", "body", "results"]) {
       if (node[key] !== undefined && node[key] !== null) visit(node[key]);
     }
   };
   visit(body);
+  return outputs;
+}
+
+/** Producer customer identity from a producer invoke body (outputValues scan). */
+export function agentProducerIdentity(body: unknown): { customerId: string; customerType?: string } | null {
+  const outputs = agentOutputEntries(body);
   const valueOf = (name: string): unknown =>
     outputs.find((entry) => String(entry.name ?? entry.key ?? "").toLowerCase() === name)?.value;
   const customerId = valueOf("customerid");
@@ -167,6 +183,29 @@ export function agentProducerIdentity(body: unknown): { customerId: string; cust
     : { customerId };
 }
 
+const INTENT_INPUT = /intent/i;
+const INTENT_ID_OUTPUT = /(.+?)(Id|ID|Key)$/;
+
+/** Intent-grounded agent shape: an optional STRING intent input plus a non-Flow id-suffix output. */
+export type AgentIntentShape = { intentInput: string; idOutput: string; objectName: string };
+
+export const FLOW_AGENT_CONTEXT_UNBINDABLE = "FLOW_AGENT_CONTEXT_UNBINDABLE";
+
+/** Intent shape from a descriptor: optional STRING *intent* input + non-Flow id-suffix output. Null when absent. */
+export function agentIntentShape(inputs: unknown, outputs: unknown): AgentIntentShape | null {
+  const inList = Array.isArray(inputs) ? inputs.filter(record) : [];
+  const outList = Array.isArray(outputs) ? outputs.filter(record) : [];
+  const intentInput = inList.find((field) => typeof field.name === "string" && FIELD_NAME.test(field.name) &&
+    INTENT_INPUT.test(field.name) && String(field.type ?? "").toUpperCase() === "STRING" && field.required !== true);
+  if (!intentInput || typeof intentInput.name !== "string") return null;
+  const idOutput = outList.find((field) => typeof field.name === "string" && FIELD_NAME.test(field.name) &&
+    INTENT_ID_OUTPUT.test(field.name) && !/^flow__/i.test(field.name));
+  if (!idOutput || typeof idOutput.name !== "string") return null;
+  const stem = (idOutput.name as string).replace(/(Id|ID|Key)$/, "");
+  if (!stem) return null;
+  return { intentInput: intentInput.name as string, idOutput: idOutput.name as string, objectName: stem[0].toUpperCase() + stem.slice(1) };
+}
+
 export type AgentCustomerContextInput = {
   root: string;
   route: string;
@@ -174,6 +213,48 @@ export type AgentCustomerContextInput = {
   request: (path: string, method?: string, body?: any) => Promise<Result>;
   build: (name: string, marker: string, values: Value) => Promise<{ values: Value } | { failure: Result }>;
 };
+
+/**
+ * Intent-grounded agent invoke: ground the optional intent input in one
+ * live object name, POST, require the id output, and blind-verify the
+ * matched id against the live object. Null when the shape cannot ground
+ * (caller fails honest).
+ */
+export async function invokeAgentFlowWithIntent(input: AgentCustomerContextInput & { shape: AgentIntentShape }): Promise<{ result: Result; verified: boolean } | null> {
+  const { root, request } = input;
+  if (!root.startsWith("/services/data/")) return null;
+  const entity = await request(`${root}/query?q=${encodeURIComponent(`SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName='${input.shape.objectName}' LIMIT 1`)}`);
+  const entityRows = entity.ok && record(entity.body) && Array.isArray(entity.body.records) ? entity.body.records.filter(record) : [];
+  if (!entity.ok || entityRows.length === 0) return null;
+  const described = await request(`${root}/sobjects/${input.shape.objectName}/describe`);
+  const fields = described.ok && record(described.body) && Array.isArray(described.body.fields) ? described.body.fields.filter(record) : [];
+  if (!described.ok || fields.length === 0) return null;
+  const nameField = fields.find((field) => field.nameField === true && field.type === "string" && typeof field.name === "string")?.name as string | undefined
+    ?? (fields.some((field) => field.name === "Name") ? "Name" : null);
+  if (!nameField) return null;
+  const lookup = await request(`${root}/query?q=${encodeURIComponent(`SELECT ${nameField} FROM ${input.shape.objectName} LIMIT 1`)}`);
+  const rows = lookup.ok && record(lookup.body) && Array.isArray(lookup.body.records) ? lookup.body.records.filter(record) : [];
+  const intent = rows[0]?.[nameField];
+  if (typeof intent !== "string" || intent.length === 0) return null;
+  const invoked = await request(input.route, "POST", { inputs: [{ [input.shape.intentInput]: intent }] });
+  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+  if (!nativeAccepted(invoked)) return { result: invoked, verified: false };
+  const outputs = agentOutputEntries(invoked.body);
+  const idValue = outputs.find((entry) => String(entry.name ?? entry.key ?? "").toLowerCase() === input.shape.idOutput.toLowerCase())?.value;
+  if (typeof idValue !== "string" || idValue.length === 0) {
+    return { result: fail(FLOW_AGENT_CONTEXT_UNBINDABLE,
+      `The agent flow accepted the grounded intent but returned no ${input.shape.idOutput}; ambient agent-conversation context is API-unbindable.`), verified: false };
+  }
+  // Blind verification: the matched id must resolve to a live row of the
+  // declared object. Non-Salesforce key shapes pass through unverified.
+  if (!identity(idValue)) return { result: invoked, verified: false };
+  const check = await request(`${root}/sobjects/${input.shape.objectName}/${idValue}`);
+  if (!check.ok || !record(check.body) || check.body.Id !== idValue) {
+    return { result: fail(FLOW_AGENT_CONTEXT_UNBINDABLE,
+      `The agent flow matched an unresolvable ${input.shape.idOutput}; ambient agent-conversation context is API-unbindable.`), verified: false };
+  }
+  return { result: invoked, verified: true };
+}
 
 export async function invokeAgentFlowWithProducerContext(input: AgentCustomerContextInput): Promise<{
   status: number; body: any; cleanupError?: string; contextSchema?: Value;
@@ -213,9 +294,18 @@ export async function invokeAgentFlowWithProducerContext(input: AgentCustomerCon
       if (!descriptor.ok) return descriptor;
       const shape = agentCustomerShape(record(descriptor.body) ? descriptor.body.inputs : undefined);
       if (!shape) {
-        return fail("FLOW_AGENT_PRODUCER_UNAVAILABLE",
-          "The live agent descriptor declares no customer-identity input, so the producer identity cannot bind.",
-          { setupRequirement: "An agent-flow descriptor declaring a customer-identity input for the producer identity." });
+        const intentShape = agentIntentShape(record(descriptor.body) ? descriptor.body.inputs : undefined,
+          record(descriptor.body) ? descriptor.body.outputs : undefined);
+        if (intentShape) {
+          const grounded = await invokeAgentFlowWithIntent({ ...input, shape: intentShape });
+          if (grounded) {
+            if (grounded.verified) verified = true;
+            return grounded.result;
+          }
+        }
+        return fail(FLOW_AGENT_CONTEXT_UNBINDABLE,
+          "The live agent descriptor declares no customer-identity input and no groundable intent shape; ambient agent-conversation context is API-unbindable.",
+          { setupRequirement: "An agent-flow descriptor declaring a customer-identity input, or a groundable intent shape." });
       }
       if (shape.unbindableInputs.length > 0) {
         return fail("FLOW_AGENT_CONVERSATION_REQUIRED",
@@ -233,7 +323,7 @@ export async function invokeAgentFlowWithProducerContext(input: AgentCustomerCon
       const listed = await request(`${root}/query?q=${encodeURIComponent(listQuery)}`);
       if (!listed.ok) return listed;
       let producerInput: string | null = null;
-      for (const candidate of agentProducerCandidates(listed.body)) {
+      for (const candidate of agentProducerCandidates(listed.body, namespace ?? undefined)) {
         const candidateRoute = `${root}/actions/custom/flow/${candidate}`;
         const described = await request(candidateRoute);
         if (!described.ok || !record(described.body)) continue;

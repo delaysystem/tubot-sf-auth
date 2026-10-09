@@ -101,98 +101,14 @@ private class SessionFieldsProvisioningServiceTest {
     }
 
     @isTest
-    static void testCreateSessionFieldsPipelineSuccess() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.createSessionFields('{}'); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testCreateSessionFieldsAutoCreatePermSets() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.createSessionFields('{}'); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testVerifySessionFieldsAccess() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.verifySessionFieldsAccess(null, null, null); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testGetSessionFieldsStatus() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.getSessionFieldsStatus(null, null); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testTubotSettingsCustomMetadata() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.getTubotSettings(); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testAddEscalateButtonToMessagingSessionPage() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.addEscalateButtonToMessagingSessionPage(null); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testGetEscalateButtonStatus() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.getEscalateButtonStatus(null); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testEscalateSessionRecordNotFound() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.escalateSessionRecord('{}'); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testMessagingChannelsAndOmniFlow() {
+    static void testMessagingChannels() {
         PanelAuthSupportService.managePermissionTestOverride = true;
         List<Map<String, Object>> channels;
-        Integer rejected = 0;
         User admin = [SELECT Id FROM User WHERE Id = :UserInfo.getUserId()];
         System.runAs(admin) {
             channels = SessionFieldsProvisioningService.getMessagingChannels();
         }
-        try { SessionFieldsProvisioningService.setChannelOmniFlow(null); }
-        catch (AuraHandledException expected) { rejected++; }
         System.assertNotEquals(null, channels, 'Authorized settings users can read messaging channels.');
-        System.assertEquals(1, rejected, 'Only the disabled Omni-Flow mutation must reject execution.');
-    }
-
-    @isTest
-    static void testSaveAndGetTubotSettings() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.saveTubotSettings('{}'); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
-    }
-
-    @isTest
-    static void testActivateOmniChannelSkillsAndCapacitySettings() {
-        Integer rejected = 0;
-        try { SessionFieldsProvisioningService.activateOmniChannelSkillsAndCapacitySettings(null); }
-        catch (AuraHandledException expected) { rejected++; }
-        System.assertEquals(1, rejected, 'Disabled package entry points must reject execution.');
     }
 
     @IsTest
