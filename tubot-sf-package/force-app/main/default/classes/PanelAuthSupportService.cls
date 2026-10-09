@@ -5,11 +5,10 @@ public with sharing class PanelAuthSupportService {
     public static final String EXTERNAL_AUTH_NAME = 'Panel_External_Credential';
     public static final String NAMED_AUTH_ALIAS = 'Panel_Named_Credential';
     public static final String PRINCIPAL_NAME = 'Panel_Principal';
+    private static final String SETTINGS_ADMIN_PERMISSION_SET = 'Panel_Settings_Admin_Access';
 
-    // Test-only simulation of the settings-admin grant. FeatureManagement
-    // ignores permission grants made inside test context, so authorized-path
-    // tests set this instead. Test.isRunningTest guard: unreachable outside
-    // test execution, production behavior unchanged.
+    // Test-only seam for existing Apex tests. Production authorization below
+    // checks the current user's actual assignment to the packaged permission set.
     @TestVisible
     private static Boolean managePermissionTestOverride;
 
@@ -103,9 +102,47 @@ public with sharing class PanelAuthSupportService {
         if (Test.isRunningTest() && managePermissionTestOverride != null) {
             return managePermissionTestOverride;
         }
-        String ns = getNamespacePrefix();
-        String qualified = String.isNotBlank(ns) ? ns + 'Manage_Tubot_API_Connections' : 'Manage_Tubot_API_Connections';
-        return FeatureManagement.checkPermission(qualified) || FeatureManagement.checkPermission('Manage_Tubot_API_Connections');
+        return hasSettingsAdminPermissionSetAssignment();
+    }
+
+    /**
+     * Returns true only for a user directly assigned the package's settings
+     * permission set. A matching custom permission granted by some other
+     * profile or permission set is not sufficient.
+     */
+    private static Boolean hasSettingsAdminPermissionSetAssignment() {
+        String className = PanelAuthSupportService.class.getName();
+        String namespace = className.contains('.') ? className.substringBefore('.') : null;
+        String qualifiedName = String.isBlank(namespace)
+            ? SETTINGS_ADMIN_PERMISSION_SET
+            : namespace + '__' + SETTINGS_ADMIN_PERMISSION_SET;
+
+        List<PermissionSet> candidates = [
+            SELECT Id, NamespacePrefix
+            FROM PermissionSet
+            WHERE Name = :SETTINGS_ADMIN_PERMISSION_SET OR Name = :qualifiedName
+            WITH SYSTEM_MODE
+        ];
+        Set<Id> packagePermissionSetIds = new Set<Id>();
+        for (PermissionSet candidate : candidates) {
+            Boolean isThisPackageSet = String.isBlank(namespace)
+                ? String.isBlank(candidate.NamespacePrefix)
+                : candidate.NamespacePrefix == namespace;
+            if (isThisPackageSet) {
+                packagePermissionSetIds.add(candidate.Id);
+            }
+        }
+        if (packagePermissionSetIds.isEmpty()) {
+            return false;
+        }
+
+        return [
+            SELECT COUNT()
+            FROM PermissionSetAssignment
+            WHERE AssigneeId = :UserInfo.getUserId()
+                AND PermissionSetId IN :packagePermissionSetIds
+            WITH SYSTEM_MODE
+        ] > 0;
     }
 
     public static void requireSettingsAdmin() {

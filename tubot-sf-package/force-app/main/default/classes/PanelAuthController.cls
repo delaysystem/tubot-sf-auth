@@ -4,6 +4,12 @@
  */
 public with sharing class PanelAuthController {
 
+    /** Lightweight fail-closed check used before the settings component loads any data. */
+    @AuraEnabled(cacheable=true)
+    public static Boolean hasPanelSettingsAccess() {
+        return PanelAuthSupportService.checkManageTubotPermission();
+    }
+
     /**
      * @description Checks current Panel OAuth connection and permission state.
      */

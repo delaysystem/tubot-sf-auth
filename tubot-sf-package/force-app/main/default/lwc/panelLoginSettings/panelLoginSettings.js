@@ -28,7 +28,10 @@ import getIntegrationCandidates from '@salesforce/apex/TubotSetupWizardControlle
 import assignApiPermissionSet from '@salesforce/apex/TubotSetupWizardController.assignApiPermissionSet';
 import getEcaSetupGuidance from '@salesforce/apex/TubotSetupWizardController.getEcaSetupGuidance';
 import runSimpleSetupStep from '@salesforce/apex/SimpleSetupController.runStep';
-import canManageApiConnections from '@salesforce/customPermission/Manage_Tubot_API_Connections';
+import initiateEcaAuthorization from '@salesforce/apex/SimpleSetupController.initiateEcaAuthorization';
+import pollEcaAuthorization from '@salesforce/apex/SimpleSetupController.pollEcaAuthorization';
+import checkEcaAuthorization from '@salesforce/apex/SimpleSetupController.checkEcaAuthorization';
+import hasPanelSettingsAccess from '@salesforce/apex/PanelAuthController.hasPanelSettingsAccess';
 
 export default class PanelLoginSettings extends NavigationMixin(LightningElement) {
     @track activeTab = 'settings';
@@ -44,6 +47,8 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     @track externalCredentialName = 'Panel_External_Credential';
     @track namedCredentialName = 'Panel_Named_Credential';
     @track isLoading = false;
+    @track hasSettingsAccess = false;
+    @track settingsAccessChecked = false;
 
     // Setup Wizard State
     @track wizardStep = 'health';
@@ -66,6 +71,9 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     @track simpleSetupSteps = [];
     @track simpleSetupError = '';
     @track simpleSetupEcaGuidance = null;
+    @track simpleSetupEcaManual = false;
+    @track simpleSetupEcaBusy = false;
+    _setupPollEpoch = 0;
 
     // Legacy manual setup UI (step wizard, connection details, per-channel
     // API access) stays in the template for break-glass but unrendered:
@@ -129,9 +137,22 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     codeVerifier = '';
 
     connectedCallback() {
+        this.verifySettingsAccess();
+    }
+
+    async verifySettingsAccess() {
+        try {
+            this.hasSettingsAccess = (await hasPanelSettingsAccess()) === true;
+        } catch (ignoredError) {
+            // A missing Apex class grant or failed authorization check denies access.
+            this.hasSettingsAccess = false;
+        }
+        this.settingsAccessChecked = true;
+        if (!this.hasSettingsAccess) return;
+
         try {
             this.isPanelCredentialRepairNeeded = localStorage.getItem('tubot_panel_credential_repair_needed') === 'true';
-        } catch {
+        } catch (ignoredError) {
             this.isPanelCredentialRepairNeeded = false;
         }
         this.checkIncomingOAuthCode();
@@ -182,12 +203,12 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         this._messageListener = async (event) => {
             let data = event.data;
             if (typeof data === 'string') {
-                try { data = JSON.parse(data); } catch { data = null; }
+                try { data = JSON.parse(data); } catch (ignoredError) { data = null; }
             }
             let expectedOrigin = '';
             try {
                 expectedOrigin = new URL(this.panelBaseUrl).origin;
-            } catch {
+            } catch (ignoredError) {
                 expectedOrigin = '';
             }
             if (event.origin === expectedOrigin &&
@@ -272,7 +293,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         try {
             authWindow.close();
             this.authWindow = null;
-        } catch {
+        } catch (ignoredError) {
             return;
         }
     }
@@ -286,7 +307,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                 sessionStorage.removeItem('panel_oauth_code_verifier');
                 sessionStorage.removeItem('panel_oauth_state');
             }
-        } catch {
+        } catch (ignoredError) {
             return;
         }
     }
@@ -437,6 +458,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         const startTime = Date.now();
         const maxDurationMs = 600000;
         this._pollFailures = 0;
+        let popupClosedAt = null;
         const tick = async () => {
             if (!this.isAuthorizingOAuth || !this.activeOAuthState) {
                 this.stopOAuthPolling();
@@ -445,15 +467,11 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             let popupClosed = false;
             try {
                 popupClosed = Boolean(this.authWindow && this.authWindow.closed);
-            } catch {
+            } catch (ignoredError) {
                 popupClosed = false;
             }
-            if (popupClosed) {
-                this.isAuthorizingOAuth = false;
-                this.stopOAuthPolling();
-                this.authWindow = null;
-                this.showToast('Popup closed', 'The Panel login popup was closed before approval. Click Connect with Panel to try again.', 'info');
-                return;
+            if (popupClosed && popupClosedAt === null) {
+                popupClosedAt = Date.now();
             }
             if (Date.now() - startTime > maxDurationMs) {
                 this.isAuthorizingOAuth = false;
@@ -465,12 +483,18 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             if (this._pollInFlight) {
                 return;
             }
+            const pollStartedAt = Date.now();
+            const pollState = this.activeOAuthState;
+            const pollVerifier = this.codeVerifier;
             this._pollInFlight = true;
             try {
                 const result = await pollOAuthCode({
-                    state: this.activeOAuthState,
-                    codeVerifier: this.codeVerifier
+                    state: pollState,
+                    codeVerifier: pollVerifier
                 });
+                if (!this.isAuthorizingOAuth || this.activeOAuthState !== pollState) {
+                    return;
+                }
                 if (result?.success && result.code && this.isAuthorizingOAuth) {
                     this.isAuthorizingOAuth = false;
                     this.stopOAuthPolling();
@@ -479,8 +503,18 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                     await this.exchangeCode(result.code);
                 } else {
                     this._pollFailures = 0;
+                    // The Panel callback stores the code before closing its popup.
+                    // Wait for a poll that starts after closure so an older in-flight
+                    // pending response cannot be mistaken for a declined login.
+                    if (popupClosedAt !== null && pollStartedAt >= popupClosedAt &&
+                        !result?.error && !result?.statusCode) {
+                        this.isAuthorizingOAuth = false;
+                        this.stopOAuthPolling();
+                        this.authWindow = null;
+                        this.showToast('Popup closed', 'The Panel login popup closed without completing approval. Click Connect with Panel to try again.', 'info');
+                    }
                 }
-            } catch {
+            } catch (ignoredError) {
                 this._pollFailures += 1;
                 if (this._pollFailures === 5) {
                     this.showToast('Still waiting for approval', 'Approve access in the popup. This page connects automatically once approved.', 'info');
@@ -550,7 +584,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             } else {
                 localStorage.removeItem('tubot_panel_credential_repair_needed');
             }
-        } catch {
+        } catch (ignoredError) {
             // The repair instructions remain available for this component session.
         }
     }
@@ -821,7 +855,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                     url: ecaUrl
                 }
             });
-        } catch {
+        } catch (ignoredError) {
             window.location.assign(ecaUrl);
         }
     }
@@ -934,12 +968,12 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
             iconName: 'utility:clock',
             showSpinner: false
         }));
-        // Server calls per display row. Every step is synchronous (the OAuth
-        // clients ship in the package, so nothing deploys or polls) except
-        // the ECA step, which waits for the one policies command and then
-        // resumes automatically.
+        // ECA preparation commits DML before the separate popup callout.
         this.stopSimpleSetupWait();
         this.simpleSetupEcaGuidance = null;
+        this.simpleSetupEcaManual = false;
+        this.simpleSetupEcaBusy = false;
+        this._setupContinuation = null;
         const chain = [
             { call: 'user', row: 'user' },
             { call: 'channel', row: 'channel' },
@@ -963,12 +997,11 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                 const link = chain[index];
                 this.setSimpleSetupStep(link.row, 'running', '');
                 const result = await runSimpleSetupStep({ step: link.call, state });
-                if (result.status === 'action-required') {
+                if (result.status === 'popup-required') {
                     this.simpleSetupEcaGuidance = result.eca || null;
+                    this._setupContinuation = { chain, index, state };
                     this.setSimpleSetupStep(link.row, 'action-required', result.message || '');
                     this.simpleSetupError = '';
-                    this.showToast('Action required', result.message || 'Run the policies command below — setup continues automatically.', 'warning');
-                    this.waitForSimpleSetupPolicies(chain, index, state);
                     return;
                 }
                 if (result.status !== 'done') {
@@ -1005,38 +1038,147 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         }
     }
 
-    waitForSimpleSetupPolicies(chain, ecaIndex, state) {
+    async handleSimpleSetupAuthorize() {
+        if (!this._setupContinuation || this.simpleSetupEcaBusy) {
+            return;
+        }
+        // Open synchronously in the click handler so popup blockers see the user gesture.
+        const popup = window.open('', `TubotSetupAuthorization_${Date.now()}`, 'width=560,height=700,toolbar=no,menubar=no');
+        if (!popup) {
+            this.simpleSetupError = 'Allow popups for Salesforce, then click Authorize & continue again.';
+            return;
+        }
+        popup.opener = null;
+        this._setupEcaPopup = popup;
         this.stopSimpleSetupWait();
-        this.setSimpleSetupStep(chain[ecaIndex].row, 'running', 'Waiting for the policies command…');
+        const epoch = this._setupPollEpoch;
+        this.simpleSetupEcaBusy = true;
+        this.simpleSetupEcaManual = false;
+        this.simpleSetupError = '';
+        try {
+            const result = await initiateEcaAuthorization();
+            if (epoch !== this._setupPollEpoch) {
+                popup.close();
+                return;
+            }
+            popup.location.href = result.authorizationUrl;
+            this.setSimpleSetupStep('eca', 'running', 'Waiting for Salesforce approval and policy verification…');
+            this.waitForSimpleSetupAuthorization(result.oauthState);
+        } catch (error) {
+            popup.close();
+            if (epoch === this._setupPollEpoch) {
+                this.failSimpleSetupAuthorization(error.body?.message || error.message || 'Could not open Salesforce authorization. Retry or use the manual steps.');
+            }
+        }
+    }
+
+    waitForSimpleSetupAuthorization(oauthState) {
+        const epoch = this._setupPollEpoch;
         const startTime = Date.now();
-        const maxDurationMs = 600000;
-        this._setupWaitInterval = setInterval(async () => {
-            if (Date.now() - startTime > maxDurationMs) {
-                this.stopSimpleSetupWait();
-                this.simpleSetupRunning = false;
-                this.setSimpleSetupStep(chain[ecaIndex].row, 'action-required', 'Timed out waiting for the policies command.');
-                this.simpleSetupError = 'Timed out waiting for the policies command. Run it, then click Run Simple Setup to retry.';
-                this.showToast('Timed out', this.simpleSetupError, 'warning');
+        let closedAt = null;
+        const poll = async () => {
+            if (epoch !== this._setupPollEpoch) {
                 return;
             }
             try {
-                const result = await runSimpleSetupStep({ step: 'eca', state });
-                if (result.status === 'done') {
-                    this.stopSimpleSetupWait();
-                    this.mergeSimpleSetupResult(state, chain[ecaIndex], result);
-                    this.setSimpleSetupStep(chain[ecaIndex].row, 'done', result.message || '');
-                    this.showToast('Pre-authorization detected', 'Continuing setup automatically.', 'success');
-                    this.runSimpleSetupChain(chain, ecaIndex + 1, state);
+                const result = await pollEcaAuthorization({ state: oauthState });
+                if (epoch !== this._setupPollEpoch) {
+                    return;
                 }
-            } catch {
-                // Keep waiting; a failed recheck must not kill the run.
+                if (result.status === 'done') {
+                    await this.continueAfterSimpleSetupAuthorization();
+                    return;
+                }
+                if (result.status === 'failed') {
+                    throw new Error(this.simpleSetupAuthorizationError(result.error));
+                }
+                if (this._setupEcaPopup?.closed && closedAt === null) {
+                    closedAt = Date.now();
+                }
+                if (Date.now() - startTime > 600000 || (closedAt !== null && Date.now() - closedAt > 15000)) {
+                    throw new Error('Authorization was closed or expired. Retry authorization or use the manual steps.');
+                }
+                this._setupWaitInterval = setTimeout(poll, 3000);
+            } catch (error) {
+                if (epoch === this._setupPollEpoch) {
+                    this.failSimpleSetupAuthorization(error.body?.message || error.message || 'Could not read the setup outcome. Retry authorization.');
+                }
             }
-        }, 5000);
+        };
+        poll();
+    }
+
+    simpleSetupAuthorizationError(code) {
+        const messages = {
+            authorization_declined: 'Salesforce authorization was declined. Retry or use the manual steps.',
+            org_mismatch: 'Salesforce approved a different org. Sign in to this org and retry.',
+            state_expired: 'Setup authorization expired. Click Authorize & continue to start again.',
+            token_exchange_failed: 'Salesforce could not exchange the approval. Start a new authorization and retry.',
+            token_revocation_failed: 'The temporary token could not be confirmed revoked. Revoke TuBot Panel Connection in Salesforce Connected Apps OAuth Usage before retrying.',
+            policy_not_found: 'The execution app policy was not found. Check the package installation or use the manual steps.',
+            policy_update_failed: 'Salesforce rejected the policy change. Approve with a Salesforce administrator or use the manual steps.',
+            policy_verification_failed: 'Salesforce did not confirm the policy change. Retry or use the manual steps.'
+        };
+        return messages[code] || 'Setup authorization did not complete. Retry with a Salesforce administrator or use the manual steps.';
+    }
+
+    failSimpleSetupAuthorization(message) {
+        this.stopSimpleSetupWait();
+        this.simpleSetupEcaBusy = false;
+        this.simpleSetupError = message;
+        this.setSimpleSetupStep('eca', 'action-required', message);
+    }
+
+    handleSimpleSetupManual() {
+        this.stopSimpleSetupWait();
+        if (this._setupEcaPopup && !this._setupEcaPopup.closed) {
+            this._setupEcaPopup.close();
+        }
+        this.simpleSetupEcaBusy = false;
+        this.simpleSetupEcaManual = true;
+        this.simpleSetupError = '';
+        this.setSimpleSetupStep('eca', 'action-required', 'Complete the manual Setup steps, then re-check.');
+    }
+
+    async handleSimpleSetupRecheck() {
+        if (!this._setupContinuation || this.simpleSetupEcaBusy) {
+            return;
+        }
+        this.simpleSetupEcaBusy = true;
+        this.simpleSetupError = '';
+        try {
+            await this.continueAfterSimpleSetupAuthorization();
+        } catch (error) {
+            this.failSimpleSetupAuthorization(error.body?.message || error.message || 'Could not verify pre-authorization membership. Check the manual steps and retry.');
+        }
+    }
+
+    async continueAfterSimpleSetupAuthorization() {
+        const continuation = this._setupContinuation;
+        if (!continuation) {
+            return;
+        }
+        const epoch = this._setupPollEpoch;
+        const result = await checkEcaAuthorization({ userId: continuation.state.user.id });
+        if (epoch !== this._setupPollEpoch) {
+            return;
+        }
+        if (result.status !== 'done') {
+            throw new Error(result.message || 'Pre-authorization membership is missing.');
+        }
+        this.stopSimpleSetupWait();
+        this.simpleSetupEcaBusy = false;
+        this.simpleSetupEcaGuidance = null;
+        this.simpleSetupEcaManual = false;
+        this._setupContinuation = null;
+        this.setSimpleSetupStep('eca', 'done', result.message);
+        await this.runSimpleSetupChain(continuation.chain, continuation.index + 1, continuation.state);
     }
 
     stopSimpleSetupWait() {
+        this._setupPollEpoch += 1;
         if (this._setupWaitInterval) {
-            clearInterval(this._setupWaitInterval);
+            clearTimeout(this._setupWaitInterval);
             this._setupWaitInterval = null;
         }
     }
@@ -1049,7 +1191,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
         try {
             await navigator.clipboard.writeText(command);
             this.showToast('Copied', 'Policies command copied to clipboard.', 'success');
-        } catch {
+        } catch (ignoredError) {
             this.showToast('Copy failed', 'Select the command text and copy it manually.', 'warning');
         }
     }
@@ -1061,7 +1203,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
     }
 
     get canManageSelfOrgApi() {
-        return canManageApiConnections;
+        return this.hasSettingsAccess;
     }
 
     async handleConnectApiChannel() {
@@ -1423,7 +1565,7 @@ export default class PanelLoginSettings extends NavigationMixin(LightningElement
                 try {
                     const parsed = JSON.parse(res.rawJson);
                     this.rawBackupJson = JSON.stringify(parsed, null, 2);
-                } catch {
+                } catch (ignoredError) {
                     this.rawBackupJson = res.rawJson || '';
                 }
             } else {

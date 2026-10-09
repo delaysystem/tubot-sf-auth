@@ -49,27 +49,47 @@ with the signed assertion to the row's `instance_url`:
 - `422 salesforce_preauth_required` — Salesforce answered
   `invalid_app_access`, or `invalid_grant` on a JWT row: the user lacks
   `Tubot_JWT_PreAuth`, or subscriber policies were reset by a
-  reinstall/upgrade. Fix: re-run `setup-eca-policies.mjs`, confirm the
-  set assignment, retry.
+  reinstall/upgrade. Fix: re-run Simple Setup's **Authorize & continue**
+  policy step, or follow its manual Setup instructions, confirm the set
+  assignment, and retry. The policies CLI script remains an advanced alternative.
 - `422 salesforce_identity_mismatch` — the grant resolved to a different
   org or user than the registered mapping (fail closed, never stored).
 
 Legacy rows keep the existing `salesforce_invalid_client_credentials` /
 `salesforce_oauth_not_configured` mapping unchanged.
 
-## Tenant bridge (Panel ⇄ auth worker)
+## Panel credentials in D1
 
-`POST /internal/bridge/credential` now also returns `integrationUsername`
-(string|null) and `isSandbox` (boolean|null). JWT rows return
-`clientSecret: null` with both fields set; the bridge validator rejects a
-null secret without a username/sandbox pair (`bridge_invalid_response`),
-so half-migrated rows fail closed instead of minting as the wrong user.
+Panel channel and execution-user rows are stored in `panel_salesforce_channels`
+and `panel_salesforce_execution_users` in the shared D1 database. The auth
+Worker reads these rows directly and decrypts channel-secret envelopes with
+the shared `CHANNEL_ENCRYPTION_KEY`; credentials are never returned through
+an HTTP proxy route.
 
 ## Rotation
 
 One global keypair serves all tenants. To rotate: generate a new RSA-2048
 pair, register the new certificate on the packaged ECA (ship a package
-upgrade), then replace `TUBOT_JWT_PRIVATE_KEY` on every worker
-(staging + production for both `tubot-sf-auth` and `tubot-new-panel`).
-Grants in flight use 3-minute assertions, so the cutover needs no drain
-beyond the deploy itself. There are no per-org secrets to rotate.
+upgrade), then replace `TUBOT_JWT_PRIVATE_KEY` on both production Workers:
+`tubot-sf-auth` and `tubot-new-panel`. Rotate the two isolated staging
+Worker secrets separately when releasing to staging. Grants in flight use
+3-minute assertions, so the production cutover needs no drain beyond the
+deploy itself. There are no per-org secrets to rotate.
+
+## Browser Simple Setup policy authorization
+
+This flow is hosted exclusively on `tubot-new-panel`. Apex prepares the
+subscriber permission set and assignment by DML, then starts authorization
+in a separate transaction using the existing Panel Named Credential.
+`POST /api/v1/salesforce/setup-oauth` returns an opaque state and the
+packaged Panel Connection client's Salesforce PKCE authorize URL with
+`scope=api`. Status polling requires the same Panel team and org.
+
+The Salesforce callback consumes ten-minute, single-use state, decrypts
+and clears the verifier, exchanges the code in request-local memory,
+checks org identity, and performs Metadata SOAP discovery/update/readback
+at API 67.0. Existing policy fields and permission-set attachments are
+preserved. Token revocation is awaited on every path that obtained a token;
+revocation failure is surfaced as failure. No administrator code or token
+is sent to storage or logged. Only a safe outcome is persisted. The final
+channel-registration JWT grant independently proves pre-authorization.

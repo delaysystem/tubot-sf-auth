@@ -3,9 +3,11 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"deploy": "wrangler deploy",
+		"deploy": "wrangler deploy --env production",
+		"deploy:staging": "wrangler deploy --env staging",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
+		"jwt-api-smoke": "bun scripts/jwt-api-smoke.ts",
 		"cf-typegen": "wrangler types",
 		"test": "bun test src/index.test.ts",
 		"setup:context-permissions": "bun scripts/setup-context-permissions.ts",

@@ -3,6 +3,7 @@
     <description>Grants access to Panel Settings tab, messaging backup/restore, and backend service classes</description>
     <label>Panel Settings Admin Access</label>
     <hasActivationRequired>false</hasActivationRequired>
+    <classAccesses><apexClass>SimpleSetupController</apexClass><enabled>true</enabled></classAccesses>
     
     <classAccesses><apexClass>PanelSalesforceChannelService</apexClass><enabled>true</enabled></classAccesses>
     <classAccesses><apexClass>TubotSetupWizardController</apexClass><enabled>true</enabled></classAccesses>

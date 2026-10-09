@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tubot-sf-auth-staging",
+  "name": "tubot-sf-auth",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-21",
   "workers_dev": false,
@@ -9,19 +9,57 @@
     {
       "binding": "RETRIEVE64",
       "service": "retrieve64"
-    },
-    {
-      "binding": "NEW_PANEL",
-      "service": "tubot-new-panel"
     }
   ],
   "d1_databases": [{
     "binding": "DB",
-    "database_name": "agent-dashboard-db-staging",
-    "database_id": "8f100c42-cb9a-44aa-b995-391f942edf10",
+    "database_name": "agent-dashboard-db-production",
+    "database_id": "0334422a-b534-4322-be11-9e195947b348",
     "migrations_dir": "migrations",
     "migrations_table": "tubot_sf_auth_migrations"
   }],
   "observability": { "enabled": true },
-  "upload_source_maps": true
+  "upload_source_maps": true,
+  "env": {
+    "staging": {
+      "name": "tubot-sf-auth-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "services": [
+        {
+          "binding": "RETRIEVE64",
+          "service": "retrieve64"
+        }
+      ],
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "agent-dashboard-db-staging",
+        "database_id": "8f100c42-cb9a-44aa-b995-391f942edf10",
+        "migrations_dir": "migrations",
+        "migrations_table": "tubot_sf_auth_migrations"
+      }],
+      "observability": { "enabled": true },
+      "upload_source_maps": true
+    },
+    "production": {
+      "name": "tubot-sf-auth",
+      "workers_dev": false,
+      "preview_urls": false,
+      "services": [
+        {
+          "binding": "RETRIEVE64",
+          "service": "retrieve64"
+        }
+      ],
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "agent-dashboard-db-production",
+        "database_id": "0334422a-b534-4322-be11-9e195947b348",
+        "migrations_dir": "migrations",
+        "migrations_table": "tubot_sf_auth_migrations"
+      }],
+      "observability": { "enabled": true },
+      "upload_source_maps": true
+    }
+  }
 }

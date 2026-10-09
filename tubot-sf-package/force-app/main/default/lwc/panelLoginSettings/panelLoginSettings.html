@@ -1,4 +1,8 @@
 <template>
+    <template if:false={settingsAccessChecked}>
+        <lightning-spinner alternative-text="Checking Panel settings access" size="medium"></lightning-spinner>
+    </template>
+    <template if:true={hasSettingsAccess}>
     <div class="slds-card slds-p-around_medium bg-slate-50">
         <!-- Header Banner -->
         <div class="slds-page-header slds-page-header_record-home slds-m-bottom_medium slds-box slds-theme_default">
@@ -76,14 +80,37 @@
                             <ul class="slds-list_dotted slds-text-body_small slds-m-bottom_small">
                                 <li>Selects the integration user and assigns API access</li>
                                 <li>Selects or creates the Messaging Channel and Omni-Queue</li>
-                                <li>Confirms the packaged execution client (assign Run As below)</li>
+                                <li>Prepares integration-user membership and requests approval for the execution app policy</li>
                                 <li>Registers the channel and verifies end to end</li>
                             </ul>
                             <template if:true={simpleSetupEcaGuidance}>
                                 <div class="slds-box slds-theme_shade slds-m-bottom_small">
-                                    <p class="slds-text-body_small"><strong>Pre-authorization for {simpleSetupEcaGuidance.appLabel}:</strong> run the policies command — setup continues automatically once detected (Salesforce only allows this step from an authenticated admin session, so the package cannot run it for you):</p>
-                                    <pre class="slds-box slds-theme_default slds-text-body_small slds-m-top_x-small"><lightning-formatted-text value={simpleSetupEcaGuidance.cliCommand}></lightning-formatted-text></pre>
-                                    <lightning-button variant="neutral" label="Copy command" icon-name="utility:copy" onclick={handleCopyPoliciesCommand} size="small" class="slds-m-top_x-small"></lightning-button>
+                                    <p class="slds-text-body_small"><strong>Approve pre-authorization for {simpleSetupEcaGuidance.appLabel}</strong></p>
+                                    <p class="slds-text-body_small slds-m-top_x-small">Salesforce opens its own sign-in and approval popup. Enter your password only on Salesforce. Panel receives a temporary administrator API token in worker request memory to change the app policy to <strong>Admin approved users are pre-authorized</strong> and attach <strong>Tubot_JWT_PreAuth</strong>, preserving existing permission-set attachments. Setup has prepared that permission set and assigned the selected integration user.</p>
+                                    <p class="slds-text-body_small slds-m-top_x-small">Panel verifies the change, revokes the temporary token, and discards it. No administrator authorization code, access token, or refresh token is stored. Panel stores the setup outcome and temporarily stores an encrypted PKCE verifier. If you prefer, complete the same policy change manually in Setup.</p>
+                                    <div class="slds-m-top_small">
+                                        <lightning-button variant="brand" label="Authorize & continue" onclick={handleSimpleSetupAuthorize} disabled={simpleSetupEcaBusy}></lightning-button>
+                                        <lightning-button variant="neutral" label="Show manual steps instead" onclick={handleSimpleSetupManual} class="slds-m-left_x-small"></lightning-button>
+                                    </div>
+                                    <template if:true={simpleSetupEcaManual}>
+                                        <ol class="slds-list_ordered slds-text-body_small slds-m-top_small">
+                                            <li>Open Salesforce Setup → External Client Apps → External Client App Manager.</li>
+                                            <li>Open TuBot Channel API → Policies → Edit.</li>
+                                            <li>Set Permitted Users to Admin approved users are pre-authorized and save.</li>
+                                            <li>In the app policy permission-set access section, add Tubot_JWT_PreAuth. Keep any existing permission sets.</li>
+                                            <li>In Setup → Users → Users, open the selected integration user. Under Permission Set Assignments, confirm Tubot_JWT_PreAuth is assigned.</li>
+                                            <li>Return here and re-check. Final registration verifies the policy by obtaining a JWT token as the integration user.</li>
+                                        </ol>
+                                        <lightning-formatted-url value={simpleSetupEcaGuidance.setupUrl} label="Open External Client Apps in Setup" target="_blank"></lightning-formatted-url>
+                                        <div class="slds-m-top_small">
+                                            <lightning-button variant="brand" label="Re-check & continue" onclick={handleSimpleSetupRecheck} disabled={simpleSetupEcaBusy}></lightning-button>
+                                        </div>
+                                        <details class="slds-m-top_small">
+                                            <summary>Advanced: Salesforce CLI alternative</summary>
+                                            <pre class="slds-box slds-theme_default slds-text-body_small slds-m-top_x-small"><lightning-formatted-text value={simpleSetupEcaGuidance.cliCommand}></lightning-formatted-text></pre>
+                                            <lightning-button variant="neutral" label="Copy command" icon-name="utility:copy" onclick={handleCopyPoliciesCommand} size="small"></lightning-button>
+                                        </details>
+                                    </template>
                                 </div>
                             </template>
                             <template if:true={wizardUserOptions.length}>
@@ -1279,4 +1306,16 @@
         <div class="slds-backdrop slds-backdrop_open"></div>
     </template>
 </div>
+    </template>
+    <template if:true={settingsAccessChecked}>
+        <template if:false={hasSettingsAccess}>
+            <section class="slds-card slds-p-around_large slds-text-align_center" role="alert">
+                <lightning-icon icon-name="utility:lock" size="medium" alternative-text="Access restricted"></lightning-icon>
+                <h1 class="slds-text-heading_medium slds-m-top_small">Panel Agent Settings access is restricted</h1>
+                <p class="slds-text-body_regular slds-m-top_small">
+                    Ask your Salesforce administrator to assign the Panel Settings Admin Access permission set to your user.
+                </p>
+            </section>
+        </template>
+    </template>
 </template>

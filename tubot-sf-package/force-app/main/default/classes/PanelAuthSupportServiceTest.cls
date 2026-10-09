@@ -19,6 +19,42 @@ private class PanelAuthSupportServiceTest {
     }
 
     @isTest
+    static void testSettingsAccessRequiresDirectPackagePermissionSetAssignment() {
+        PanelAuthSupportService.managePermissionTestOverride = null;
+        User assignedUser = [SELECT Id, ProfileId FROM User WHERE Id = :UserInfo.getUserId()];
+        PanelTestPermissionHelper.assignPermissionSet(assignedUser.Id, 'Panel_Settings_Admin_Access');
+        System.assertEquals(true, PanelAuthSupportService.checkManageTubotPermission());
+        System.assertEquals(true, PanelAuthController.hasPanelSettingsAccess());
+
+        String uniqueSuffix = UserInfo.getOrganizationId() + '-' + String.valueOf(DateTime.now().getTime());
+        User unassignedUser = new User(
+            Alias = 'nopanel',
+            Email = 'panel-access-' + uniqueSuffix + '@example.invalid',
+            EmailEncodingKey = 'UTF-8',
+            LastName = 'No Panel Access',
+            LanguageLocaleKey = 'en_US',
+            LocaleSidKey = 'en_US',
+            ProfileId = assignedUser.ProfileId,
+            TimeZoneSidKey = 'America/Los_Angeles',
+            Username = 'panel-access-' + uniqueSuffix + '@example.invalid'
+        );
+        insert unassignedUser;
+
+        System.runAs(unassignedUser) {
+            PanelAuthSupportService.managePermissionTestOverride = null;
+            System.assertEquals(false, PanelAuthSupportService.checkManageTubotPermission());
+            System.assertEquals(false, PanelAuthController.hasPanelSettingsAccess());
+            Boolean rejected = false;
+            try {
+                PanelAuthSupportService.requireSettingsAdmin();
+            } catch (AuraHandledException expected) {
+                rejected = true;
+            }
+            System.assertEquals(true, rejected, 'A user without the package permission set must be rejected.');
+        }
+    }
+
+    @isTest
     static void testCredentialAccessFailurePointsAtRepair() {
         PanelAuthSupportService.managePermissionTestOverride = true;
         Test.setMock(HttpCalloutMock.class, new DeniedCredentialMock());
