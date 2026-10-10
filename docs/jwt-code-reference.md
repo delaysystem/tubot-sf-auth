@@ -58,6 +58,9 @@ again through Salesforce userinfo.
 
 - `worker/jwt.ts` creates the short-lived JWT assertion and chooses the
   login/test audience from the org type.
+- `worker/jwt-signer.ts` exposes the assertion signer only as the
+  `PanelJwtSigner` private Worker RPC. The auth Worker receives a short-lived
+  assertion over its service binding; the signing key stays in Panel.
 - `worker/d1-query.ts` and `worker/channel-secrets.ts` provide scoped Panel
   D1 access and AES-GCM channel-secret envelopes.
 - The Panel channel registration endpoint verifies Salesforce org/user

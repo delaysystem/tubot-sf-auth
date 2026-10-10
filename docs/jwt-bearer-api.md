@@ -1,11 +1,12 @@
 # tubot-sf-auth — JWT bearer API changes
 
-Server-to-server Salesforce calls moved from per-channel ECA client
-secrets to the JWT bearer flow against the packaged `Tubot_Channel_API`
-execution client. Panel holds the RSA private key (`TUBOT_JWT_PRIVATE_KEY`
-worker secret); the org holds only the public certificate in the packaged
-ECA. Tokens are minted per request with a 3-minute assertion and verified
-against userinfo before use.
+Server-to-server Salesforce calls use the JWT bearer flow against the
+packaged `Tubot_Channel_API` execution client. Panel holds the RSA private
+key (`TUBOT_JWT_PRIVATE_KEY` worker secret) and exposes a private
+`PanelJwtSigner` Worker RPC to `tubot-sf-auth`; the key never leaves Panel.
+The org holds only the public certificate in the packaged ECA. Tokens are
+minted per request with a 3-minute assertion and verified against userinfo
+before use.
 
 Legacy rows that still carry an encrypted per-row secret keep the
 client-credentials grant byte-for-byte. New registrations are JWT-only.
@@ -70,11 +71,11 @@ an HTTP proxy route.
 
 One global keypair serves all tenants. To rotate: generate a new RSA-2048
 pair, register the new certificate on the packaged ECA (ship a package
-upgrade), then replace `TUBOT_JWT_PRIVATE_KEY` on both production Workers:
-`tubot-sf-auth` and `tubot-new-panel`. Rotate the two isolated staging
-Worker secrets separately when releasing to staging. Grants in flight use
-3-minute assertions, so the production cutover needs no drain beyond the
-deploy itself. There are no per-org secrets to rotate.
+upgrade), then replace `TUBOT_JWT_PRIVATE_KEY` on the production Panel
+Worker. Rotate the isolated staging Panel secret separately. The auth
+Workers use the private signing RPC and do not store a copy of the key.
+Grants in flight use 3-minute assertions, so the production cutover needs
+no drain beyond the deploy itself. There are no per-org secrets to rotate.
 
 ## Browser Simple Setup policy authorization
 

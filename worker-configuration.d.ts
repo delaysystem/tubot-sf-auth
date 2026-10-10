@@ -3,14 +3,35 @@
 // Runtime types generated with workerd@1.20260921.1 2026-09-21
 interface __BaseEnv_Env {
 	DB: D1Database;
+	LOCAL_STATIC_SF_TOKEN: string;
+	RETRIEVE64: Fetcher /* retrieve64 */;
+	PANEL_JWT_SIGNER: Service /* entrypoint PanelJwtSigner from tubot-new-panel-staging */ | Service /* entrypoint PanelJwtSigner from tubot-new-panel */;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/index");
 	}
+	interface StagingEnv {
+		DB: D1Database;
+		LOCAL_STATIC_SF_TOKEN: string;
+		RETRIEVE64: Fetcher /* retrieve64 */;
+		PANEL_JWT_SIGNER: Service /* entrypoint PanelJwtSigner from tubot-new-panel-staging */;
+	}
+	interface ProductionEnv {
+		DB: D1Database;
+		LOCAL_STATIC_SF_TOKEN: string;
+		RETRIEVE64: Fetcher /* retrieve64 */;
+		PANEL_JWT_SIGNER: Service /* entrypoint PanelJwtSigner from tubot-new-panel */;
+	}
 	interface Env extends __BaseEnv_Env {}
 }
 interface Env extends __BaseEnv_Env {}
+type StringifyValues<EnvType extends Record<string, unknown>> = {
+	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
+};
+declare namespace NodeJS {
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "LOCAL_STATIC_SF_TOKEN">> {}
+}
 
 // Begin runtime types
 /*! *****************************************************************************

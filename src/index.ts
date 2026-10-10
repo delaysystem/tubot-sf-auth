@@ -93,8 +93,6 @@ import {
 export * from "./agent-script";
 export * from "./cache-helper";
 
-const PANEL_INTERNAL_SECRET_HEADER = "x-panel-internal-secret";
-
 /** Private service-binding API for channel-scoped Salesforce operations. */
 export interface AuthEnv {
   DB: D1Database;
@@ -106,9 +104,11 @@ export interface AuthEnv {
   SELF_OAUTH_NEW_PANEL_HMAC_KEY?: string;
   /** MailSlurp API key for disposable verification inboxes, configured as a Worker secret. Absent in tests. */
   MAILSLURP_API_KEY?: string;
-  /** Shared secret used by the panel's internal Salesforce diagnostic call. */
-  BRIDGE_SHARED_SECRET?: string;
-  /** RSA private key (PKCS#8 PEM) for the packaged execution client's JWT bearer flow, configured as a Worker secret. Absent in tests. */
+  /** Private service binding to the Panel-only JWT signing RPC. */
+  PANEL_JWT_SIGNER?: {
+    signAssertion(input: { subjectUsername: string; isSandbox: boolean }): Promise<string>;
+  };
+  /** Local/test fallback only; production signing uses PANEL_JWT_SIGNER. */
   TUBOT_JWT_PRIVATE_KEY?: string;
   RETRIEVE64?: {
     getCallableToolUrls?(params: any): Promise<string[]>;
@@ -1007,14 +1007,24 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string, cacheResult
   // client-secret grant byte-for-byte.
   let form: URLSearchParams;
   if (jwtRow(row)) {
-    if (!env.TUBOT_JWT_PRIVATE_KEY) {
-      throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
-    }
     let assertion: string;
     try {
-      assertion = await buildJwtAssertion(env.TUBOT_JWT_PRIVATE_KEY, row.integration_username, row.is_sandbox === 1);
-    } catch {
-      throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
+      if (env.PANEL_JWT_SIGNER) {
+        assertion = await env.PANEL_JWT_SIGNER.signAssertion({
+          subjectUsername: row.integration_username,
+          isSandbox: row.is_sandbox === 1,
+        });
+      } else if (env.TUBOT_JWT_PRIVATE_KEY) {
+        assertion = await buildJwtAssertion(env.TUBOT_JWT_PRIVATE_KEY, row.integration_username, row.is_sandbox === 1);
+      } else {
+        throw new Error("jwt_private_key_misconfigured");
+      }
+      if (!str(assertion, 8192)) throw new Error("jwt_assertion_invalid");
+    } catch (cause) {
+      if (cause instanceof Error && cause.message === "jwt_private_key_misconfigured") {
+        throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
+      }
+      throw authFailure(503, "jwt_signer_unavailable", "JWT signing is temporarily unavailable. Retry the request.", true);
     }
     form = new URLSearchParams({ grant_type: JWT_BEARER_GRANT_TYPE, assertion });
   } else {
@@ -2134,8 +2144,10 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     (path === "/internal/channels/register" && request.method === "POST") ||
     (path === "/internal/channels" && request.method === "DELETE");
   if (channelLifecyclePath) return error(requestId, 410, "legacy_panel_retired", "Use New Panel to manage Salesforce connections.");
-  if (path.startsWith("/internal/self-oauth/") || channelLifecyclePath) {
-    if (path.startsWith("/internal/self-oauth/") && request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal self-authorization operation.");
+  const panelChannelCleanupPath = path === "/internal/channels/cleanup";
+  const panelJwtDiagnosticsPath = path === "/internal/jwt-api-diagnostics";
+  if (path.startsWith("/internal/self-oauth/") || panelChannelCleanupPath || panelJwtDiagnosticsPath) {
+    if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce service operation.");
     try {
       if (!await verifySignedSelfOAuthRequest(request, env, path)) {
         return error(requestId, 401, "invalid_internal_signature", "A valid Panel service signature is required.");
@@ -2148,15 +2160,19 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
   const body = await parse(request, path === "/internal/self-oauth/request" ? 10_000_000 :
     path === "/internal/self-oauth/batch" ? 512_000 : 64_000);
 
+  if (path === "/internal/channels/cleanup") {
+    if (!body || !key(body) || !validSalesforceOrgId(body.orgId) || !validSalesforceUserId(body.channelId)) {
+      return error(requestId, 400, "invalid_request", "A valid tenant, org, and channel are required.");
+    }
+    const result = await env.DB.prepare(
+      "DELETE FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
+    ).bind(body.teamId, body.orgId, body.channelId).run();
+    clearChannelTokens(body as Key);
+    return json({ ok: true, credentialRemoved: result.meta.changes > 0 }, requestId);
+  }
+
   if (path === "/internal/jwt-api-diagnostics") {
     if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce diagnostic.");
-    const suppliedBridgeSecret = request.headers.get(PANEL_INTERNAL_SECRET_HEADER) || "";
-    if (!env.BRIDGE_SHARED_SECRET) {
-      return error(requestId, 503, "panel_internal_auth_unconfigured", "The internal Salesforce service is not configured.", true);
-    }
-    if (!suppliedBridgeSecret || !equalHash(await hash(suppliedBridgeSecret), await hash(env.BRIDGE_SHARED_SECRET))) {
-      return error(requestId, 401, "invalid_internal_signature", "A valid Panel service credential is required.");
-    }
     if (!body || !key(body) || !validSalesforceOrgId(body.orgId) ||
         !validSalesforceUserId(body.integrationUserId) || !str(body.integrationUsername, 254) ||
         !str(body.instanceUrl, 512) || !validInstanceUrl(body.instanceUrl) || typeof body.isSandbox !== "boolean") {

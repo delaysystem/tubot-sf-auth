@@ -9,6 +9,11 @@
     {
       "binding": "RETRIEVE64",
       "service": "retrieve64"
+    },
+    {
+      "binding": "PANEL_JWT_SIGNER",
+      "service": "tubot-new-panel",
+      "entrypoint": "PanelJwtSigner"
     }
   ],
   "d1_databases": [{
@@ -29,6 +34,11 @@
         {
           "binding": "RETRIEVE64",
           "service": "retrieve64"
+        },
+        {
+          "binding": "PANEL_JWT_SIGNER",
+          "service": "tubot-new-panel-staging",
+          "entrypoint": "PanelJwtSigner"
         }
       ],
       "d1_databases": [{
@@ -49,6 +59,11 @@
         {
           "binding": "RETRIEVE64",
           "service": "retrieve64"
+        },
+        {
+          "binding": "PANEL_JWT_SIGNER",
+          "service": "tubot-new-panel",
+          "entrypoint": "PanelJwtSigner"
         }
       ],
       "d1_databases": [{
