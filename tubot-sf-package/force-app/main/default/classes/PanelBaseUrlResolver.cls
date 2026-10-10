@@ -11,14 +11,6 @@ public with sharing class PanelBaseUrlResolver {
         return PanelEnvironmentResolver.panelBaseUrl(config);
     }
 
-    private static String legacyResolve(MCP_Config__c config) {
-        String baseUrl = config == null ? null : config.Panel_Base_URL__c;
-        if (String.isBlank(baseUrl)) {
-            throw new AuraHandledException('Connect Panel first so the package can use its configured Panel URL.');
-        }
-        return validateOrigin(baseUrl);
-    }
-
     private static String validateOrigin(String baseUrl) {
         try {
             Url parsed = new Url(baseUrl);

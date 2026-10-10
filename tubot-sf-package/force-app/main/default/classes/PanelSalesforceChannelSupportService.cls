@@ -56,6 +56,25 @@ public with sharing class PanelSalesforceChannelSupportService {
         return [SELECT COUNT() FROM MessagingChannel WHERE Id = :channelId WITH USER_MODE] != 0;
     }
 
+    /** Validates channel/user access and returns whether the API permission is assigned. */
+    public static Boolean validateSalesforceTargets(Id channelId, Id userId) {
+        if (!messagingChannelExists(channelId)) {
+            throw newException('The Messaging Channel does not exist in this Salesforce org.');
+        }
+        List<User> users = [SELECT Id, IsActive FROM User WHERE Id = :userId WITH USER_MODE LIMIT 1];
+        if (users.isEmpty() || !users[0].IsActive) {
+            throw newException('Select an active integration user in this org.');
+        }
+        Id apiPermissionSetId = resolveApiPermissionSetId();
+        if (apiPermissionSetId == null) {
+            throw newException('Tubot API permission set is missing from this org.');
+        }
+        return [
+            SELECT COUNT() FROM PermissionSetAssignment
+            WHERE AssigneeId = :userId AND PermissionSetId = :apiPermissionSetId WITH USER_MODE
+        ] > 0;
+    }
+
     public static void requireAdmin() {
         Map<String, Object> status = PanelAuthController.getPanelAuthStatus();
         if (!PanelAuthSupportService.checkManageTubotPermission() ||

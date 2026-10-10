@@ -55,19 +55,10 @@ public with sharing class PanelSalesforceChannelConnectService {
     }
 
     private static void validateSalesforceTargets(ConnectionContext context) {
-        if (!PanelSalesforceChannelSupportService.messagingChannelExists(context.channelId)) {
-            throw PanelSalesforceChannelSupportService.newException('The Messaging Channel does not exist in this Salesforce org.');
-        }
-        List<User> users = [SELECT Id, IsActive FROM User WHERE Id = :context.userId WITH USER_MODE LIMIT 1];
-        if (users.isEmpty() || !users[0].IsActive) {
-            throw PanelSalesforceChannelSupportService.newException('Select an active integration user in this org.');
-        }
-        Id apiPsId = PanelSalesforceChannelSupportService.resolveApiPermissionSetId();
-        if (apiPsId == null) { throw PanelSalesforceChannelSupportService.newException('Tubot API permission set is missing from this org.'); }
-        context.permissionAssigned = [
-            SELECT COUNT() FROM PermissionSetAssignment
-            WHERE AssigneeId = :context.userId AND PermissionSetId = :apiPsId WITH USER_MODE
-        ] > 0;
+        context.permissionAssigned = PanelSalesforceChannelSupportService.validateSalesforceTargets(
+            context.channelId,
+            context.userId
+        );
     }
 
     private static void verifyPreparedChannel(ConnectionContext context) {

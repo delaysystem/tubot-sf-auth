@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
 const args = process.argv.slice(2);
+const requiredPackageCoveragePercent = 75;
 const targetIndex = args.indexOf('--target-org');
 const waitIndex = args.indexOf('--wait');
 const targetOrg = targetIndex >= 0 ? args[targetIndex + 1] : undefined;
@@ -156,14 +157,14 @@ try {
         packageTotalLines,
         coverageMetric: 'Weighted coverage of distributable package Apex classes',
         classCoverage,
-        requiredPackageCoveragePercent: 78,
+        requiredPackageCoveragePercent,
         packagedTriggers: triggerCoverage,
         requiredTriggerCoveragePercent: 100
     };
     console.log(JSON.stringify(report, null, 2));
 
     const hasFailedTests = report.outcome !== 'Passed' || Number(summary?.failing ?? 0) > 0 || report.testsRun === 0;
-    const hasCoverageFailure = !Number.isFinite(coveragePercent) || coveragePercent < 78;
+    const hasCoverageFailure = !Number.isFinite(coveragePercent) || coveragePercent < requiredPackageCoveragePercent;
     const hasTriggerFailure = triggerCoverage.some(item => item.totalLines === 0 || item.coveredLines !== item.totalLines);
     if (hasFailedTests || hasCoverageFailure || hasTriggerFailure) {
         console.error('Apex release coverage gates failed.');
