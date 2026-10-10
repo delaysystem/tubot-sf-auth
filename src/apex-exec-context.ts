@@ -612,7 +612,6 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
   let outcome: Result = fail("APEX_EXEC_CONTEXT_UNAVAILABLE", "The owned apex execution context could not be prepared.");
   let verified = false;
   let fixtureObject: string | null = null;
-  let usedRecordFallback = false;
   let idInput = "";
   let staticArgs: Record<string, unknown> = {};
   let fixtureId: string | undefined;
@@ -698,7 +697,6 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
         plan.push({ input: name, objectName: fallback, fallback: true });
       }
       fixtureObject = plan[0].objectName;
-      usedRecordFallback = plan.some((entry) => entry.fallback);
       try {
         const counted = await request(`${root}/query?q=${encodeURIComponent(`SELECT COUNT() FROM ${fixtureObject}`)}`);
         countBefore = counted.ok && record(counted.body) && typeof counted.body.totalSize === "number"

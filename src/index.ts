@@ -86,16 +86,9 @@ import {
   UserDataCacheStore,
   purgeEdgeCache,
   createCachedResponse,
-  normalizeCanonicalUrl,
-  sanitizeVaryHeader,
   getDeclarativeCacheHeaders,
   computeETag,
   isNotModified,
-  DEFAULT_CACHE_CONTROL,
-  FORBIDDEN_VARY_HEADERS,
-  type UserDataCacheRow,
-  type PutUserDataInput,
-  type CacheHeaderOptions,
 } from "./cache-helper";
 export * from "./agent-script";
 export * from "./cache-helper";
@@ -122,8 +115,6 @@ export interface AuthEnv {
     registerDefinition?(params: any): Promise<any>;
     fetch?(input: any, init?: any): Promise<Response>;
   };
-  // TEMP-LOCAL-DEV — NEVER COMMIT OR DEPLOY (revert after the local sweep).
-  LOCAL_STATIC_SF_TOKEN?: string;
 }
 
 type Key = { teamId: string; orgId: string; channelId: string };
@@ -993,10 +984,6 @@ function validSalesforceChannelId(value: string): boolean {
 }
 
 export async function token(env: AuthEnv, row: Credential): Promise<Token> {
-  // TEMP-LOCAL-DEV — NEVER COMMIT OR DEPLOY (revert after the local sweep):
-  // CLI-minted session token replaces the ECA client-credentials grant.
-  if (env.LOCAL_STATIC_SF_TOKEN) return { accessToken: env.LOCAL_STATIC_SF_TOKEN,
-    instanceUrl: row.instance_url, expiresAt: Date.now() + 3_600_000 };
   const id = cacheKey(row);
   const cached = tokenCache.get(id);
   if (cached && cached.expiresAt > Date.now() + 30_000) return cached;
@@ -1302,11 +1289,6 @@ async function sfRequest(
     if (!response.ok) {
       console.error(JSON.stringify({ requestId, error: "salesforce_request_failed", method,
         route: path.split("?")[0].slice(0, 160), status: response.status }));
-      // TEMP-LOCAL-DEV — NEVER COMMIT (revert after diagnosing the scalar 400):
-      // narrowly-scoped request-body echo for one debug route (marker nonces only).
-      if (method === "POST" && path.includes("BotsParseAddress") && typeof body === "string") {
-        console.error(JSON.stringify({ requestId, debugRouteBody: body.slice(0, 400) }));
-      }
     }
     if (preserveResponseHeaders) return response;
     const headers = new Headers({

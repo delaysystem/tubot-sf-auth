@@ -1,8 +1,6 @@
 {
   // Local-dev config: `wrangler dev -c wrangler.dev.jsonc --port <port>`.
-  // Local D1 (seed with scripts/seed-local-credential.ts); Salesforce calls
-  // go live via the LOCAL_STATIC_SF_TOKEN bypass (temporary local patch, see
-  // token() in src/index.ts — NEVER commit or deploy with it).
+  // Uses a local D1 database and a module-entry shim for local Workerd.
   // Service bindings omitted: local probes use this Worker's D1 binding directly.
   // NEVER deploy with this config.
   "$schema": "node_modules/wrangler/config-schema.json",

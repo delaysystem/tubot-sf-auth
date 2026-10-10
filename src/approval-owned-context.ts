@@ -35,7 +35,6 @@ type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
-const OBJECT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const DEV_NAME = /^[A-Za-z][A-Za-z0-9_]{0,37}$/;
 const USERNAME = /^[^\s@]+@[^\s@]+$/;
 

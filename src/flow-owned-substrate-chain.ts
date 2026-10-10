@@ -134,8 +134,6 @@ const MARK_CLOSED_DESCRIPTION = /\bmarks?\b.{0,40}\b(closed|complete|completed)\
 const MESSAGE_OUTPUT = /(?:message|prompt|notice|result|summary|outcome|brief|recommendation)$/i;
 /** Universal fallback object for bare generic record ids (platform vocabulary, validated live). */
 const BARE_RECORD_FALLBACK_OBJECT = "Case";
-/** Custom-notification vocabulary (bell notifications to a recipient). */
-const NOTIFICATION_HINT = /(?:notif|bell)/i;
 /** External ITSM-system vocabulary (the record lives outside Salesforce). */
 const EXTERNAL_ITSYSTEM = /(?:servicenow|cmdb|bmc[\s_-]?remedy|zendesk|freshservice|cherwell|ivanti|jira|sys_?id|systemid)/i;
 /** Tight creation claim for the scalar-create plan. */
@@ -934,7 +932,6 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
   const evidenceCache: FlowExecutionEvidenceCache = {};
   let verified = false;
   let residueSweep: unknown = null;
-  let nativeAttempted = false;
   const probeStart = now();
   try {
     outcome = await (async (): Promise<Result> => {
@@ -1746,7 +1743,6 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
         return fail("FLOW_FALLBACK_REQUIRED_INPUT_UNRESOLVED",
           `Required input '${missing[0].name}' has no live reference to resolve it from.`);
       }
-      nativeAttempted = true;
       const invoked = await request(input.route, "POST", { inputs: [args] });
       if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
       const assessed = assessOwnedSubstrateOutcome(invoked.status, invoked.body);
