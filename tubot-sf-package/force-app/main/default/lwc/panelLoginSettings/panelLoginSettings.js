@@ -1005,19 +1005,6 @@ export default class PanelLoginSettings extends LightningElement {
         }
     }
 
-    async handleCopyPoliciesCommand() {
-        const command = this.simpleSetupEcaGuidance?.cliCommand || '';
-        if (!command) {
-            return;
-        }
-        try {
-            await navigator.clipboard.writeText(command);
-            this.showToast('Copied', 'Policies command copied to clipboard.', 'success');
-        } catch (ignoredError) {
-            this.showToast('Copy failed', 'Select the command text and copy it manually.', 'warning');
-        }
-    }
-
     get showSelfOrgSetupInstructions() {
         // The Panel-connection client ships in the package: no CLI or manual
         // ECA setup can be missing. Instructions stay hidden permanently.

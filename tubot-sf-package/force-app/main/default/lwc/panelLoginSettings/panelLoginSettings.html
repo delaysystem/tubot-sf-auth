@@ -102,11 +102,6 @@
                                         <div class="slds-m-top_small">
                                             <lightning-button variant="brand" label="Re-check & continue" onclick={handleSimpleSetupRecheck} disabled={simpleSetupEcaBusy}></lightning-button>
                                         </div>
-                                        <details class="slds-m-top_small">
-                                            <summary>Advanced: Salesforce CLI alternative</summary>
-                                            <pre class="slds-box slds-theme_default slds-text-body_small slds-m-top_x-small"><lightning-formatted-text value={simpleSetupEcaGuidance.cliCommand}></lightning-formatted-text></pre>
-                                            <lightning-button variant="neutral" label="Copy command" icon-name="utility:copy" onclick={handleCopyPoliciesCommand} size="small"></lightning-button>
-                                        </details>
                                     </template>
                                 </div>
                             </template>
