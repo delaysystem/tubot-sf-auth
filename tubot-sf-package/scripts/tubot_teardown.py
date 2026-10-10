@@ -21,7 +21,8 @@ Removes (with per-run confirmation):
   7. Tubot_JWT_PreAuth assignments (all users) and all unpackaged TuBot
      permission sets.
   8. Subscriber ECA pre-authorization policies for the packaged app.
-  9. The TuBot managed package itself (all versions found installed).
+  9. Active TuBot package flows are deactivated, then every installed TuBot
+     managed package version is uninstalled.
 
 Kept by design: MessagingChannels (and their queues) only. Everything else
 TuBot-related goes, including admin permission set assignments granted by
@@ -32,7 +33,7 @@ Every deletion is blind-verified by re-querying ground truth. Run with
 ==============================================================================
 """
 
-TEARDOWN_VERSION = "1.2.1"
+TEARDOWN_VERSION = "1.2.3"
 
 import argparse
 import json
@@ -415,6 +416,27 @@ def list_installed_tubot_packages(org: Dict[str, str]) -> List[Dict[str, Any]]:
     sys.exit(1)
 
 
+def list_active_tubot_flows(org: Dict[str, str]) -> Optional[List[Dict[str, Any]]]:
+    """List active managed Flow definitions owned by TuBot's namespace."""
+    res = run_sf([
+        "data", "query", "--use-tooling-api", "--query",
+        "SELECT Id, DeveloperName, NamespacePrefix, ActiveVersionId "
+        "FROM FlowDefinition WHERE NamespacePrefix = 'tubot' AND ActiveVersionId != null",
+        "--target-org", org["target_flag"],
+    ])
+    if res["returncode"] != 0:
+        return None
+    # FlowDefinitionView is a standard-API view whose Id values use a
+    # FlowDefinitionView-specific prefix (3dd), even though its URL contains
+    # the underlying FlowDefinition ID (300). Deactivation must PATCH the
+    # Tooling API FlowDefinition record, so query FlowDefinition directly and
+    # normalize its DeveloperName for the callers that display ApiName.
+    records = res["data"].get("result", {}).get("records", [])
+    for record in records:
+        record["ApiName"] = record.get("DeveloperName")
+    return records
+
+
 def list_unpackaged_tubot_permsets(org: Dict[str, str]) -> List[Dict[str, Any]]:
     """List unpackaged (subscriber) TuBot permission sets by known names."""
     names = ",".join(f"'{n}'" for n in UNPACKAGED_TUBOT_PERMSETS)
@@ -748,6 +770,15 @@ def uninstall_package(org: Dict[str, str], version_id: str) -> bool:
             return True
         if res["returncode"] != 0:
             log_warn(f"Package uninstall note: {sf_error(res)[-300:]}")
+            # A rejected uninstall (for example, because another TuBot
+            # package still references it) is not an asynchronous request.
+            # Check current state once and let the caller remove other
+            # packages before retrying this version.
+            remaining = [p for p in list_installed_tubot_packages(org) if p.get("SubscriberPackageVersionId") == version_id]
+            if not remaining:
+                log_success(f"Package version {version_id} uninstalled and verified gone.")
+                return True
+            return False
         for poll in range(4):
             time.sleep(30)
             remaining = [p for p in list_installed_tubot_packages(org) if p.get("SubscriberPackageVersionId") == version_id]
@@ -757,6 +788,58 @@ def uninstall_package(org: Dict[str, str], version_id: str) -> bool:
         log_info(f"Uninstall request {req_attempt + 1} did not complete; retrying...")
     log_error(f"Package version {version_id} is still installed after retries.")
     return False
+
+
+def deactivate_tubot_flows(org: Dict[str, str]) -> List[str]:
+    """Deactivate active packaged TuBot flows before uninstalling their package.
+
+    Salesforce blocks package uninstall while a packaged Flow is active. The
+    FlowDefinition Tooling API represents deactivation as activeVersionNumber 0.
+    Only definitions whose NamespacePrefix is exactly ``tubot`` are changed.
+    Returns failed flow API names; callers must skip package uninstall if any
+    flow could not be deactivated and verified.
+    """
+    flows = list_active_tubot_flows(org)
+    if flows is None:
+        log_error("Could not enumerate active TuBot package flows before uninstall.")
+        return ["could not enumerate active TuBot flows"]
+    if not flows:
+        log_success("No active TuBot package flows need deactivation.")
+        return []
+
+    failed: List[str] = []
+    for flow in flows:
+        flow_id = flow.get("Id")
+        flow_name = flow.get("ApiName") or flow_id or "unknown flow"
+        if not flow_id:
+            log_warn(f"Could not resolve a FlowDefinition ID for {flow_name}.")
+            failed.append(str(flow_name))
+            continue
+        res = run_sf([
+            "api", "request", "rest",
+            f"/services/data/v67.0/tooling/sobjects/FlowDefinition/{flow_id}",
+            "--method", "PATCH",
+            "--body", json.dumps({"Metadata": {"activeVersionNumber": 0}}),
+            "--target-org", org["target_flag"],
+        ])
+        if res["returncode"] == 0:
+            log_success(f"Deactivated TuBot flow {flow_name}.")
+        else:
+            log_warn(f"Could not deactivate TuBot flow {flow_name}: {sf_error(res)}")
+            failed.append(str(flow_name))
+
+    remaining = list_active_tubot_flows(org)
+    if remaining is None:
+        log_error("Could not verify TuBot flow deactivation; package uninstall is unsafe.")
+        failed.append("could not verify TuBot flow deactivation")
+        return failed
+    remaining_names = [flow.get("ApiName") or flow.get("Id") or "unknown flow" for flow in remaining]
+    if remaining_names:
+        log_error("TuBot flows are still active: " + ", ".join(remaining_names))
+        failed.extend(str(name) for name in remaining_names if str(name) not in failed)
+    elif not failed:
+        log_success("Verified: all active TuBot package flows are deactivated.")
+    return failed
 
 
 def delete_unpackaged_permsets(org: Dict[str, str], permsets: List[Dict[str, Any]]) -> List[str]:
@@ -892,6 +975,10 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
     log_info("Querying subscriber policies and installed packages...")
     subscriber_policies = find_subscriber_policies_name(org)
     installed_packages = list_installed_tubot_packages(org)
+    active_tubot_flows = list_active_tubot_flows(org)
+    if active_tubot_flows is None:
+        log_error("Could not query active TuBot flows; refusing to begin teardown without a complete inventory.")
+        sys.exit(1)
 
     inventory = {
         "channel_config_records": len(records),
@@ -912,6 +999,9 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         "installed_packages": [
             f"{p.get('SubscriberPackageName')} {p.get('SubscriberPackageVersionNumber')}"
             for p in installed_packages
+        ],
+        "active_package_flows_to_deactivate": [
+            flow.get("ApiName") or flow.get("Id") for flow in active_tubot_flows
         ],
     }
     if not args.json:
@@ -936,6 +1026,7 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         print(f"  Unpackaged TuBot permission sets: {', '.join(p.get('Name') for p in unpackaged_permsets) or 'none'}")
         print(f"  Subscriber ECA policies: {subscriber_policies or 'none'}")
         print(f"  Installed TuBot packages: {', '.join(inventory['installed_packages']) or 'none'}")
+        print(f"  Active TuBot package flows to deactivate: {', '.join(inventory['active_package_flows_to_deactivate']) or 'none'}")
         print("  MessagingChannels: always kept")
 
     if args.inventory_only:
@@ -949,7 +1040,7 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         and not target_eca_present and not other_ecas
         and not mcp_rows and not cred_defs["delete"]
         and not jwt_assignments and not unpackaged_permsets
-        and subscriber_policies is None and not installed_packages
+        and subscriber_policies is None and not installed_packages and not active_tubot_flows
     )
     if nothing and eca_names is not None:
         log_success("Org is already bare (only MessagingChannels remain). Nothing to delete.")
@@ -1067,17 +1158,36 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         else:
             failed.append(f"policies {subscriber_policies}")
 
-    # Step 11: uninstall the TuBot package itself.
+    # Step 11: deactivate package flows before uninstalling TuBot packages.
     if installed_packages:
-        log_phase("Step 11: Uninstalling the TuBot package")
-        for pkg in installed_packages:
-            version_id = pkg.get("SubscriberPackageVersionId")
-            if uninstall_package(org, version_id):
-                deleted["packages"].append(
-                    f"{pkg.get('SubscriberPackageName')} {pkg.get('SubscriberPackageVersionNumber')}"
-                )
-            else:
-                failed.append(f"package {version_id}")
+        log_phase("Step 11: Deactivating packaged TuBot flows")
+        flow_failures = deactivate_tubot_flows(org)
+        if flow_failures:
+            failed.extend(f"active flow {name}" for name in flow_failures)
+            log_error("Skipping package uninstall because one or more TuBot flows remain active.")
+        else:
+            log_phase("Step 11: Uninstalling the TuBot packages")
+            pending_packages = list(installed_packages)
+            while pending_packages:
+                still_pending: List[Dict[str, Any]] = []
+                for pkg in pending_packages:
+                    version_id = pkg.get("SubscriberPackageVersionId")
+                    if not version_id:
+                        failed.append(f"package {pkg.get('SubscriberPackageName') or 'unknown'} has no version ID")
+                        continue
+                    if uninstall_package(org, version_id):
+                        deleted["packages"].append(
+                            f"{pkg.get('SubscriberPackageName')} {pkg.get('SubscriberPackageVersionNumber')}"
+                        )
+                    else:
+                        still_pending.append(pkg)
+                if len(still_pending) == len(pending_packages):
+                    failed.extend(
+                        f"package {pkg.get('SubscriberPackageVersionId')}"
+                        for pkg in still_pending
+                    )
+                    break
+                pending_packages = still_pending
 
     # Step 12: blind re-verification of ground truth.
     log_phase("Step 12: Verifying bare state")
@@ -1146,6 +1256,16 @@ def run_teardown(args: argparse.Namespace) -> Dict[str, Any]:
         )
     else:
         log_success("Verified: no TuBot package installed.")
+    remaining_active_flows = list_active_tubot_flows(org)
+    if remaining_active_flows is None:
+        verify_failed.append("could not verify active TuBot flows")
+    elif remaining_active_flows:
+        verify_failed.append(
+            "active TuBot flows remain: "
+            + ", ".join(flow.get("ApiName") or flow.get("Id") or "unknown" for flow in remaining_active_flows)
+        )
+    else:
+        log_success("Verified: no active TuBot package flows remain.")
     after_ecas = list_tubot_ecas(org)
     after_names = [(a.get("developerName") or "") for a in after_ecas] if after_ecas is not None else []
     leftover_ecas = [n for n in after_names if "tubot" in n.lower() or "panel_connection" in n.lower()]

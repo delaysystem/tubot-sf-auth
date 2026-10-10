@@ -93,14 +93,23 @@ private class SimpleSetupStepsTest {
     }
 
     @IsTest(SeeAllData=true)
-    static void ecaPrepareAssignsTheCurrentActiveUser() {
+    static void ecaPrepareAssignsTheTargetActiveUser() {
         PanelAuthSupportService.managePermissionTestOverride = true;
-        User activeUser = [
-            SELECT Id, IsActive FROM User WHERE Id = :UserInfo.getUserId() WITH USER_MODE LIMIT 1
-        ];
-        System.assertEquals(true, activeUser.IsActive);
+        String uniqueName = EncodingUtil.convertToHex(Crypto.generateAesKey(128)).substring(0, 16);
+        User targetUser = new User(
+            Alias = 'eca75usr',
+            Email = 'eca-coverage-' + uniqueName + '@example.invalid',
+            EmailEncodingKey = 'UTF-8',
+            LastName = 'EcaCoverageTarget',
+            LanguageLocaleKey = 'en_US',
+            LocaleSidKey = 'en_US',
+            ProfileId = UserInfo.getProfileId(),
+            TimeZoneSidKey = 'America/Los_Angeles',
+            Username = 'eca-coverage-' + uniqueName + '@example.invalid'
+        );
+        insert targetUser;
 
-        Map<String, Object> result = SimpleSetupEcaStep.prepare(activeUser.Id);
+        Map<String, Object> result = SimpleSetupEcaStep.prepare(targetUser.Id);
 
         System.assertEquals('popup-required', String.valueOf(result.get('status')));
         String className = SimpleSetupEcaStep.class.getName();
@@ -125,7 +134,7 @@ private class SimpleSetupStepsTest {
         System.assert(!packagePermissionSetIds.isEmpty());
         System.assertEquals(1, [
             SELECT COUNT() FROM PermissionSetAssignment
-            WHERE AssigneeId = :activeUser.Id AND PermissionSetId IN :packagePermissionSetIds
+            WHERE AssigneeId = :targetUser.Id AND PermissionSetId IN :packagePermissionSetIds
             WITH USER_MODE
         ]);
     }

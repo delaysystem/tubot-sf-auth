@@ -70,8 +70,13 @@ org = {'target_flag': '$TARGET_ORG', 'alias': '$TARGET_ORG'}
 name = td.find_subscriber_policies_name(org)
 if name:
     ok = td.delete_subscriber_policies(org, name)
-    sys.exit(0 if ok else 1)
-print('    No subscriber ECA policies present.')
+    if not ok:
+        sys.exit(1)
+else:
+    print('    No subscriber ECA policies present.')
+flow_failures = td.deactivate_tubot_flows(org)
+if flow_failures:
+    sys.exit(1)
 "
     echo "    Stripping packaged TuBot permission assignments (they block uninstall)..."
     ASSIGN_IDS="$(sf data query --target-org "$TARGET_ORG" --json \

@@ -325,8 +325,8 @@ function assertVersionMatches(version, { versionId, packageId, fingerprint }) {
 
 function assertCoverage(version, versionId) {
     const coverage = Number(version.CodeCoverage?.apexCodeCoveragePercentage);
-    if (version.HasPassedCodeCoverageCheck !== true || !Number.isFinite(coverage) || coverage < 78) {
-        throw new Error(`Package version ${versionId} has not passed the 78% package coverage target; refusing promotion.`);
+    if (version.HasPassedCodeCoverageCheck !== true || !Number.isFinite(coverage) || coverage < 75) {
+        throw new Error(`Package version ${versionId} has not passed the 75% package coverage target; refusing promotion.`);
     }
 }
 

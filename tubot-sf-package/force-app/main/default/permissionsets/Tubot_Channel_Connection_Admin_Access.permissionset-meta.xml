@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Deprecated compatibility entry. It grants no permissions; assign Panel Settings Admin Access instead.</description>
+    <label>Deprecated: Tubot Channel Connection Admin Access</label>
+    <hasActivationRequired>false</hasActivationRequired>
+</PermissionSet>

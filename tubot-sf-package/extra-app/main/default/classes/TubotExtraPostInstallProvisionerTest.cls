@@ -2,7 +2,9 @@
 private class TubotExtraPostInstallProvisionerTest {
     @IsTest
     static void postInstallCreatesAndLinksRoutingRecords() {
+        Test.startTest();
         Test.testInstall(new TubotExtraPostInstallHandler(), null);
+        Test.stopTest();
 
         Map<String, QueueRoutingConfig> configsByName = new Map<String, QueueRoutingConfig>();
         for (QueueRoutingConfig config : [

@@ -10,8 +10,18 @@ const targetIndex = args.indexOf('--target-org');
 const waitIndex = args.indexOf('--wait');
 const targetOrg = targetIndex >= 0 ? args[targetIndex + 1] : undefined;
 const waitMinutes = waitIndex >= 0 ? args[waitIndex + 1] : '30';
+const requestedTestNames = [];
+for (let index = 0; index < args.length; index++) {
+    if (args[index] !== '--test-class') { continue; }
+    const testName = args[index + 1];
+    if (!testName || testName.startsWith('--')) {
+        throw new Error('Each --test-class option requires an Apex test class name.');
+    }
+    requestedTestNames.push(testName);
+    index++;
+}
 if (!targetOrg || targetOrg.startsWith('--') || !/^\d+$/.test(waitMinutes)) {
-    throw new Error('Usage: bun scripts/check-release-coverage.mjs --target-org <org-alias> [--wait <minutes>]');
+    throw new Error('Usage: bun scripts/check-release-coverage.mjs --target-org <org-alias> [--wait <minutes>] [--test-class <ApexTestClassName> ...]');
 }
 const project = JSON.parse(await readFile(join(projectDir, 'sfdx-project.json'), 'utf8'));
 const packageNamespace = typeof project.namespace === 'string' && project.namespace.trim()
@@ -48,7 +58,10 @@ async function sf(commandArgs) {
         throw new Error(`Salesforce CLI returned an unreadable result for ${commandArgs.slice(0, 3).join(' ')}.`);
     }
     if (exitCode !== 0 || payload.status !== 0) {
-        throw new Error(`Salesforce CLI failed for ${commandArgs.slice(0, 3).join(' ')}.`);
+        const detail = typeof payload.message === 'string'
+            ? payload.message
+            : JSON.stringify(payload.message ?? payload.result?.summary ?? {});
+        throw new Error(`Salesforce CLI failed for ${commandArgs.slice(0, 3).join(' ')}: ${detail}`);
     }
     return payload.result;
 }
@@ -58,7 +71,7 @@ try {
     await sf(['project', 'convert', 'source', '--root-dir', 'force-app', '--output-dir', workspace]);
 
     const classesDir = join(workspace, 'classes');
-    const testNames = [];
+    const discoveredTestNames = [];
     const packageClassNames = [];
     for (const fileName of await readdir(classesDir)) {
         if (!fileName.endsWith('.cls') || fileName.startsWith('IGNORE_') || isIgnoredClass(fileName)) { continue; }
@@ -71,12 +84,20 @@ try {
             /^[\t ]*(?:@[A-Za-z][A-Za-z0-9_.]*(?:\([^)]*\))?[\t ]*)*(?:(?:global|public|private|protected|virtual|abstract|with|without|inherited|sharing|override|static)\s+)*class\s+([A-Za-z][A-Za-z0-9_]*)\b/im
         );
         if (!declaration) { continue; }
-        if (/@IsTest\b/i.test(source)) { testNames.push(declaration[1]); }
+        if (/@IsTest\b/i.test(source)) { discoveredTestNames.push(declaration[1]); }
         else { packageClassNames.push(declaration[1]); }
     }
-    if (testNames.length === 0) {
+    if (discoveredTestNames.length === 0) {
         throw new Error('The distributable package contains no active Apex test classes.');
     }
+    const discoveredTestNameSet = new Set(discoveredTestNames);
+    const unknownRequestedTests = requestedTestNames.filter(name => !discoveredTestNameSet.has(name));
+    if (unknownRequestedTests.length > 0) {
+        throw new Error(`Requested Apex test classes are not in force-app: ${unknownRequestedTests.join(', ')}.`);
+    }
+    const testNames = requestedTestNames.length > 0
+        ? [...new Set(requestedTestNames)]
+        : discoveredTestNames;
 
     const testNameQuery = testNames.map(name => `'${name}'`).join(', ');
     const testClassResult = await sf([

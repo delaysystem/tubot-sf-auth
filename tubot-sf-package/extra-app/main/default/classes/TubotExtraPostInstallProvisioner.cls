@@ -1,12 +1,16 @@
 /** Creates and links Omni-Channel routing records after the managed package installs. */
 public without sharing class TubotExtraPostInstallProvisioner {
-    private static final String CHAT_QUEUE_NAME = 'Chat_Queue';
-    private static final String HOLDING_QUEUE_NAME = 'AI_Bot_Holding_Queue_100';
     private static final String CHAT_ROUTING_NAME = 'Chat_Routing_Config';
     private static final String HOLDING_ROUTING_NAME = 'Holding_Routing_Config';
     private static final String HOLDING_SKILL_NAME = 'TuBot_On_Hold_DO_NOT_EDIT';
     private static final String PACKAGE_NAMESPACE = 'tubot';
     private static final String PROVISION_FLOW_API_NAME = 'TubotExtraCreateOmniRecords';
+    private static final String QUEUE_PROVISION_FLOW_API_NAME = 'TubotExtraEnsureQueue';
+
+    @future
+    public static void provisionAfterInstall() {
+        provision();
+    }
 
     public static void provision() {
         Set<String> routingNames = new Set<String>{ CHAT_ROUTING_NAME, HOLDING_ROUTING_NAME };
@@ -64,58 +68,40 @@ public without sharing class TubotExtraPostInstallProvisioner {
         }
 
         ensureQueue(
-            CHAT_QUEUE_NAME,
+            'Chat_Queue',
             'Chat Queue',
             routingIdsByName.get(CHAT_ROUTING_NAME),
-            new List<String>{ 'MessagingSession' }
+            true,
+            false
         );
         ensureQueue(
-            HOLDING_QUEUE_NAME,
+            'AI_Bot_Holding_Queue_100',
             'AI Bot Holding Queue 100',
             routingIdsByName.get(HOLDING_ROUTING_NAME),
-            new List<String>{ 'MessagingEndUser', 'MessagingSession' }
+            true,
+            true
         );
     }
 
     private static void ensureQueue(
-        String developerName,
-        String label,
+        String queueDeveloperName,
+        String queueLabel,
         Id routingConfigId,
-        List<String> supportedObjects
+        Boolean addMessagingSession,
+        Boolean addMessagingEndUser
     ) {
-        List<Group> matches = [
-            SELECT Id, Name, QueueRoutingConfigId
-            FROM Group
-            WHERE Type = 'Queue' AND DeveloperName = :developerName
-            LIMIT 1
-        ];
-
-        Group queue = matches.isEmpty()
-            ? new Group(Type = 'Queue', DeveloperName = developerName)
-            : matches[0];
-        queue.Name = label;
-        queue.QueueRoutingConfigId = routingConfigId;
-
-        if (queue.Id == null) {
-            insert queue;
-        } else {
-            update queue;
-        }
-
-        for (String supportedObject : supportedObjects) {
-            ensureQueueSobject(queue.Id, supportedObject);
-        }
-    }
-
-    private static void ensureQueueSobject(Id queueId, String supportedObject) {
-        Integer existingCount = [
-            SELECT COUNT()
-            FROM QueueSobject
-            WHERE QueueId = :queueId AND SobjectType = :supportedObject
-        ];
-        if (existingCount == 0) {
-            insert new QueueSobject(QueueId = queueId, SobjectType = supportedObject);
-        }
+        Flow.Interview queueProvisioningFlow = Flow.Interview.createInterview(
+            PACKAGE_NAMESPACE,
+            QUEUE_PROVISION_FLOW_API_NAME,
+            new Map<String, Object>{
+                'queueDeveloperName' => queueDeveloperName,
+                'queueLabel' => queueLabel,
+                'routingConfigId' => String.valueOf(routingConfigId),
+                'addMessagingSession' => addMessagingSession,
+                'addMessagingEndUser' => addMessagingEndUser
+            }
+        );
+        queueProvisioningFlow.start();
     }
 
     public class ProvisioningException extends Exception {}

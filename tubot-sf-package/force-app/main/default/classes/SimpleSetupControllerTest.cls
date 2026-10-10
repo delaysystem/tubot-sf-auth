@@ -64,15 +64,41 @@ private class SimpleSetupControllerTest {
     }
 
     @IsTest
-    static void ecaMembershipCheckRejectsAnUnassignedLiveUser() {
+    static void ecaMembershipCheckReflectsTheCurrentAssignment() {
         grantAdmin();
+        Boolean hasPreAuthAssignment = false;
+        String className = SimpleSetupEcaStep.class.getName();
+        String namespace = className.contains('.') ? className.substringBefore('.') : null;
+        String qualifiedName = String.isBlank(namespace)
+            ? SimpleSetupEcaStep.PREAUTH_PERMISSION_SET
+            : namespace + '__' + SimpleSetupEcaStep.PREAUTH_PERMISSION_SET;
+        Set<Id> preAuthIds = new Set<Id>();
+        for (PermissionSet candidate : [
+            SELECT Id, NamespacePrefix
+            FROM PermissionSet
+            WHERE Name = :SimpleSetupEcaStep.PREAUTH_PERMISSION_SET OR Name = :qualifiedName
+            WITH USER_MODE
+        ]) {
+            Boolean belongsToPackage = String.isBlank(namespace)
+                ? String.isBlank(candidate.NamespacePrefix)
+                : candidate.NamespacePrefix == namespace;
+            if (belongsToPackage) { preAuthIds.add(candidate.Id); }
+        }
+        if (!preAuthIds.isEmpty()) {
+            hasPreAuthAssignment = [
+                SELECT COUNT() FROM PermissionSetAssignment
+                WHERE AssigneeId = :UserInfo.getUserId() AND PermissionSetId IN :preAuthIds
+                WITH USER_MODE
+            ] == 1;
+        }
+
         Boolean rejected = false;
         try {
             SimpleSetupController.checkEcaAuthorization(String.valueOf(UserInfo.getUserId()));
         } catch (AuraHandledException expected) {
             rejected = true;
         }
-        System.assertEquals(true, rejected, 'A real user without a pre-authorization assignment must be rejected.');
+        System.assertEquals(!hasPreAuthAssignment, rejected);
     }
 
     @IsTest
