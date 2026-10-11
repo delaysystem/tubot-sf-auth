@@ -81,7 +81,7 @@ import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
 import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
 import { readBodyBounded, readJsonBounded, requestScope, requireScope, scopedTags, SecurityError } from "./request-security";
 import { getAgentScripts, getCallableToolUrlsForChannel, findCredentialByChannelId, type Credential } from "./agent-script";
-import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess } from "./agent-snapshot";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions } from "./agent-snapshot";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
 import {
   UserDataCacheStore,
@@ -1115,7 +1115,26 @@ type JwtApiDiagnosticCall = {
   name: string;
   status: number;
   ok: boolean;
-  errorCode?: "request_target_invalid" | "upstream_unreachable" | "redirect_response" | "response_too_large" | "invalid_json" | "salesforce_api_rejected";
+  errorCode?: "request_target_invalid" | "upstream_unreachable" | "redirect_response" | "response_too_large" | "invalid_json" | "salesforce_api_rejected" | "INSUFFICIENT_ACCESS" | "INSUFFICIENT_ACCESS_OR_READONLY" | "API_DISABLED_FOR_ORG" | "INVALID_TYPE" | "INVALID_FIELD" | "MALFORMED_QUERY" | "REQUEST_LIMIT_EXCEEDED" | "INVALID_SESSION_ID";
+  summary?: Record<string, unknown>;
+};
+
+type JwtPermissionDiagnosticInput = {
+  teamId: string;
+  orgId: string;
+  instanceUrl: string;
+  integrationUserId: string;
+  integrationUsername: string;
+  isSandbox: boolean;
+};
+
+type JwtPermissionDiagnosticCheck = {
+  name: string;
+  status: number;
+  ok: boolean;
+  required?: boolean;
+  skipped?: boolean;
+  errorCode?: string;
   summary?: Record<string, unknown>;
 };
 
@@ -1145,18 +1164,29 @@ async function diagnosticSalesforceJson(
     return { status: response.status, data: null, errorCode: "response_too_large" };
   }
   let text: string;
-  try { text = await response.text(); }
-  catch { return { status: response.status, data: null, errorCode: "upstream_unreachable" }; }
-  if (text.length > 262_144) return { status: response.status, data: null, errorCode: "response_too_large" };
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBodyBounded(response, 262_144));
+  } catch (cause) {
+    return { status: response.status, data: null,
+      errorCode: cause instanceof SecurityError && cause.status === 413 ? "response_too_large" : "upstream_unreachable" };
+  }
   let data: unknown = null;
   if (text) {
     try { data = JSON.parse(text); }
     catch { return { status: response.status, data: null, errorCode: "invalid_json" }; }
   }
+  const upstreamCode = Array.isArray(data) && object(data[0]) && typeof data[0].errorCode === "string"
+    ? data[0].errorCode
+    : object(data) && typeof data.errorCode === "string" ? data.errorCode : "";
+  const safeUpstreamCodes = new Set([
+    "INSUFFICIENT_ACCESS", "INSUFFICIENT_ACCESS_OR_READONLY", "API_DISABLED_FOR_ORG",
+    "INVALID_TYPE", "INVALID_FIELD", "MALFORMED_QUERY", "REQUEST_LIMIT_EXCEEDED", "INVALID_SESSION_ID",
+  ]);
   return {
     status: response.status,
     data,
-    errorCode: response.ok ? undefined : "salesforce_api_rejected",
+    errorCode: response.ok ? undefined : safeUpstreamCodes.has(upstreamCode)
+      ? upstreamCode as JwtApiDiagnosticCall["errorCode"] : "salesforce_api_rejected",
   };
 }
 
@@ -1240,6 +1270,147 @@ async function runJwtApiDiagnostics(
     } : null,
     checks,
   }, requestId, ok ? 200 : 502);
+}
+
+async function runJwtApiPermissionDiagnostics(
+  env: AuthEnv,
+  input: JwtPermissionDiagnosticInput,
+  requestId: string,
+): Promise<Response> {
+  const row: Credential = {
+    team_id: input.teamId,
+    org_id: input.orgId,
+    channel_id: "permission-diagnostic",
+    instance_url: new URL(input.instanceUrl).origin,
+    client_id: TUBOT_CHANNEL_API_CLIENT_ID,
+    client_secret_cipher: null,
+    client_secret_iv: null,
+    integration_user_id: input.integrationUserId,
+    integration_username: input.integrationUsername,
+    is_sandbox: input.isSandbox ? 1 : 0,
+    channel_secret_hash: "ephemeral-permission-diagnostic",
+  };
+  // This token is request-scoped. It is neither stored in D1 nor put in the
+  // regular token cache, and every Salesforce response is reduced to flags.
+  const auth = await fetchToken(env, row, `jwt-permission-diagnostic:${requestId}`, false);
+  const checks: JwtPermissionDiagnosticCheck[] = [];
+  const run = async (name: string, path: string): Promise<unknown> => {
+    const result = await diagnosticSalesforceJson(auth.instanceUrl, auth.accessToken, path);
+    checks.push({ name, status: result.status, ok: result.status >= 200 && result.status < 300,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}) });
+    return result.data;
+  };
+
+  const versions = await run("rest_api_versions", "/services/data/");
+  const availableVersions = Array.isArray(versions)
+    ? versions.map(version => object(version) ? version.version : null)
+      .filter((version): version is string => typeof version === "string" && /^\d+\.\d+$/.test(version))
+    : [];
+  const latestVersion = availableVersions.sort((left, right) => Number(right) - Number(left))[0];
+  const versionsCheck = checks[checks.length - 1];
+  if (versionsCheck) {
+    versionsCheck.ok = versionsCheck.ok && availableVersions.length > 0;
+    versionsCheck.required = true;
+    versionsCheck.summary = { versionCount: availableVersions.length, latestVersion: latestVersion ?? null };
+  }
+  const apiRootForOrg = `/services/data/v${latestVersion ?? API_VERSION}`;
+
+  const orgSoql = encodeURIComponent("SELECT Id, IsSandbox FROM Organization LIMIT 1");
+  const orgResult = await run("organization_query", `${apiRootForOrg}/query?q=${orgSoql}`);
+  const orgRecords = object(orgResult) && Array.isArray(orgResult.records) ? orgResult.records : [];
+  const orgRecord = object(orgRecords[0]) ? orgRecords[0] : null;
+  const orgMatches = orgRecord !== null && sameSalesforceId(orgRecord.Id, input.orgId) && orgRecord.IsSandbox === input.isSandbox;
+  const orgCheck = checks[checks.length - 1];
+  if (orgCheck) {
+    orgCheck.ok = orgCheck.ok && orgMatches;
+    orgCheck.required = true;
+    orgCheck.summary = { orgMatches };
+  }
+
+  const userSoql = encodeURIComponent(`SELECT Id, Username, IsActive FROM User WHERE Id = '${input.integrationUserId}' LIMIT 1`);
+  const userResult = await run("selected_user_query", `${apiRootForOrg}/query?q=${userSoql}`);
+  const userRecords = object(userResult) && Array.isArray(userResult.records) ? userResult.records : [];
+  const userRecord = object(userRecords[0]) ? userRecords[0] : null;
+  const identityMatches = userRecord !== null && sameSalesforceId(userRecord.Id, input.integrationUserId) &&
+    userRecord.Username === input.integrationUsername && userRecord.IsActive === true;
+  const userCheck = checks[checks.length - 1];
+  if (userCheck) {
+    userCheck.ok = userCheck.ok && identityMatches;
+    userCheck.required = true;
+    userCheck.summary = { identityMatches, active: userRecord?.IsActive === true };
+  }
+
+  const recordScenarios = [
+    { key: "account", objectName: "Account" },
+    { key: "contact", objectName: "Contact" },
+    { key: "case", objectName: "Case" },
+    { key: "messaging_session", objectName: "MessagingSession" },
+    { key: "messaging_end_user", objectName: "MessagingEndUser" },
+  ];
+  for (const scenario of recordScenarios) {
+    const description = await diagnosticSalesforceJson(auth.instanceUrl, auth.accessToken,
+      `${apiRootForOrg}/sobjects/${scenario.objectName}/describe`);
+    const describe = object(description.data) ? description.data : null;
+    if (!description.status || description.status < 200 || description.status >= 300 || !describe) {
+      checks.push({ name: `object_${scenario.key}`, status: description.status, ok: false,
+        skipped: description.errorCode === "INVALID_TYPE" || description.status === 404,
+        errorCode: description.errorCode ?? "invalid_response", summary: {} });
+      continue;
+    }
+    const permissions = {
+      queryable: describe.queryable === true,
+      createable: describe.createable === true,
+      updateable: describe.updateable === true,
+      deletable: describe.deletable === true,
+    };
+    if (!permissions.queryable) {
+      checks.push({ name: `object_${scenario.key}`, status: description.status, ok: false,
+        errorCode: "not_queryable", summary: permissions });
+      continue;
+    }
+    const soql = encodeURIComponent(`SELECT Id FROM ${scenario.objectName} LIMIT 1`);
+    const query = await diagnosticSalesforceJson(auth.instanceUrl, auth.accessToken, `${apiRootForOrg}/query?q=${soql}`);
+    const queryData = object(query.data) ? query.data : null;
+    const records = queryData && Array.isArray(queryData.records) ? queryData.records : [];
+    checks.push({ name: `object_${scenario.key}`, status: query.status,
+      ok: query.status >= 200 && query.status < 300,
+      skipped: query.errorCode === "INVALID_TYPE" || query.status === 404,
+      ...(query.errorCode ? { errorCode: query.errorCode } : {}),
+      summary: { ...permissions, sampleRecords: Math.min(records.length, 1) } });
+  }
+
+  try {
+    const metadata = await probeAgentMetadataPermissions({
+      instanceUrl: auth.instanceUrl,
+      accessToken: auth.accessToken,
+    });
+    checks.push({ name: "agent_metadata_access", status: metadata.agentRetrieve === "pending" ? 202 : 200,
+      ok: metadata.agentRetrieve === "ready",
+      required: true,
+      skipped: metadata.agentRetrieve === "not_available",
+      ...(metadata.agentRetrieve === "pending" ? { errorCode: "metadata_retrieval_pending" } :
+        metadata.agentRetrieve === "denied" ? { errorCode: "agent_metadata_permission_required" } :
+        metadata.agentRetrieve === "failed" ? { errorCode: "agent_metadata_retrieve_failed" } : {}),
+      summary: { apiVersion: metadata.apiVersion, agentCount: metadata.agentCount, retrieve: metadata.agentRetrieve } });
+    checks.push({ name: "prompt_template_access", status: metadata.promptRetrieve === "pending" ? 202 : 200,
+      ok: metadata.promptRetrieve === "ready",
+      skipped: metadata.promptRetrieve === "not_available",
+      ...(metadata.promptRetrieve === "pending" ? { errorCode: "metadata_retrieval_pending" } :
+        metadata.promptRetrieve === "denied" ? { errorCode: "prompt_template_permission_required" } :
+        metadata.promptRetrieve === "failed" ? { errorCode: "prompt_template_retrieve_failed" } : {}),
+      summary: { templateCount: metadata.promptCount, retrieve: metadata.promptRetrieve } });
+  } catch (cause) {
+    const denied = cause instanceof SecurityError && cause.status === 403;
+    checks.push({ name: "agent_metadata_access", status: cause instanceof SecurityError ? cause.status : 502,
+      ok: false, required: true,
+      errorCode: denied ? "agent_metadata_permission_required" : "agent_metadata_check_failed", summary: {} });
+    checks.push({ name: "prompt_template_access", status: cause instanceof SecurityError ? cause.status : 502,
+      ok: false, skipped: true,
+      errorCode: denied ? "prompt_template_permission_required" : "agent_metadata_check_failed", summary: {} });
+  }
+
+  const ok = checks.filter(check => check.required === true && check.skipped !== true).every(check => check.ok);
+  return json({ ok, checks }, requestId, 200);
 }
 async function sfGet(env: AuthEnv, row: Credential, path: string, requestId: string): Promise<Response> {
   return sfRequest(env, row, path, "GET", undefined, requestId);
@@ -2147,7 +2318,8 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
   if (channelLifecyclePath) return error(requestId, 410, "legacy_panel_retired", "Use New Panel to manage Salesforce connections.");
   const panelChannelCleanupPath = path === "/internal/channels/cleanup";
   const panelJwtDiagnosticsPath = path === "/internal/jwt-api-diagnostics";
-  if (path.startsWith("/internal/self-oauth/") || path.startsWith("/internal/agents/") || panelChannelCleanupPath || panelJwtDiagnosticsPath) {
+  const panelJwtPermissionDiagnosticsPath = path === "/internal/jwt-api-permission-diagnostics";
+  if (path.startsWith("/internal/self-oauth/") || path.startsWith("/internal/agents/") || panelChannelCleanupPath || panelJwtDiagnosticsPath || panelJwtPermissionDiagnosticsPath) {
     if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce service operation.");
     try {
       if (!await verifySignedSelfOAuthRequest(request, env, path)) {
@@ -2232,6 +2404,22 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       if (cause instanceof AuthFailure) return failure(requestId, cause.failure);
       console.error(JSON.stringify({ requestId, error: "jwt_api_diagnostics_failed" }));
       return error(requestId, 502, "jwt_api_diagnostics_failed", "The integration user API checks could not be completed.", true);
+    }
+  }
+
+  if (path === "/internal/jwt-api-permission-diagnostics") {
+    if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce permission diagnostic.");
+    if (!body || !str(body.teamId, 128) || !validSalesforceOrgId(body.orgId) ||
+        !validSalesforceUserId(body.integrationUserId) || !str(body.integrationUsername, 254) ||
+        !str(body.instanceUrl, 512) || !validInstanceUrl(body.instanceUrl) || typeof body.isSandbox !== "boolean") {
+      return error(requestId, 400, "invalid_request", "A valid Salesforce org and selected user are required.");
+    }
+    try {
+      return await runJwtApiPermissionDiagnostics(env, body as JwtPermissionDiagnosticInput, requestId);
+    } catch (cause) {
+      if (cause instanceof AuthFailure) return failure(requestId, cause.failure);
+      console.error(JSON.stringify({ requestId, error: "jwt_api_permission_diagnostics_failed" }));
+      return error(requestId, 502, "jwt_api_permission_diagnostics_failed", "The selected Salesforce user's live permission checks could not be completed.", true);
     }
   }
 

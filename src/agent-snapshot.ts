@@ -96,6 +96,52 @@ async function beginRetrieve(conn: SalesforceConnection, version: string, member
   if (typeof result.id !== "string") throw new SecurityError(502, "metadata_retrieve_not_started");
   return result.id;
 }
+
+type MetadataRetrieveProbe = "ready" | "pending" | "denied" | "failed" | "not_available";
+
+/**
+ * Read-only permission check for the Activation UI. It discovers actual
+ * metadata in this org, starts a retrieve for one real agent component (or an
+ * empty package when the org has no agents), and polls without storing the
+ * archive or retrieve ID. The Metadata API permission itself permits writes,
+ * but this probe only reads definitions and discards the response.
+ */
+export async function probeAgentMetadataPermissions(conn: SalesforceConnection) {
+  const inventory = await discoverAgents(conn);
+  const root = inventory.members.find(m => ["Bot", "AiAgent", "AiAgentDefinition"].includes(m.type));
+  const start = async (member: Member | undefined): Promise<MetadataRetrieveProbe> => {
+    const version = member?.apiVersion ?? inventory.apiVersion;
+    const id = await beginRetrieve(conn, version, member ? [member] : []);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const result = await soap(conn, version, "checkRetrieveStatus", `<m:asyncProcessId>${xml(id)}</m:asyncProcessId><m:includeZip>false</m:includeZip>`);
+      if (result.done === "true") {
+        if (result.success !== "true") return "denied";
+        if (member && !arr<any>(result.fileProperties).some(p => `${p.type}:${p.fullName}` === memberKey(member))) return "failed";
+        return "ready";
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    return "pending";
+  };
+
+  // listMetadata already proved discovery permission. When the org has no
+  // agent definition there is nothing real to retrieve, so report that case
+  // explicitly instead of submitting an invalid empty package.
+  const agentRetrieve = root ? await start(root) : "not_available";
+  const prompt = inventory.members.find(m => m.type === "GenAiPromptTemplate");
+  const promptUnavailable = inventory.warnings.some(w => w.startsWith("Prompt metadata is unavailable"));
+  const promptRetrieve = prompt
+    ? await start(prompt)
+    : promptUnavailable ? "denied" : "not_available";
+  return {
+    apiVersion: inventory.apiVersion,
+    agentCount: inventory.agents.length,
+    agentRetrieve,
+    promptCount: inventory.members.filter(m => m.type === "GenAiPromptTemplate").length,
+    promptRetrieve,
+  } as const;
+}
+
 function references(text: string, inventory: Inventory, from: string): { members: Member[]; edges: State["edges"]; excluded: string[] } {
   let searchable = text;
   // Legacy planner archives encode .agent and graph payloads as Base64.
