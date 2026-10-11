@@ -299,11 +299,11 @@ function equalHash(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return difference === 0;
 }
-function cacheKey(row: Credential): string {
+function cacheKey(row: Credential & { agent_registration_version?: number }): string {
   // The random IV changes for every registration, including rotations of the
   // same client secret. Cached tokens can never cross credential versions.
   // JWT rows carry no per-row secret: the asserted username scopes the cache.
-  const version = row.client_secret_iv ?? `jwt:${row.integration_username ?? ""}`;
+  const version = row.client_secret_iv ?? `jwt:${row.integration_username ?? ""}${row.agent_registration_version === undefined ? "" : ":" + row.agent_registration_version}`;
   return [row.team_id, row.org_id, row.channel_id, row.instance_url,
     row.client_id, version, row.channel_secret_hash].join("\u0000");
 }
@@ -2166,7 +2166,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
   if (path.startsWith("/internal/agents/")) {
     if (!body || !key(body) || !validSalesforceOrgId(body.orgId)) throw new SecurityError(400, "invalid_tenant_scope");
     const scope = requireScope(body);
-    let row = await credentialForEntrypoint(env, scope);
+    let row: Credential & { agent_registration_version?: number } = await credentialForEntrypoint(env, scope);
     if (path === "/internal/agents/connect") {
       if (!validSalesforceUserId(body.metadataUserId) || !str(body.metadataUsername, 254) || /\s/.test(body.metadataUsername) || !jwtRow(row)) throw new SecurityError(400, "invalid_metadata_user");
       const candidate: Credential = { ...row, integration_user_id: body.metadataUserId, integration_username: body.metadataUsername,
@@ -2176,13 +2176,15 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       await env.DB.prepare(`INSERT INTO sf_agent_metadata_user(team_id,org_id,channel_id,integration_user_id,integration_username,verified_at)
         VALUES(?,?,?,?,?,?) ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET integration_user_id=excluded.integration_user_id,integration_username=excluded.integration_username,verified_at=excluded.verified_at,verification_json=NULL`)
         .bind(scope.teamId, scope.orgId, scope.channelId, body.metadataUserId, body.metadataUsername, Date.now()).run();
+      // Explicit re-registration must discard sessions minted before license/grant changes.
+      clearChannelTokens(scope);
       return json({ connected: true, metadataUserId: body.metadataUserId }, requestId);
     }
     if (path === "/internal/agents/status") return json(await agentSnapshotStatus(env.DB, scope, body.jobId as string), requestId);
     if (path === "/internal/agents/download") return downloadAgentSnapshot(env.DB, scope, body.jobId as string);
-    const metadataUser = await env.DB.prepare("SELECT integration_user_id,integration_username FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
-      .bind(scope.teamId, scope.orgId, scope.channelId).first<{ integration_user_id: string; integration_username: string }>();
-    if (metadataUser) row = { ...row, ...metadataUser, client_secret_cipher: null, client_secret_iv: null };
+    const metadataUser = await env.DB.prepare("SELECT integration_user_id,integration_username,verified_at FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
+      .bind(scope.teamId, scope.orgId, scope.channelId).first<{ integration_user_id: string; integration_username: string; verified_at: number }>();
+    if (metadataUser) row = { ...row, ...metadataUser, agent_registration_version: metadataUser.verified_at, client_secret_cipher: null, client_secret_iv: null };
     const execute = async () => {
       const auth = await token(env, row);
       const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken, integrationUserId: row.integration_user_id };

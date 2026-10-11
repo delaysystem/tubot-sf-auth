@@ -29,9 +29,12 @@ async function soap(conn: SalesforceConnection, version: string, operation: stri
     signal: AbortSignal.timeout(60_000),
   });
   const text = new TextDecoder().decode(await readBodyBounded(response, MAX_ARCHIVE * 1.4));
+  if (response.status === 429) throw new SecurityError(429, "salesforce_metadata_rate_limited");
+  if ([503,504].includes(response.status)) throw new SecurityError(503, "salesforce_metadata_temporarily_unavailable");
   const envelope = parseXml(text)?.Envelope?.Body;
   if (!response.ok || envelope?.Fault) {
     const fault = String(envelope?.Fault?.faultcode ?? "").replace(/[^A-Za-z0-9_:.-]/g, "").slice(0, 100);
+    if (/REQUEST_LIMIT_EXCEEDED/.test(fault)) throw new SecurityError(429, "salesforce_metadata_rate_limited");
     if (/INVALID_SESSION_ID/.test(fault)) throw new SecurityError(401, "salesforce_metadata_session_expired");
     if (/INSUFFICIENT_ACCESS/.test(fault)) throw new SecurityError(403, "agent_metadata_permission_required");
     throw new SecurityError(response.status === 401 ? 401 : 502, `salesforce_metadata_request_failed:${operation}:${fault || response.status}`);
@@ -61,13 +64,26 @@ export async function discoverAgents(conn: SalesforceConnection): Promise<Invent
     // Legacy discovery also supplies legacy dependencies absent from v68.
     const listedTypes = version === apiVersion && legacyApiVersion && version !== legacyApiVersion
       ? types.filter(type => ["AiAgent", "AiAgentDefinition", "AiAgentDefinitionVersion"].includes(type)) : types;
-    for (let offset = 0; offset < listedTypes.length; offset += 3) {
-      const batch = listedTypes.slice(offset, offset + 3);
+    const baseTypes = listedTypes.filter(type => type !== "GenAiPromptTemplate");
+    for (let offset = 0; offset < baseTypes.length; offset += 3) {
+      const batch = baseTypes.slice(offset, offset + 3);
       const results = arr<any>(await soap(conn, version, "listMetadata", batch.map(type => `<m:queries><m:type>${type}</m:type></m:queries>`).join("") + `<m:asOfVersion>${version}</m:asOfVersion>`));
       for (const item of results) if (typeof item.fullName === "string" && typeof item.type === "string") {
         const member = { type: item.type, fullName: item.fullName, apiVersion: version }; membersByKey.set(memberKey(member), member);
       }
       if (results.length >= 1000) warnings.push(`Metadata inventory may be truncated for ${batch.join(", ")}.`);
+    }
+  }
+  // Optional prompt inventory must not prevent base agent discovery.
+  const promptVersion = legacyApiVersion ?? apiVersion;
+  if (typesByVersion[promptVersion]?.includes("GenAiPromptTemplate")) {
+    try {
+      const results = arr<any>(await soap(conn, promptVersion, "listMetadata", `<m:queries><m:type>GenAiPromptTemplate</m:type></m:queries><m:asOfVersion>${promptVersion}</m:asOfVersion>`));
+      for (const item of results) if (typeof item.fullName === "string" && item.type === "GenAiPromptTemplate") membersByKey.set(memberKey(item), { type: item.type, fullName: item.fullName, apiVersion: promptVersion });
+      if (results.length >= 1000) warnings.push("Prompt metadata inventory may be truncated.");
+    } catch (error) {
+      if (!(error instanceof SecurityError) || (error.status !== 403 && !/INVALID_TYPE|INVALID_FIELD/.test(error.code))) throw error;
+      warnings.push("Prompt metadata is unavailable to the extraction user; related agent downloads can be incomplete.");
     }
   }
   const members = [...membersByKey.values()], supportedTypes = [...new Set(Object.values(typesByVersion).flat())];
@@ -258,14 +274,14 @@ export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn
   const row = await db.prepare("SELECT integration_user_id,verification_json FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
     .bind(...args).first<{ integration_user_id: string; verification_json: string | null }>();
   if (!row || row.integration_user_id !== conn.integrationUserId) throw new SecurityError(409, "agent_metadata_user_not_registered");
-  let state = row.verification_json ? JSON.parse(row.verification_json) as { retrieveId?: string; version: string; startedAt: number; verifiedAt?: number; userId: string } : null;
+  let state = row.verification_json ? JSON.parse(row.verification_json) as { retrieveId?: string; version: string; startedAt: number; verifiedAt?: number; userId: string; promptReady?: boolean; promptRetrieveId?: string; promptVersion?: string; baseVerified?: boolean; rootKey?: string; promptKey?: string } : null;
   if (state?.userId !== conn.integrationUserId || Date.now() - state.startedAt > 900_000) state = null;
-  if (state?.verifiedAt && Date.now() - state.verifiedAt < 60_000) return { ready: true, integrationUserId: conn.integrationUserId };
+  if (state?.verifiedAt && Date.now() - state.verifiedAt < 60_000) return { ready: true, integrationUserId: conn.integrationUserId, promptReady: state.promptReady === true };
   if (!state || state.verifiedAt) {
     const inventory = await discoverAgents(conn);
-    const version = inventory.legacyApiVersion ?? inventory.apiVersion;
-    const root = inventory.members.find(m => m.apiVersion === version && ["Bot", "AiAgentDefinition", "AiAgent"].includes(m.type));
-    const prompt = inventory.members.find(m => m.apiVersion === version && m.type === "GenAiPromptTemplate");
+    const root = inventory.members.find(m => ["Bot", "AiAgentDefinition", "AiAgent"].includes(m.type));
+    const version = root?.apiVersion ?? inventory.apiVersion;
+    const prompt = inventory.members.find(m => m.type === "GenAiPromptTemplate");
     // Prompt metadata is gated independently, even when the org has no templates.
     const described = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/sobjects/PermissionSet/describe`, {
       headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
@@ -273,29 +289,54 @@ export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn
     if (!described.ok) throw new SecurityError(described.status === 401 ? 401 : 403, "agent_permission_schema_check_failed");
     const permissionSchema = JSON.parse(new TextDecoder().decode(await readBodyBounded(described, 3_000_000))) as { fields?: Array<{ name: string }> };
     const promptPermissionAvailable = permissionSchema.fields?.some(f => f.name === "PermissionsManagePromptTemplates");
-    if (inventory.typesByVersion[version]?.includes("GenAiPromptTemplate") && promptPermissionAvailable) {
+    let promptReady = false;
+    if (inventory.supportedTypes.includes("GenAiPromptTemplate") && promptPermissionAvailable) {
       const response = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/query?q=${encodeURIComponent("SELECT Id FROM PermissionSetAssignment WHERE AssigneeId='" + conn.integrationUserId + "' AND PermissionSet.PermissionsManagePromptTemplates=true LIMIT 1")}`, {
         headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) throw new SecurityError(response.status === 401 ? 401 : 403, "agent_prompt_permission_check_failed");
       const result = JSON.parse(new TextDecoder().decode(await readBodyBounded(response, 100_000))) as { records?: unknown[] };
-      if (!result.records?.length) throw new SecurityError(403, "agent_prompt_metadata_permission_required");
+      promptReady = !!result.records?.length && !inventory.warnings.some(w => w.startsWith("Prompt metadata is unavailable"));
     }
-    const members = [root, prompt].filter((m): m is Member => !!m);
+    const members = [root].filter((m): m is Member => !!m);
     // An empty metadata package is valid for an org with no agent definitions.
-    state = { retrieveId: await beginRetrieve(conn, version, members), version, startedAt: Date.now(), userId: conn.integrationUserId };
+    state = { retrieveId: await beginRetrieve(conn, version, members), version, startedAt: Date.now(), userId: conn.integrationUserId, promptReady, rootKey: root ? memberKey(root) : undefined };
+    if (promptReady && prompt) {
+      try {
+        state.promptKey = memberKey(prompt);
+        state.promptVersion = prompt.apiVersion ?? version;
+        state.promptRetrieveId = await beginRetrieve(conn, state.promptVersion, [prompt]);
+      } catch (error) {
+        if (!(error instanceof SecurityError) || (error.status !== 403 && !/INVALID_TYPE|INVALID_FIELD/.test(error.code))) throw error;
+        state.promptReady = false;
+      }
+    }
     await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")
       .bind(JSON.stringify(state), ...args, conn.integrationUserId).run();
     return { ready: false, pending: true };
   }
-  const retrieved = await soap(conn, state.version, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.retrieveId!)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
-  if (retrieved.done !== "true") return { ready: false, pending: true };
-  if (retrieved.success !== "true" || typeof retrieved.zipFile !== "string") {
-    await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=NULL WHERE team_id=? AND org_id=? AND channel_id=?").bind(...args).run();
-    throw new SecurityError(403, "agent_metadata_retrieval_check_failed");
+  if (!state.baseVerified) {
+    const retrieved = await soap(conn, state.version, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.retrieveId!)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
+    if (retrieved.done !== "true") return { ready: false, pending: true };
+    if (retrieved.success !== "true" || typeof retrieved.zipFile !== "string" || (state.rootKey && !arr<any>(retrieved.fileProperties).some(p => `${p.type}:${p.fullName}` === state.rootKey))) {
+      await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=NULL WHERE team_id=? AND org_id=? AND channel_id=?").bind(...args).run();
+      throw new SecurityError(403, "agent_metadata_retrieval_check_failed");
+    }
+    state.baseVerified = true;
+  }
+  if (state.promptRetrieveId) {
+    try {
+      const prompt = await soap(conn, state.promptVersion!, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.promptRetrieveId)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
+      if (prompt.done !== "true") return { ready: false, pending: true };
+      state.promptReady = prompt.success === "true" && typeof prompt.zipFile === "string" && arr<any>(prompt.fileProperties).some(p => `${p.type}:${p.fullName}` === state.promptKey);
+    } catch (error) {
+      if (!(error instanceof SecurityError) || error.status !== 403) throw error;
+      state.promptReady = false;
+    }
+    delete state.promptRetrieveId;
   }
   state.verifiedAt = Date.now();
   await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")
     .bind(JSON.stringify(state), ...args, conn.integrationUserId).run();
-  return { ready: true, integrationUserId: conn.integrationUserId };
+  return { ready: true, integrationUserId: conn.integrationUserId, promptReady: state.promptReady === true };
 }
