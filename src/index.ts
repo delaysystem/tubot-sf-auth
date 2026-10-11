@@ -81,6 +81,7 @@ import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
 import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
 import { readBodyBounded, readJsonBounded, requestScope, requireScope, scopedTags, SecurityError } from "./request-security";
 import { getAgentScripts, getCallableToolUrlsForChannel, findCredentialByChannelId, type Credential } from "./agent-script";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot } from "./agent-snapshot";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
 import {
   UserDataCacheStore,
@@ -2146,7 +2147,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
   if (channelLifecyclePath) return error(requestId, 410, "legacy_panel_retired", "Use New Panel to manage Salesforce connections.");
   const panelChannelCleanupPath = path === "/internal/channels/cleanup";
   const panelJwtDiagnosticsPath = path === "/internal/jwt-api-diagnostics";
-  if (path.startsWith("/internal/self-oauth/") || panelChannelCleanupPath || panelJwtDiagnosticsPath) {
+  if (path.startsWith("/internal/self-oauth/") || path.startsWith("/internal/agents/") || panelChannelCleanupPath || panelJwtDiagnosticsPath) {
     if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce service operation.");
     try {
       if (!await verifySignedSelfOAuthRequest(request, env, path)) {
@@ -2160,10 +2161,51 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
   const body = await parse(request, path === "/internal/self-oauth/request" ? 10_000_000 :
     path === "/internal/self-oauth/batch" ? 512_000 : 64_000);
 
+  // Only signed Panel requests enter here. Panel supplies the verified tenant,
+  // and credentials are loaded from the exact registered channel, never input.
+  if (path.startsWith("/internal/agents/")) {
+    if (!body || !key(body) || !validSalesforceOrgId(body.orgId)) throw new SecurityError(400, "invalid_tenant_scope");
+    const scope = requireScope(body);
+    let row = await credentialForEntrypoint(env, scope);
+    if (path === "/internal/agents/connect") {
+      if (!validSalesforceUserId(body.metadataUserId) || !str(body.metadataUsername, 254) || /\s/.test(body.metadataUsername) || !jwtRow(row)) throw new SecurityError(400, "invalid_metadata_user");
+      const candidate: Credential = { ...row, integration_user_id: body.metadataUserId, integration_username: body.metadataUsername,
+        client_secret_cipher: null, client_secret_iv: null };
+      const auth = await fetchToken(env, candidate, `agent-metadata-verify:${requestId}`, false);
+      await discoverAgents({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
+      await env.DB.prepare(`INSERT INTO sf_agent_metadata_user(team_id,org_id,channel_id,integration_user_id,integration_username,verified_at)
+        VALUES(?,?,?,?,?,?) ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET integration_user_id=excluded.integration_user_id,integration_username=excluded.integration_username,verified_at=excluded.verified_at`)
+        .bind(scope.teamId, scope.orgId, scope.channelId, body.metadataUserId, body.metadataUsername, Date.now()).run();
+      return json({ connected: true, metadataUserId: body.metadataUserId }, requestId);
+    }
+    if (path === "/internal/agents/status") return json(await agentSnapshotStatus(env.DB, scope, body.jobId as string), requestId);
+    if (path === "/internal/agents/download") return downloadAgentSnapshot(env.DB, scope, body.jobId as string);
+    const metadataUser = await env.DB.prepare("SELECT integration_user_id,integration_username FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
+      .bind(scope.teamId, scope.orgId, scope.channelId).first<{ integration_user_id: string; integration_username: string }>();
+    if (metadataUser) row = { ...row, ...metadataUser, client_secret_cipher: null, client_secret_iv: null };
+    const execute = async () => {
+      const auth = await token(env, row);
+      const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken, integrationUserId: row.integration_user_id };
+      if (path === "/internal/agents/list") return json(await discoverAgents(conn), requestId);
+      if (path === "/internal/agents/extract") return json(await startAgentSnapshot(env.DB, scope, conn, body.agentName as string, body.agentType as string | undefined), requestId, 202);
+      if (path === "/internal/agents/advance") return json(await advanceAgentSnapshot(env.DB, scope, conn, body.jobId as string), requestId);
+      throw new SecurityError(404, "not_found");
+    };
+    try { return await execute(); } catch (cause) {
+      if (!(cause instanceof SecurityError) || cause.status !== 401) throw cause;
+      clearChannelTokens(scope);
+      return execute();
+    }
+  }
+
   if (path === "/internal/channels/cleanup") {
     if (!body || !key(body) || !validSalesforceOrgId(body.orgId) || !validSalesforceUserId(body.channelId)) {
       return error(requestId, 400, "invalid_request", "A valid tenant, org, and channel are required.");
     }
+    await env.DB.prepare("DELETE FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
+      .bind(body.teamId, body.orgId, body.channelId).run();
+    await env.DB.prepare("DELETE FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=? AND channel_id=?")
+      .bind(body.teamId, body.orgId, body.channelId).run();
     const result = await env.DB.prepare(
       "DELETE FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
     ).bind(body.teamId, body.orgId, body.channelId).run();

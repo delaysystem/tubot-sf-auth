@@ -74,9 +74,9 @@ function parseArgs(argv: string[]): { targetOrg: string; channelId?: string } {
   return { targetOrg, channelId };
 }
 
-async function run(command: string, args: string[], input?: string): Promise<{ status: number; stdout: string; stderr: string }> {
+export async function run(command: string, args: string[], input?: string, cwd = process.cwd()): Promise<{ status: number; stdout: string; stderr: string }> {
   const child = spawn(command, args, {
-    cwd: process.cwd(),
+    cwd,
     env: {
       ...process.env,
       SF_SKIP_NEW_VERSION_CHECK: "true",
@@ -109,7 +109,7 @@ function onceExit(child: ReturnType<typeof spawn>): Promise<[number]> {
   });
 }
 
-function parseCliJson(output: string): Record<string, unknown> {
+export function parseCliJson(output: string): Record<string, unknown> {
   const start = output.search(/[\[{]/);
   if (start < 0) throw new Error("Salesforce CLI did not return JSON.");
   try {
@@ -121,7 +121,7 @@ function parseCliJson(output: string): Record<string, unknown> {
   }
 }
 
-async function queryRecords(targetOrg: string, soql: string): Promise<SalesforceRecord[]> {
+export async function queryRecords(targetOrg: string, soql: string): Promise<SalesforceRecord[]> {
   const result = await run("sf", [
     "data", "query", "--target-org", targetOrg, "--query", soql, "--json",
   ]);
@@ -145,7 +145,7 @@ async function queryRecords(targetOrg: string, soql: string): Promise<Salesforce
   return records as SalesforceRecord[];
 }
 
-async function queryChannelRecords(
+export async function queryChannelRecords(
   targetOrg: string,
   requestedChannelId?: string,
 ): Promise<{ schema: ChannelSchema; records: SalesforceRecord[] }> {
@@ -170,7 +170,7 @@ function validId(value: unknown): value is string {
   return typeof value === "string" && SF_ID.test(value);
 }
 
-function buildPanelSessionPreflight(forceRefresh = false): string {
+export function buildPanelSessionPreflight(forceRefresh = false): string {
   return [
     `PanelAuthController.ensurePanelSession(${forceRefresh ? "true" : "false"});`,
     "System.debug('JWT_PANEL_SESSION_READY=true');",
@@ -193,7 +193,7 @@ function buildApexRequest(payload: Record<string, unknown>, channelId: string): 
   ].join("\n");
 }
 
-function debugValue(output: string, key: string): string | null {
+export function debugValue(output: string, key: string): string | null {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = output.match(new RegExp(`USER_DEBUG\\|\\[\\d+\\]\\|DEBUG\\|${escaped}([^\\r\\n]*)`));
   return match?.[1]?.trim() || null;
@@ -280,7 +280,7 @@ async function main(): Promise<void> {
   console.log("JWT identity matches the selected org and active integration user.");
 }
 
-main().catch((cause: unknown) => {
+if (import.meta.main) main().catch((cause: unknown) => {
   void cause;
   console.error(`JWT API smoke check failed during ${currentStage}. Check org authorization, Panel setup, and channel registration.`);
   process.exitCode = 1;

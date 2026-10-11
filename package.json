@@ -12,7 +12,9 @@
 		"test": "bun test src/index.test.ts",
 		"setup:context-permissions": "bun scripts/setup-context-permissions.ts",
 		"typecheck": "bun x tsc --noEmit",
-		"release:check": "bun run test && bun run typecheck && bun x wrangler deploy --dry-run"
+		"release:check": "bun run test && bun run typecheck && bun x wrangler deploy --dry-run",
+		"setup:agent-metadata": "bun scripts/agent-metadata-access.ts",
+		"verify:agent-snapshot": "bun scripts/agent-snapshot-live.ts"
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.2",
@@ -20,6 +22,7 @@
 		"wrangler": "^4.145.0"
 	},
 	"dependencies": {
+		"fast-xml-parser": "^5.11.2",
 		"fflate": "^0.8.3"
 	}
 }
