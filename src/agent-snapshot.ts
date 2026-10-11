@@ -251,3 +251,51 @@ export async function downloadAgentSnapshot(db: D1Database, scope: TenantScope, 
   }
   return new Response(zipSync(archive) as BodyInit, { headers: { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="${job.agent_name}-${id}.zip"`, "Cache-Control": "no-store" } });
 }
+
+/** Resumable live retrieval check; its state belongs to the registered extraction identity. */
+export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn: SalesforceConnection & { integrationUserId: string }) {
+  const args = scopeArgs(scope);
+  const row = await db.prepare("SELECT integration_user_id,verification_json FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
+    .bind(...args).first<{ integration_user_id: string; verification_json: string | null }>();
+  if (!row || row.integration_user_id !== conn.integrationUserId) throw new SecurityError(409, "agent_metadata_user_not_registered");
+  let state = row.verification_json ? JSON.parse(row.verification_json) as { retrieveId?: string; version: string; startedAt: number; verifiedAt?: number; userId: string } : null;
+  if (state?.userId !== conn.integrationUserId || Date.now() - state.startedAt > 900_000) state = null;
+  if (state?.verifiedAt && Date.now() - state.verifiedAt < 60_000) return { ready: true, integrationUserId: conn.integrationUserId };
+  if (!state || state.verifiedAt) {
+    const inventory = await discoverAgents(conn);
+    const version = inventory.legacyApiVersion ?? inventory.apiVersion;
+    const root = inventory.members.find(m => m.apiVersion === version && ["Bot", "AiAgentDefinition", "AiAgent"].includes(m.type));
+    const prompt = inventory.members.find(m => m.apiVersion === version && m.type === "GenAiPromptTemplate");
+    // Prompt metadata is gated independently, even when the org has no templates.
+    const described = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/sobjects/PermissionSet/describe`, {
+      headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
+    });
+    if (!described.ok) throw new SecurityError(described.status === 401 ? 401 : 403, "agent_permission_schema_check_failed");
+    const permissionSchema = JSON.parse(new TextDecoder().decode(await readBodyBounded(described, 3_000_000))) as { fields?: Array<{ name: string }> };
+    const promptPermissionAvailable = permissionSchema.fields?.some(f => f.name === "PermissionsManagePromptTemplates");
+    if (inventory.typesByVersion[version]?.includes("GenAiPromptTemplate") && promptPermissionAvailable) {
+      const response = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/query?q=${encodeURIComponent("SELECT Id FROM PermissionSetAssignment WHERE AssigneeId='" + conn.integrationUserId + "' AND PermissionSet.PermissionsManagePromptTemplates=true LIMIT 1")}`, {
+        headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) throw new SecurityError(response.status === 401 ? 401 : 403, "agent_prompt_permission_check_failed");
+      const result = JSON.parse(new TextDecoder().decode(await readBodyBounded(response, 100_000))) as { records?: unknown[] };
+      if (!result.records?.length) throw new SecurityError(403, "agent_prompt_metadata_permission_required");
+    }
+    const members = [root, prompt].filter((m): m is Member => !!m);
+    // An empty metadata package is valid for an org with no agent definitions.
+    state = { retrieveId: await beginRetrieve(conn, version, members), version, startedAt: Date.now(), userId: conn.integrationUserId };
+    await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")
+      .bind(JSON.stringify(state), ...args, conn.integrationUserId).run();
+    return { ready: false, pending: true };
+  }
+  const retrieved = await soap(conn, state.version, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.retrieveId!)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
+  if (retrieved.done !== "true") return { ready: false, pending: true };
+  if (retrieved.success !== "true" || typeof retrieved.zipFile !== "string") {
+    await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=NULL WHERE team_id=? AND org_id=? AND channel_id=?").bind(...args).run();
+    throw new SecurityError(403, "agent_metadata_retrieval_check_failed");
+  }
+  state.verifiedAt = Date.now();
+  await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")
+    .bind(JSON.stringify(state), ...args, conn.integrationUserId).run();
+  return { ready: true, integrationUserId: conn.integrationUserId };
+}

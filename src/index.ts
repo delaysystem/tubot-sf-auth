@@ -81,7 +81,7 @@ import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
 import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
 import { readBodyBounded, readJsonBounded, requestScope, requireScope, scopedTags, SecurityError } from "./request-security";
 import { getAgentScripts, getCallableToolUrlsForChannel, findCredentialByChannelId, type Credential } from "./agent-script";
-import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot } from "./agent-snapshot";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess } from "./agent-snapshot";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
 import {
   UserDataCacheStore,
@@ -2174,7 +2174,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       const auth = await fetchToken(env, candidate, `agent-metadata-verify:${requestId}`, false);
       await discoverAgents({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
       await env.DB.prepare(`INSERT INTO sf_agent_metadata_user(team_id,org_id,channel_id,integration_user_id,integration_username,verified_at)
-        VALUES(?,?,?,?,?,?) ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET integration_user_id=excluded.integration_user_id,integration_username=excluded.integration_username,verified_at=excluded.verified_at`)
+        VALUES(?,?,?,?,?,?) ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET integration_user_id=excluded.integration_user_id,integration_username=excluded.integration_username,verified_at=excluded.verified_at,verification_json=NULL`)
         .bind(scope.teamId, scope.orgId, scope.channelId, body.metadataUserId, body.metadataUsername, Date.now()).run();
       return json({ connected: true, metadataUserId: body.metadataUserId }, requestId);
     }
@@ -2186,6 +2186,10 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     const execute = async () => {
       const auth = await token(env, row);
       const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken, integrationUserId: row.integration_user_id };
+      if (path === "/internal/agents/verify") {
+        const result = await verifyAgentAccess(env.DB, scope, conn);
+        return json(result, requestId, result.ready ? 200 : 202);
+      }
       if (path === "/internal/agents/list") return json(await discoverAgents(conn), requestId);
       if (path === "/internal/agents/extract") return json(await startAgentSnapshot(env.DB, scope, conn, body.agentName as string, body.agentType as string | undefined), requestId, 202);
       if (path === "/internal/agents/advance") return json(await advanceAgentSnapshot(env.DB, scope, conn, body.jobId as string), requestId);

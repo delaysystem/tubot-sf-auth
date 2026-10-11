@@ -2,6 +2,8 @@
 
 Agent snapshots use the registered channel's Salesforce integration user. When a dedicated metadata user is connected, extraction uses that registered user; otherwise it uses the primary integration user and requires compatible metadata permissions. They do not use the administrator's Salesforce CLI session for extraction. CLI is used separately for verification and explicit administrator setup.
 
+TuBot Activation now provisions and registers this access in package v1 and v2. The administrator CLI helper below remains available for explicit maintenance.
+
 ## Access prerequisite
 
 Salesforce Metadata API requires **Modify Metadata Through Metadata API Functions**, including for retrieval. Salesforce also requires View Setup and View Roles. This permission permits metadata writes; the snapshot service exposes retrieval operations only.
@@ -31,6 +33,7 @@ All operations use `POST /api/v1/salesforce/channels/{channelId}/agents/{operati
 
 | Operation | Body in addition to `orgId` | Scope | Result |
 | --- | --- | --- | --- |
+| `verify` | none | write | Start/resume a real Metadata API retrieval check; HTTP 202 while pending, then `ready: true` |
 | `connect` | `metadataUserId`, `metadataUsername` | write | Verify JWT identity and Metadata API access, then register the dedicated user |
 | `list` | none | read | Agent names, types, available authoring versions, supported metadata inventory |
 | `extract` | `agentName`, optional `agentType` (default `Bot`) | write | HTTP 202 with `jobId` |
