@@ -2,7 +2,7 @@
 /**
  * Restore archived pre-AppExchange flows + skill into a Salesforce org.
  *
- * Source of truth: tubot-sf-package/archive/pre-appexchange-cleanup/
+ * Source of truth: tubot-sf-app/archive/pre-appexchange-cleanup/
  * Strips the IGNORE_ filename prefix, deploys via `sf` CLI auth
  * (--target-org), then verifies each FlowDefinition + Skill via SOQL.
  *
@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE); // tubot-sf-auth/
-const ARCHIVE = join(ROOT, "tubot-sf-package/archive/pre-appexchange-cleanup");
+const ARCHIVE = join(ROOT, "../tubot-sf-app/archive/pre-appexchange-cleanup");
 const STAGING = join(HERE, "restored-flows");
 
 const FLOWS = ["t2", "t100", "defaultFlowTuBot", "OmniMessagingRoutingFlow"];
@@ -198,7 +198,7 @@ function applyNamespace(ns: string) {
 function stagePkgDir(srcRel: string, destSub: string) {
   const dest = join(STAGING, "force-app/main/default", destSub);
   mkdirSync(dest, { recursive: true });
-  cpSync(join(ROOT, "tubot-sf-package/force-app/main/default", srcRel), dest, {
+  cpSync(join(ROOT, "../tubot-sf-app/force-app/main/default", srcRel), dest, {
     recursive: true,
   });
   console.log(`staged ${destSub}/ from package source (${srcRel})`);

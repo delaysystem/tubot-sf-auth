@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
-    <fullName>Panel_Token_Expires_At__c</fullName>
-    <description>Panel access-token expiry. Contains no credential material.</description>
-    <label>Panel Token Expires At</label>
-    <type>DateTime</type>
-</CustomField>

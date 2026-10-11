@@ -3,7 +3,7 @@
 The symbols below are the maintained entry points; line numbers are omitted
 because they drift between releases. Paths are relative to the named project.
 
-## Salesforce package (`tubot-sf-package/`)
+## Salesforce app (`tubot-sf-app/`)
 
 - `force-app/main/default/externalClientApps/Tubot_Panel_Connection.eca-meta.xml`
   is the public PKCE client used for Salesforce approval.

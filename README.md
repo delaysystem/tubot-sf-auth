@@ -6,6 +6,6 @@ Set `SF_CREDENTIAL_ENCRYPTION_KEY` as a Wrangler secret containing a base64-enco
 
 The Salesforce ECA needs client credentials flow, the `api` and `id` scopes, and a dedicated Run As integration user. The package's Panel settings page connects a selected Messaging Channel after an administrator enters the ECA consumer key and secret once.
 
-Channel setup, ECA requirements, error codes, and recovery steps are documented in [`tubot-sf-package/SALESFORCE_CHANNEL_AUTH.md`](tubot-sf-package/SALESFORCE_CHANNEL_AUTH.md). The package automatically assigns its channel API permission set; ECA creation and Run As policy remain admin-controlled because Salesforce metadata deployment and secret exposure require org-level authority.
+Channel setup, ECA requirements, error codes, and recovery steps are documented in [`tubot-sf-app channel-auth guide`](https://github.com/mountaintops/tubot-sf-app/blob/v2/docs/SALESFORCE_CHANNEL_AUTH.md). The app automatically assigns its channel API permission set; ECA policy remains admin-controlled because Salesforce metadata deployment and secret exposure require org-level authority.
 
 Run `bun run release:check` before deployment. This runs the auth worker tests, TypeScript checks, and a Wrangler dry run. Deploy using the workspace's `bun run deploy:changed` protocol.

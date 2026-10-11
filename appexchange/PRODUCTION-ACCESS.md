@@ -74,7 +74,7 @@ The non-beta managed package version `1.7.0.1` was promoted on 2026-10-08
 coverage and a passed coverage gate. It is installed in the separate package
 validation subscriber; the targeted permission-gate Apex test passed there.
 The AppExchange-profile Code Analyzer report for this exact package source is
-in `tubot-sf-package/security-review/code-analyzer-appexchange-1.7.0.1.html`
+in `archive/legacy-tubot-sf-package/security-review/code-analyzer-appexchange-1.7.0.1.html`
 and records zero violations. The live production Panel setup endpoint returns
 401 without the Panel bearer token. The production Panel Worker deployment
 was checked after deployment. Release validation did not target

@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<RemoteSiteSetting xmlns="http://soap.sforce.com/2006/04/metadata">
-    <description>Trusted staging Panel endpoint for Panel OAuth exchange and profile requests.</description>
-    <disableProtocolSecurity>false</disableProtocolSecurity>
-    <isActive>true</isActive>
-    <url>https://tubot-new-panel-staging.emalteaproductions.workers.dev</url>
-</RemoteSiteSetting>

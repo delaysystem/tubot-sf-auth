@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
-    <!-- code-analyzer-suppress(pmd:ProtectSensitiveData) -->
-    <!-- Static name match only: this is a boolean indicating whether the package created an assignment. -->
-    <fullName>Assignment_Owned__c</fullName><label>Package Created Assignment</label>
-    <defaultValue>false</defaultValue><type>Checkbox</type>
-</CustomField>

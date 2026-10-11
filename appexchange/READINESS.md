@@ -1,18 +1,18 @@
-# AppExchange readiness
+# Legacy package AppExchange readiness
 
 Status as of 2026-10-08. This is an internal submission checklist, not a claim
 that Salesforce has approved the solution.
 
 ## Completed evidence
 
-- Promoted the managed package as non-beta version `1.7.0.1` (`04tg5000000FG4TAAW`).
+- Promoted the legacy managed package as non-beta version `1.7.0.1` (`04tg5000000FG4TAAW`).
 - Salesforce reports 76% Apex coverage and a passed coverage gate.
 - Installed that version in a separate package-validation subscriber and ran
   the targeted Panel Settings permission test successfully.
 - Ran Salesforce Code Analyzer with the AppExchange and Recommended Security
-  selectors. The report contains zero violations:
-  [`code-analyzer-appexchange-1.7.0.1.html`](../tubot-sf-package/security-review/code-analyzer-appexchange-1.7.0.1.html)
-  and [JSON result](../tubot-sf-package/security-review/code-analyzer-appexchange-1.7.0.1.json).
+  selectors against the legacy package. The report contains zero violations:
+  [`code-analyzer-appexchange-1.7.0.1.html`](archive/legacy-tubot-sf-package/security-review/code-analyzer-appexchange-1.7.0.1.html)
+  and [JSON result](archive/legacy-tubot-sf-package/security-review/code-analyzer-appexchange-1.7.0.1.json).
 - Updated the production Panel Worker configuration and deployed it. The live
   setup endpoint rejects an unauthenticated request. The existing
   user-verified subscriber org was left installed and outside release testing.
