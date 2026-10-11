@@ -115,7 +115,7 @@ public with sharing class PanelAuthSupportService {
                 }
                 request.setEndpoint('callout:' + alias + path);
                 HttpResponse response = new Http().send(request);
-                if (response.getStatusCode() == 401 && response.getHeader('WWW-Authenticate') == 'Bearer error="invalid_token"') {
+                if (response.getStatusCode() == 401) {
                     // Retry a whole UI action only if no earlier Panel callout could have mutated remote state.
                     String marker = panelCalloutsCompleted == 0 ? 'PANEL_REFRESH_REQUIRED' : 'PANEL_REAUTH_REQUIRED';
                     String message = marker + ': Refresh the Panel session in a separate transaction.';

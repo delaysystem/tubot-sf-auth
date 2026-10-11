@@ -24,15 +24,64 @@ import hasPanelSettingsAccess from '@salesforce/apex/PanelAuthController.hasPane
 
 import ensurePanelSession from '@salesforce/apex/PanelAuthController.ensurePanelSession';
 
+let panelSessionCheckInFlight;
+let panelSessionRefreshInFlight;
+
+function ensurePanelSessionOnce(forceRefresh) {
+    if (forceRefresh) {
+        if (!panelSessionRefreshInFlight) {
+            const previousCheck = panelSessionCheckInFlight;
+            let refresh;
+            refresh = Promise.resolve(previousCheck)
+                .catch(() => undefined)
+                .then(() => ensurePanelSession({ forceRefresh: true }))
+                .finally(() => {
+                    if (panelSessionRefreshInFlight === refresh) panelSessionRefreshInFlight = undefined;
+                });
+            panelSessionRefreshInFlight = refresh;
+        }
+        return panelSessionRefreshInFlight;
+    }
+
+    if (panelSessionRefreshInFlight) return panelSessionRefreshInFlight;
+    if (!panelSessionCheckInFlight) {
+        let check;
+        check = ensurePanelSession({ forceRefresh: false }).finally(() => {
+            if (panelSessionCheckInFlight === check) panelSessionCheckInFlight = undefined;
+        });
+        panelSessionCheckInFlight = check;
+    }
+    return panelSessionCheckInFlight;
+}
+
+function errorMessages(error) {
+    const messages = [error?.body?.message, error?.message];
+    const pageErrors = Array.isArray(error?.body?.pageErrors) ? error.body.pageErrors : [];
+    const outputErrors = Array.isArray(error?.body?.output?.errors) ? error.body.output.errors : [];
+    for (const item of pageErrors) messages.push(item?.message);
+    for (const item of outputErrors) messages.push(item?.message);
+    return messages.filter((message) => typeof message === 'string');
+}
+
+function requiresPanelRefresh(error) {
+    return errorMessages(error).some((message) => message.includes('PANEL_REFRESH_REQUIRED:'));
+}
+
 async function withPanelSession(action, args) {
-    await ensurePanelSession({ forceRefresh: false });
+    await ensurePanelSessionOnce(false);
     try {
         return await action(args);
     } catch (error) {
-        const message = error?.body?.message || error?.message || '';
-        if (message !== 'PANEL_REFRESH_REQUIRED: Refresh the Panel session in a separate transaction.') throw error;
-        await ensurePanelSession({ forceRefresh: true });
-        return action(args);
+        if (!requiresPanelRefresh(error)) throw error;
+        await ensurePanelSessionOnce(true);
+        try {
+            return await action(args);
+        } catch (retryError) {
+            if (requiresPanelRefresh(retryError)) {
+                throw new Error('Panel still rejected the refreshed session. Reconnect Panel and retry.');
+            }
+            throw retryError;
+        }
     }
 }
 

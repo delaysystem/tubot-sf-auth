@@ -2,6 +2,11 @@
 import { spawn } from "node:child_process";
 
 type SalesforceRecord = Record<string, unknown>;
+type ChannelSchema = {
+  objectName: string;
+  channelIdField: string;
+  integrationUserIdField: string;
+};
 
 type JwtDiagnosticResult = {
   ok?: boolean;
@@ -24,7 +29,26 @@ type JwtDiagnosticResult = {
   error_description?: string;
 };
 
+class SalesforceQueryError extends Error {
+  constructor(readonly safeCode: "schema_unavailable" | "query_failed") {
+    super(`Salesforce query ${safeCode}.`);
+  }
+}
+
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
+let currentStage = "argument validation";
+const CHANNEL_SCHEMAS: ChannelSchema[] = [
+  {
+    objectName: "tubot__Tubot_API_Channel__c",
+    channelIdField: "tubot__Channel_Id__c",
+    integrationUserIdField: "tubot__Integration_User_Id__c",
+  },
+  {
+    objectName: "Tubot_API_Channel__c",
+    channelIdField: "Channel_Id__c",
+    integrationUserIdField: "Integration_User_Id__c",
+  },
+];
 
 function usage(exitCode = 2): never {
   const message = "Usage: bun run jwt-api-smoke --target-org <sf-alias-or-username> [--channel-id <15-or-18-char-id>]";
@@ -102,12 +126,15 @@ async function queryRecords(targetOrg: string, soql: string): Promise<Salesforce
     "data", "query", "--target-org", targetOrg, "--query", soql, "--json",
   ]);
   if (result.status !== 0) {
-    let message = "Salesforce query failed.";
+    let schemaUnavailable = false;
     try {
       const payload = parseCliJson(result.stdout);
-      if (typeof payload.message === "string") message = payload.message.slice(0, 300);
-    } catch { /* keep the credential-safe error */ }
-    throw new Error(message);
+      const code = typeof payload.name === "string" ? payload.name : "";
+      const message = typeof payload.message === "string" ? payload.message : "";
+      schemaUnavailable = code === "INVALID_TYPE" || code === "INVALID_FIELD" ||
+        /sObject type .* is not supported|No such column/i.test(message);
+    } catch { /* report the safe query failure category below */ }
+    throw new SalesforceQueryError(schemaUnavailable ? "schema_unavailable" : "query_failed");
   }
   const payload = parseCliJson(result.stdout);
   const queryResult = payload.result as Record<string, unknown> | undefined;
@@ -118,20 +145,44 @@ async function queryRecords(targetOrg: string, soql: string): Promise<Salesforce
   return records as SalesforceRecord[];
 }
 
+async function queryChannelRecords(
+  targetOrg: string,
+  requestedChannelId?: string,
+): Promise<{ schema: ChannelSchema; records: SalesforceRecord[] }> {
+  for (const schema of CHANNEL_SCHEMAS) {
+    const channelFilter = requestedChannelId ? ` AND ${schema.channelIdField} = '${requestedChannelId}'` : "";
+    try {
+      const records = await queryRecords(targetOrg,
+        `SELECT Id, ${schema.channelIdField}, ${schema.integrationUserIdField} ` +
+        `FROM ${schema.objectName} ` +
+        `WHERE ${schema.channelIdField} != null AND ${schema.integrationUserIdField} != null` +
+        channelFilter + " ORDER BY CreatedDate DESC LIMIT 100");
+      return { schema, records };
+    } catch (cause) {
+      if (cause instanceof SalesforceQueryError && cause.safeCode === "schema_unavailable") continue;
+      throw cause;
+    }
+  }
+  throw new Error("The TuBot API channel object could not be resolved in this org.");
+}
+
 function validId(value: unknown): value is string {
   return typeof value === "string" && SF_ID.test(value);
 }
 
-function apexStringLiteral(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+function buildPanelSessionPreflight(forceRefresh = false): string {
+  return [
+    `PanelAuthController.ensurePanelSession(${forceRefresh ? "true" : "false"});`,
+    "System.debug('JWT_PANEL_SESSION_READY=true');",
+  ].join("\n");
 }
 
 function buildApexRequest(payload: Record<string, unknown>, channelId: string): string {
   const bodyBase64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
-  const endpoint = `callout:tubot__Panel_Named_Credential/api/v1/salesforce/channels/${channelId}/jwt-api-diagnostics`;
   return [
+    "String panelNamedCredential = PanelAuthSupportService.getNamedCredentialName();",
     "HttpRequest jwtDiagnosticRequest = new HttpRequest();",
-    `jwtDiagnosticRequest.setEndpoint('${apexStringLiteral(endpoint)}');`,
+    `jwtDiagnosticRequest.setEndpoint('callout:' + panelNamedCredential + '/api/v1/salesforce/channels/${channelId}/jwt-api-diagnostics');`,
     "jwtDiagnosticRequest.setMethod('POST');",
     "jwtDiagnosticRequest.setHeader('Content-Type', 'application/json');",
     "jwtDiagnosticRequest.setTimeout(120000);",
@@ -150,6 +201,7 @@ function debugValue(output: string, key: string): string | null {
 
 async function main(): Promise<void> {
   const { targetOrg, channelId: requestedChannelId } = parseArgs(process.argv.slice(2));
+  currentStage = "organization lookup";
   const organizationRows = await queryRecords(targetOrg, "SELECT Id, IsSandbox FROM Organization LIMIT 1");
   const organization = organizationRows[0];
   if (organizationRows.length !== 1 || !validId(organization?.Id) || typeof organization.IsSandbox !== "boolean") {
@@ -157,24 +209,20 @@ async function main(): Promise<void> {
   }
   const orgId = organization.Id;
 
-  const channelFilter = requestedChannelId ? ` AND tubot__Channel_Id__c = '${requestedChannelId}'` : "";
-  const channelRows = await queryRecords(targetOrg,
-    "SELECT Id, tubot__Channel_Id__c, tubot__Integration_User_Id__c " +
-    "FROM tubot__Tubot_API_Channel__c " +
-    "WHERE tubot__Channel_Id__c != null AND tubot__Integration_User_Id__c != null" +
-    channelFilter + " ORDER BY CreatedDate DESC LIMIT 100");
+  currentStage = "channel lookup";
+  const { schema: channelSchema, records: channelRows } = await queryChannelRecords(targetOrg, requestedChannelId);
   if (channelRows.length === 0) throw new Error("No registered TuBot API channel with an integration user was found in this org.");
   if (!requestedChannelId && channelRows.length > 1) {
-    const choices = channelRows.map((row) => String(row.tubot__Channel_Id__c)).filter((value) => SF_ID.test(value));
-    throw new Error(`This org has multiple registered channels. Choose one with --channel-id: ${choices.join(", ")}`);
+    throw new Error("This org has multiple registered channels. Choose one with --channel-id.");
   }
   const channel = channelRows[0];
-  const channelId = channel.tubot__Channel_Id__c;
-  const integrationUserId = channel.tubot__Integration_User_Id__c;
+  const channelId = channel[channelSchema.channelIdField];
+  const integrationUserId = channel[channelSchema.integrationUserIdField];
   if (!validId(channelId) || !validId(integrationUserId)) {
     throw new Error("The selected TuBot channel record has an invalid channel or integration user ID.");
   }
 
+  currentStage = "integration user lookup";
   const users = await queryRecords(targetOrg,
     `SELECT Id, Name, Username, IsActive FROM User WHERE Id = '${integrationUserId}' LIMIT 1`);
   const user = users[0];
@@ -183,11 +231,19 @@ async function main(): Promise<void> {
     throw new Error("The registered integration user could not be resolved as one active Salesforce user.");
   }
 
-  console.log(`Org: ${orgId} (${organization.IsSandbox ? "sandbox" : "production"})`);
-  console.log(`Channel: ${channelId}`);
-  console.log(`Integration user: ${user.Name} (${user.Username})`);
+  console.log(`Target org environment: ${organization.IsSandbox ? "sandbox" : "production"}.`);
+  console.log("Registered channel and active integration user resolved.");
   console.log("Running JWT-backed Salesforce REST checks through tubot-sf-auth...");
 
+  currentStage = "Panel session preflight";
+  const preflight = await run("sf", ["apex", "run", "--target-org", targetOrg], buildPanelSessionPreflight());
+  const preflightOutput = `${preflight.stdout}\n${preflight.stderr}`;
+  if (preflight.status !== 0 || !preflightOutput.includes("Compiled successfully") ||
+      !preflightOutput.includes("JWT_PANEL_SESSION_READY=true")) {
+    throw new Error("Could not renew the Panel session. Connect Panel again and retry the live SOQL check.");
+  }
+
+  currentStage = "JWT API diagnostics callout";
   const apexCode = buildApexRequest({
     orgId,
     integrationUserId,
@@ -208,6 +264,7 @@ async function main(): Promise<void> {
   let diagnostic: JwtDiagnosticResult;
   try { diagnostic = JSON.parse(body) as JwtDiagnosticResult; }
   catch { throw new Error("The JWT API diagnostic endpoint returned invalid JSON."); }
+  currentStage = "JWT identity verification";
   for (const check of diagnostic.checks || []) {
     const detail = check.errorCode ? `, ${check.errorCode}` : "";
     console.log(`${check.ok ? "PASS" : "FAIL"} ${check.name || "Salesforce API request"} (HTTP ${check.status ?? "unknown"}${detail})`);
@@ -217,13 +274,14 @@ async function main(): Promise<void> {
     throw new Error("The JWT identity returned by Salesforce does not match the selected org and integration user.");
   }
   if (status !== "200" || !diagnostic.ok) {
-    throw new Error(diagnostic.message || diagnostic.error || "One or more JWT-backed Salesforce REST checks failed.");
+    currentStage = "JWT REST checks";
+    throw new Error("One or more JWT-backed Salesforce REST checks failed.");
   }
-  console.log(`Verified JWT identity: ${diagnostic.integrationUser?.name} (${diagnostic.integrationUser?.username})`);
+  console.log("JWT identity matches the selected org and active integration user.");
 }
 
 main().catch((cause: unknown) => {
-  const message = cause instanceof Error ? cause.message : "JWT API smoke check failed.";
-  console.error(`JWT API smoke check failed: ${message}`);
+  void cause;
+  console.error(`JWT API smoke check failed during ${currentStage}. Check org authorization, Panel setup, and channel registration.`);
   process.exitCode = 1;
 });
