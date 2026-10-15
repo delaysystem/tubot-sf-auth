@@ -314,6 +314,65 @@ export async function downloadAgentSnapshot(db: D1Database, scope: TenantScope, 
   return new Response(zipSync(archive) as BodyInit, { headers: { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="${job.agent_name}-${id}.zip"`, "Cache-Control": "no-store" } });
 }
 
+/** Channel-agnostic scope for session-source readers: org ids are globally
+ * unique and the channel is only a credential route, so listing and fetching
+ * span every channel of the (team, org) pair. File reads use the winning
+ * job's own channel; nothing is guessed. */
+export type AgentScope = { teamId: string; orgId: string };
+const ORG_ID_RE = /^[A-Za-z0-9]{15,18}$/;
+function requireAgentScope(value: any): AgentScope {
+  if (!value || typeof value.teamId !== "string" || value.teamId.length === 0 || value.teamId.length > 128 ||
+      typeof value.orgId !== "string" || !ORG_ID_RE.test(value.orgId)) {
+    throw new SecurityError(401, "tenant_scope_required");
+  }
+  return { teamId: value.teamId, orgId: value.orgId };
+}
+export interface AgentSnapshotSummary { agentName: string; jobId: string; status: string; updatedAt: number }
+export async function listAgentSnapshotsForScope(db: D1Database, scope: AgentScope): Promise<AgentSnapshotSummary[]> {
+  const { teamId, orgId } = requireAgentScope(scope);
+  const rows = (await db.prepare(`SELECT agent_name, id, status, updated_at FROM sf_agent_snapshot_job
+    WHERE team_id=? AND org_id=? AND status IN ('complete','incomplete') ORDER BY agent_name, created_at DESC`)
+    .bind(teamId, orgId).all<{ agent_name: string; id: string; status: string; updated_at: number }>()).results;
+  const latest = new Map<string, AgentSnapshotSummary>();
+  for (const row of rows) {
+    if (!latest.has(row.agent_name)) latest.set(row.agent_name, { agentName: row.agent_name, jobId: row.id, status: row.status, updatedAt: row.updated_at });
+  }
+  return [...latest.values()];
+}
+export interface AgentSnapshotFile { path: string; sha256: string; byteSize: number; content: string }
+export interface AgentSnapshotPayload { agentName: string; jobId: string; sha: string; manifest: unknown; files: AgentSnapshotFile[] }
+/** RPC-sized snapshot fetch: reassembles the latest ready job for one agent,
+ * verifies per-file integrity exactly like the zip download, and returns
+ * decoded text plus a content sha the caller keys its compile cache on. */
+export async function readAgentSnapshotForScope(db: D1Database, scope: AgentScope, agentName: string): Promise<AgentSnapshotPayload> {
+  const { teamId, orgId } = requireAgentScope(scope);
+  if (typeof agentName !== "string" || agentName.length === 0 || agentName.length > 255 || !/^[A-Za-z0-9_.-]+$/.test(agentName)) {
+    throw new SecurityError(400, "invalid_agent_name");
+  }
+  const job = await db.prepare(`SELECT id, agent_name, status, manifest_json, channel_id FROM sf_agent_snapshot_job
+    WHERE team_id=? AND org_id=? AND agent_name=? AND status IN ('complete','incomplete') ORDER BY created_at DESC LIMIT 1`)
+    .bind(teamId, orgId, agentName).first<{ id: string; agent_name: string; status: string; manifest_json: string | null; channel_id: string }>();
+  if (!job) throw new SecurityError(404, "agent_snapshot_not_found");
+  const files = (await db.prepare(`SELECT path, sha256, byte_size FROM sf_agent_snapshot_file
+    WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=? ORDER BY path`)
+    .bind(teamId, orgId, job.channel_id, job.id).all<{ path: string; sha256: string; byte_size: number }>()).results;
+  const total = files.reduce((n, f) => n + f.byte_size, 0);
+  if (total > 512_000) throw new SecurityError(413, "agent_snapshot_too_large");
+  const out: AgentSnapshotFile[] = [];
+  const decoder = new TextDecoder();
+  for (const file of files) {
+    const chunks = (await db.prepare(`SELECT content FROM sf_agent_snapshot_chunk
+      WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=? AND path=? ORDER BY chunk_index`)
+      .bind(teamId, orgId, job.channel_id, job.id, file.path).all<{ content: number[] }>()).results;
+    const bytes = new Uint8Array(file.byte_size); let offset = 0;
+    for (const chunk of chunks) { const part = new Uint8Array(chunk.content); bytes.set(part, offset); offset += part.length; }
+    if (offset !== file.byte_size || await sha256(bytes) !== file.sha256) throw new SecurityError(500, "agent_snapshot_integrity_failed");
+    out.push({ path: file.path, sha256: file.sha256, byteSize: file.byte_size, content: decoder.decode(bytes) });
+  }
+  const sha = await sha256(new TextEncoder().encode(out.map(f => f.path + ":" + f.sha256).join("\n")));
+  return { agentName: job.agent_name, jobId: job.id, sha, manifest: job.manifest_json ? JSON.parse(job.manifest_json) : null, files: out };
+}
+
 /** Resumable live retrieval check; its state belongs to the registered extraction identity. */
 export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn: SalesforceConnection & { integrationUserId: string }) {
   const args = scopeArgs(scope);

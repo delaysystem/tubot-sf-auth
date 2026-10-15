@@ -62,14 +62,14 @@ again through Salesforce userinfo.
   `PanelJwtSigner` private Worker RPC. The auth Worker receives a short-lived
   assertion over its service binding; the signing key stays in Panel.
 - `worker/d1-query.ts` and `worker/channel-secrets.ts` provide scoped Panel
-  D1 access and AES-GCM channel-secret envelopes.
+  D1 access and AES-GCM protection for short-lived setup OAuth state.
 - The Panel channel registration endpoint verifies Salesforce org/user
-  identity before it stores a mapping. The packaged JWT execution client ID
-  is used for JWT registrations; the Salesforce integration user's username
+  identity before it stores a mapping. The packaged JWT execution client
+  is used for registrations; the Salesforce integration user's username
   is the JWT subject.
 - `tubot-sf-auth/src/jwt.ts` builds the JWT assertion, and
-  `tubot-sf-auth/src/index.ts` handles the Salesforce token grant and error
-  mapping. Legacy encrypted client-secret rows remain a separate path.
+  `tubot-sf-auth/src/index.ts` handles the Salesforce JWT grant and error
+  mapping. Salesforce channel auth has no client-secret compatibility path.
 
 ## API examples
 

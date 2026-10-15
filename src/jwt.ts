@@ -5,7 +5,7 @@
 // caller. No client secret exists on this path and no refresh dance is needed.
 
 export const TUBOT_CHANNEL_API_CLIENT_ID =
-  "3MVG97L7PWbPq6UwRxF9421lWKCBakiXaBrDfwFXOfEtvWSbrve3xGWTV18Ae_4tEtY92su8zyYWo9Fq3aczM";
+  "3MVG9TuqpTxXuFqOGY8XYVMvxYy25XqDsyH3T4PZbR_jDVL0oc0pehtiyhTCimRTkEyJOlj1RdHVH2jRWwP8P";
 export const JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const ASSERTION_LIFETIME_SECONDS = 180;
 
@@ -34,7 +34,8 @@ export async function buildJwtAssertion(
   privateKeyPem: string,
   subjectUsername: string,
   isSandbox: boolean,
-  nowSeconds = Math.floor(Date.now() / 1000)
+  nowSeconds = Math.floor(Date.now() / 1000),
+  clientId?: string
 ): Promise<string> {
   if (!privateKeyPem || !privateKeyPem.includes("PRIVATE KEY")) {
     throw new Error("jwt_private_key_misconfigured");
@@ -54,7 +55,7 @@ export async function buildJwtAssertion(
   const payload = base64UrlEncode(
     encoder.encode(
       JSON.stringify({
-        iss: TUBOT_CHANNEL_API_CLIENT_ID,
+        iss: clientId || TUBOT_CHANNEL_API_CLIENT_ID,
         sub: subjectUsername,
         aud: jwtAudience(isSandbox),
         exp: nowSeconds + ASSERTION_LIFETIME_SECONDS,

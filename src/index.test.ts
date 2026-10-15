@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import worker, { TubotSfAuthEntrypoint } from "./index";
+import worker, { TubotSfAuthEntrypoint, MessagingProxyBroker, assertApiDeployment } from "./index";
+import { browserConfig, verifyBrowserTurn } from "./browser-echo";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleError = console.error;
@@ -8,27 +9,17 @@ afterEach(() => {
   console.error = originalConsoleError;
 });
 
-const secret = "a".repeat(48);
 const orgId = "00D000000000001AAA";
 const userId = "005000000000001AAA";
-const enc = new TextEncoder();
 const keyBytes = new Uint8Array(32).fill(7);
 const encryptionKey = btoa(String.fromCharCode(...keyBytes));
-const hash = async (s: string) => btoa(String.fromCharCode(
-  ...new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s)))))
-  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 async function fixture(active = true) {
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = new Uint8Array(await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv }, cryptoKey, enc.encode("salesforce-secret")));
   const row = {
     team_id: "team", org_id: orgId, channel_id: "channel",
-    instance_url: "https://test.my.salesforce.com", client_id: "client",
-    client_secret_cipher: btoa(String.fromCharCode(...cipher)),
-    client_secret_iv: btoa(String.fromCharCode(...iv)),
-    integration_user_id: userId, channel_secret_hash: await hash(secret),
+    instance_url: "https://test.my.salesforce.com",
+    integration_user_id: userId, integration_username: "integration@example.com",
+    is_sandbox: 1,
   };
   const db = {
     prepare(sql: string) {
@@ -37,56 +28,24 @@ async function fixture(active = true) {
           return {
             async run() { return { success: true }; },
             async first() {
-              if (sql.includes("FROM salesforce_auth_credential")) return row;
-              if (sql.includes("FROM salesforce_channel_connection")) {
-                return active ? { secret_hash: row.channel_secret_hash } : null;
+              if (sql.includes("FROM panel_salesforce_channels") ||
+                  sql.includes("panel_salesforce_execution_users")) {
+                return active ? row : null;
               }
               return null;
             },
+            async all() { return { results: [] }; },
           };
         },
       };
     },
   };
-  return { DB: db, SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey, row };
-}
-
-function request(path: string, payload: Record<string, unknown>, requestId?: string) {
-  return new Request("https://private.invalid" + path, {
-    method: "POST", headers: {
-      "Content-Type": "application/json",
-      ...(requestId ? { "X-Request-Id": requestId } : {}),
-    },
-    body: JSON.stringify({ teamId: "team", orgId, channelId: "channel", channelSecret: secret, ...payload }),
-  });
-}
-
-const internalHmacKey = "k".repeat(48);
-
-async function signedRequest(path: string, payload: Record<string, unknown>, method = "POST") {
-  const bodyText = JSON.stringify({ teamId: "team", orgId, channelId: "channel", channelSecret: secret, ...payload });
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonceBytes = crypto.getRandomValues(new Uint8Array(18));
-  const nonce = btoa(String.fromCharCode(...nonceBytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const digest = await hash(bodyText);
-  const canonical = `${timestamp}\n${nonce}\n${path}\n${digest}`;
-  const key = await crypto.subtle.importKey("raw", enc.encode(internalHmacKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(canonical)))))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  return new Request("https://private.invalid" + path, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      "x-tubot-sf-auth-timestamp": timestamp,
-      "x-tubot-sf-auth-nonce": nonce,
-      "x-tubot-sf-auth-signature": signature,
-    },
-    body: bodyText,
-  });
-}
-
-function toolRequest(path: string, target: Record<string, unknown>, args?: Record<string, unknown>) {
-  return request(path, { target, ...(args === undefined ? {} : { arguments: args }) });
+  const PANEL_JWT_SIGNER = {
+    async signAssertion(_input: unknown) { return "test-assertion"; },
+  };
+  // Business-logic suite: RPC envelope enforcement is covered in rpc-signing.test.ts,
+  // so this fixture runs in warn mode and exercises method bodies without envelopes.
+  return { DB: db, SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey, PANEL_JWT_SIGNER, row, AUTH_RPC_WARN_MODE: "1" };
 }
 
 function mockSalesforce(routes: Record<string, unknown | ((init: RequestInit | undefined, url: URL) => Response)>) {
@@ -137,48 +96,6 @@ async function expectStructuredError(response: Response, expected: {
   expect(response.headers.get("X-Request-Id")).toBe(body.requestId);
   return body;
 }
-
-test("denies wrong channel secret and expired or revoked Panel grant", async () => {
-  const env = await fixture();
-  const wrong = await worker.fetch(request("/internal/channels/query", {
-    channelSecret: "b".repeat(48), soql: "SELECT Id FROM Account",
-  }), env as never);
-  expect(wrong.status).toBe(403);
-  const revoked = await worker.fetch(request("/internal/channels/query", {
-    soql: "SELECT Id FROM Account",
-  }), await fixture(false) as never);
-  expect(revoked.status).toBe(403);
-});
-
-test("only Salesforce read API calls are forwarded", async () => {
-  const seen: string[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    seen.push(url);
-    if (url.endsWith("/services/oauth2/token")) {
-      expect(init?.method).toBe("POST");
-      return Response.json({ access_token: "token" });
-    }
-    if (url.endsWith("/services/oauth2/userinfo")) {
-      return Response.json({ organization_id: orgId, user_id: userId });
-    }
-    expect(init?.headers).toEqual({ Authorization: "Bearer token", Accept: "application/json" });
-    return Response.json({ records: [{ Id: "001000000000000AAA" }] });
-  }) as typeof fetch;
-  const env = await fixture();
-  const write = await worker.fetch(request("/internal/channels/query", {
-    soql: "DELETE FROM Account",
-  }), env as never);
-  expect(write.status).toBe(400);
-  expect(seen).toHaveLength(0);
-  const read = await worker.fetch(request("/internal/channels/query", {
-    soql: "SELECT Id FROM Account",
-  }), env as never);
-  expect(read.status).toBe(200);
-  expect(read.headers.get("X-Request-Id")).toMatch(/^[0-9a-f-]{36}$/i);
-  expect(await read.json()).toEqual({ records: [{ Id: "001000000000000AAA" }] });
-  expect(seen[2]).toContain("/services/data/v65.0/query?q=SELECT%20Id%20FROM%20Account");
-});
 
 test("scoped action inspection forwards a schema-derived JSON POST body", async () => {
   const actionPath = "/services/data/v67.0/actions/custom/apex/tubot__CheckWeather";
@@ -567,494 +484,6 @@ test("scoped action inspection permits only read-only single-record sample queri
   expect(seen).toHaveLength(8);
 });
 
-test("registration returns safe diagnostics for rejected ECA credentials", async () => {
-  let writes = 0;
-  const logs: string[] = [];
-  console.error = ((...args: unknown[]) => { logs.push(args.join(" ")); }) as typeof console.error;
-  const fixtureEnv = await fixture();
-  fixtureEnv.DB.prepare = ((sql: string) => ({
-    bind: (..._args: unknown[]) => ({
-      first: async () => null,
-      run: async () => {
-        if (!sql.includes("internal_nonce")) writes++;
-        return { success: true, meta: { changes: 1 } };
-      },
-    }),
-  })) as typeof fixtureEnv.DB.prepare;
-  const exposedSecret = "do-not-return-this-error-description";
-  globalThis.fetch = (async () => Response.json({
-    error: "invalid_client", error_description: exposedSecret,
-  }, { status: 401 })) as typeof fetch;
-
-  const response = await worker.fetch(await signedRequest("/internal/channels/register", {
-    instanceUrl: "https://test.my.salesforce.com",
-    clientId: "new-client", clientSecret: "new-client-secret", integrationUserId: userId,
-  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey } as never);
-
-  const body = await expectStructuredError(response, {
-    status: 422,
-    error: "salesforce_invalid_client_credentials",
-    retryable: false,
-  });
-  expect(body.message).toContain("consumer key or secret");
-  expect(JSON.stringify(body)).not.toContain(exposedSecret);
-  expect(JSON.stringify(body)).not.toContain("new-client-secret");
-  expect(logs.join("\n")).not.toContain(exposedSecret);
-  expect(logs.join("\n")).not.toContain("new-client-secret");
-  expect(writes).toBe(0);
-});
-
-test("registration rejects a valid token issued for another org with safe diagnostics", async () => {
-  let writes = 0;
-  const logs: string[] = [];
-  console.error = ((...args: unknown[]) => { logs.push(args.join(" ")); }) as typeof console.error;
-  const fixtureEnv = await fixture();
-  fixtureEnv.DB.prepare = ((sql: string) => ({
-    bind: (..._args: unknown[]) => ({
-      first: async () => null,
-      run: async () => {
-        if (!sql.includes("internal_nonce")) writes++;
-        return { success: true, meta: { changes: 1 } };
-      },
-    }),
-  })) as typeof fixtureEnv.DB.prepare;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    if (String(input).endsWith("/services/oauth2/token")) return Response.json({ access_token: "token" });
-    return Response.json({ organization_id: "00D000000000999AAA", user_id: userId });
-  }) as typeof fetch;
-  const response = await worker.fetch(await signedRequest("/internal/channels/register", {
-    instanceUrl: "https://test.my.salesforce.com",
-    clientId: "new-client", clientSecret: "new-secret", integrationUserId: userId,
-  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey } as never);
-  const body = await expectStructuredError(response, {
-    status: 422,
-    error: "salesforce_identity_mismatch",
-    retryable: false,
-  });
-  expect(body.message).toContain("different Salesforce org or Run As user");
-  expect(JSON.stringify(body)).not.toContain("00D000000000999AAA");
-  expect(logs.join("\n")).not.toContain("00D000000000999AAA");
-  expect(writes).toBe(0);
-});
-
-test("JWT registration stores no secret and verifies via mint", async () => {
-  const { generateKeyPairSync } = await import("node:crypto");
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const seenBinds: unknown[][] = [];
-  let postedGrant = "";
-  const fixtureEnv = await fixture();
-  fixtureEnv.DB.prepare = ((sql: string) => ({
-    bind: (...args: unknown[]) => ({
-      first: async () => null,
-      run: async () => {
-        if (sql.includes("INSERT INTO salesforce_auth_credential")) seenBinds.push(args);
-        return { success: true, meta: { changes: 1 } };
-      },
-    }),
-  })) as typeof fixtureEnv.DB.prepare;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input).endsWith("/services/oauth2/token")) {
-      postedGrant = String(new URLSearchParams(String(init?.body)).get("grant_type"));
-      return Response.json({ access_token: "jwt-token", instance_url: "https://test.my.salesforce.com" });
-    }
-    return Response.json({ organization_id: orgId, user_id: userId });
-  }) as typeof fetch;
-  const response = await worker.fetch(await signedRequest("/internal/channels/register", {
-    instanceUrl: "https://test.my.salesforce.com",
-    integrationUserId: userId, integrationUsername: "integration@example.com", isSandbox: true,
-  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey, TUBOT_JWT_PRIVATE_KEY: privatePem } as never);
-  expect(response.status).toBe(201);
-  expect(postedGrant).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer");
-  expect(seenBinds.length).toBe(1);
-  // Bind order: team, org, channel, instance, clientId, cipher, iv, userId, username, sandbox, hash, created, updated.
-  expect(seenBinds[0][4]).toBe("3MVG97L7PWbPq6UwRxF9421lWKCBakiXaBrDfwFXOfEtvWSbrve3xGWTV18Ae_4tEtY92su8zyYWo9Fq3aczM");
-  expect(seenBinds[0][5]).toBeNull();
-  expect(seenBinds[0][6]).toBeNull();
-  expect(seenBinds[0][8]).toBe("integration@example.com");
-  expect(seenBinds[0][9]).toBe(1);
-});
-
-test("JWT registration rejects missing username or environment", async () => {
-  let writes = 0;
-  let fetches = 0;
-  const fixtureEnv = await fixture();
-  fixtureEnv.DB.prepare = ((sql: string) => ({
-    bind: (..._args: unknown[]) => ({
-      first: async () => null,
-      run: async () => {
-        if (!sql.includes("internal_nonce")) writes++;
-        return { success: true, meta: { changes: 1 } };
-      },
-    }),
-  })) as typeof fixtureEnv.DB.prepare;
-  globalThis.fetch = (async () => {
-    fetches++;
-    return Response.json({ access_token: "token" });
-  }) as typeof fetch;
-  const response = await worker.fetch(await signedRequest("/internal/channels/register", {
-    instanceUrl: "https://test.my.salesforce.com",
-    integrationUserId: userId,
-  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey } as never);
-  await expectStructuredError(response, { status: 400, error: "invalid_connection", retryable: false });
-  expect(writes).toBe(0);
-  expect(fetches).toBe(0);
-});
-
-test("channel registration requires an internal service signature", async () => {
-  const fixtureEnv = await fixture();
-  const response = await worker.fetch(request("/internal/channels/register", {
-    instanceUrl: "https://test.my.salesforce.com",
-    clientId: "new-client", clientSecret: "new-secret", integrationUserId: userId,
-  }), { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey } as never);
-  await expectStructuredError(response, {
-    status: 401,
-    error: "invalid_internal_signature",
-    retryable: false,
-  });
-});
-
-test("channel deletion requires an internal service signature", async () => {
-  const fixtureEnv = await fixture();
-  const unsigned = new Request("https://private.invalid/internal/channels", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ teamId: "team", orgId, channelId: "channel" }),
-  });
-  const response = await worker.fetch(unsigned, { ...fixtureEnv, SELF_OAUTH_INTERNAL_HMAC_KEY: internalHmacKey } as never);
-  await expectStructuredError(response, {
-    status: 401,
-    error: "invalid_internal_signature",
-    retryable: false,
-  });
-});
-
-test("generic internal failures return a request ID and log no exception detail", async () => {
-  const logs: string[] = [];
-  console.error = ((...args: unknown[]) => { logs.push(args.join(" ")); }) as typeof console.error;
-  const env = await fixture();
-  env.DB.prepare = (() => { throw new Error("database connection detail must stay private"); }) as typeof env.DB.prepare;
-  const requestId = "123e4567-e89b-42d3-a456-426614174000";
-
-  const response = await worker.fetch(request("/internal/channels/query", {
-    soql: "SELECT Id FROM Account",
-  }, requestId), env as never);
-
-  const body = await expectStructuredError(response, {
-    status: 500,
-    error: "internal_error",
-    retryable: true,
-  });
-  expect(body.requestId).toBe(requestId);
-  expect(JSON.stringify(body)).not.toContain("database connection detail");
-  expect(logs).toHaveLength(1);
-  expect(logs.join("\n")).not.toContain("SELECT Id FROM Account");
-  expect(logs[0]).toBe(JSON.stringify({ requestId, error: "internal_error", status: 500 }));
-});
-
-test("rotating credentials for the same channel does not reuse its cached token", async () => {
-  const env = await fixture();
-  const issued: string[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith("/services/oauth2/token")) {
-      const clientId = new URLSearchParams(init?.body as string).get("client_id")!;
-      issued.push(clientId);
-      return Response.json({ access_token: "token-for-" + clientId });
-    }
-    if (url.endsWith("/services/oauth2/userinfo")) {
-      return Response.json({ organization_id: orgId, user_id: userId });
-    }
-    return Response.json({ ok: true });
-  }) as typeof fetch;
-  const path = "/internal/channels/query";
-  const payload = { soql: "SELECT Id FROM Account" };
-  expect((await worker.fetch(request(path, payload), env as never)).status).toBe(200);
-  env.row.client_id = "rotated-client";
-  expect((await worker.fetch(request(path, payload), env as never)).status).toBe(200);
-  expect(issued).toEqual(["client", "rotated-client"]);
-});
-
-test("describes a listed flow using the live version, catalog route, and descriptor schema", async () => {
-  const flowName = "SvcCopilotTmpl__AddCaseComment";
-  const seen = mockSalesforce({
-    "/services/data/": [
-      { version: "66.0", url: "/services/data/v66.0" },
-      { version: "67.0", url: "/services/data/v67.0" },
-    ],
-    "/services/data/v67.0/actions/custom": { flow: "/services/data/v67.0/actions/custom/flow" },
-    "/services/data/v67.0/actions/custom/flow": {
-      actions: [{ name: flowName, url: `/services/data/v67.0/actions/custom/flow/${flowName}` }],
-    },
-    [`/services/data/v67.0/actions/custom/flow/${flowName}`]: {
-      name: flowName,
-      inputs: [{ name: "caseRecord", type: "SOBJECT", sObjectType: "Case", required: true, defaultValue: "private" }],
-      outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST", label: "Flow Interview Status" }],
-    },
-  });
-
-  const response = await worker.fetch(toolRequest("/internal/channels/tools/describe", {
-    type: "flow", name: flowName,
-  }), await fixture() as never);
-
-  expect(response.status).toBe(200);
-  const descriptor = await response.json();
-  expect(descriptor).toEqual({
-    available: true,
-    route: `/services/data/v67.0/actions/custom/flow/${flowName}`,
-    inputs: [{ name: "caseRecord", type: "SOBJECT", sObjectType: "Case", required: true }],
-    outputs: [{ name: "Flow__InterviewStatus", type: "PICKLIST", label: "Flow Interview Status" }],
-  });
-  expect(seen.map(item => item.url.pathname)).toEqual([
-    "/services/data/",
-    "/services/data/v67.0/actions/custom",
-    "/services/data/v67.0/actions/custom/flow",
-    `/services/data/v67.0/actions/custom/flow/${flowName}`,
-  ]);
-  expect(seen.every(item => item.authorization === "Bearer secret-access-token")).toBe(true);
-  expect(JSON.stringify(descriptor)).not.toContain("secret-access-token");
-});
-
-test("resolves an unqualified Apex target to its unique namespaced Salesforce action", async () => {
-  const catalogName = "tubot__CheckWeather";
-  const actionRoute = `/services/data/v67.0/actions/custom/apex/${catalogName}`;
-  const seen = mockSalesforce({
-    "/services/data/": [{ version: "67.0", url: "/services/data/v67.0" }],
-    "/services/data/v67.0/actions/custom": { apex: "/services/data/v67.0/actions/custom/apex" },
-    "/services/data/v67.0/actions/custom/apex": {
-      actions: [{ name: catalogName, url: actionRoute }],
-    },
-    [actionRoute]: (init) => init?.method === "POST"
-      ? Response.json([{ actionName: catalogName, isSuccess: true }])
-      : Response.json({
-          name: catalogName,
-          inputs: [{ name: "dateToCheck", type: "DATE", required: true }],
-          outputs: [{ name: "temperatureDescription", type: "STRING" }],
-        }),
-  });
-  const env = await fixture();
-  const target = { type: "apex", name: "CheckWeather" };
-
-  const describe = await worker.fetch(toolRequest("/internal/channels/tools/describe", target), env as never);
-  expect(await describe.json()).toEqual({
-    available: true,
-    route: actionRoute,
-    inputs: [{ name: "dateToCheck", type: "DATE", required: true }],
-    outputs: [{ name: "temperatureDescription", type: "STRING" }],
-  });
-
-  const dateToCheck = "2026-09-25";
-  const invoke = await worker.fetch(toolRequest("/internal/channels/tools/invoke", target, { dateToCheck }), env as never);
-  expect(invoke.status).toBe(200);
-  expect(await invoke.json()).toEqual([{ actionName: catalogName, isSuccess: true }]);
-  expect(seen.filter(item => item.url.pathname === actionRoute).map(item => item.method)).toEqual(["GET", "GET", "POST"]);
-  expect(JSON.parse(seen.at(-1)!.body!)).toEqual({ inputs: [{ dateToCheck }] });
-});
-
-test("does not describe or invoke an action missing from Salesforce's live catalog", async () => {
-  const seen = mockSalesforce({
-    "/services/data/": [{ version: "67.0", url: "/services/data/v67.0" }],
-    "/services/data/v67.0/actions/custom": { apex: "/services/data/v67.0/actions/custom/apex" },
-    "/services/data/v67.0/actions/custom/apex": { actions: [] },
-  });
-  const env = await fixture();
-
-  const describe = await worker.fetch(toolRequest("/internal/channels/tools/describe", {
-    type: "apex", name: "MissingAction",
-  }), env as never);
-  const invoke = await worker.fetch(toolRequest("/internal/channels/tools/invoke", {
-    type: "apex", name: "MissingAction",
-  }, { value: "unused" }), env as never);
-
-  expect(await describe.json()).toMatchObject({ available: false, diagnostic: { code: "action_not_found" } });
-  expect(invoke.status).toBe(404);
-  expect(await invoke.json()).toMatchObject({ available: false, diagnostic: { code: "action_not_found" } });
-  expect(seen.some(item => item.method === "POST")).toBe(false);
-  expect(seen.some(item => item.url.pathname.endsWith("/MissingAction"))).toBe(false);
-});
-
-test("invokes standard invocable actions with the Salesforce inputs wrapper", async () => {
-  const actionName = "archiveKnowledgeArticles";
-  const seen = mockSalesforce({
-    "/services/data/": [{ version: "67.0", url: "/services/data/v67.0" }],
-    "/services/data/v67.0/actions/standard": {
-      actions: [{ name: actionName, url: `/services/data/v67.0/actions/standard/${actionName}` }],
-    },
-    [`/services/data/v67.0/actions/standard/${actionName}`]: (init) => init?.method === "POST"
-      ? Response.json({ actionName, isSuccess: true })
-      : Response.json({ name: actionName, inputs: [{ name: "articleVersionIdList", type: "STRING" }], outputs: [] }),
-  });
-  const body = { articleVersionIdList: "ka0000000000001" };
-  const response = await worker.fetch(toolRequest("/internal/channels/tools/invoke", {
-    type: "standardInvocableAction", name: actionName,
-  }, body), await fixture() as never);
-
-  expect(response.status).toBe(200);
-  const result = await response.json();
-  expect(result).toEqual({ actionName, isSuccess: true });
-  const invocation = seen.at(-1)!;
-  expect(invocation.method).toBe("POST");
-  expect(invocation.url.pathname).toBe(`/services/data/v67.0/actions/standard/${actionName}`);
-  expect(JSON.parse(invocation.body!)).toEqual({ inputs: [body] });
-  expect(JSON.stringify(result)).not.toContain("secret-access-token");
-});
-
-test("preserves Salesforce action response status, body, and headers", async () => {
-  const actionName = "nativeResponseAction";
-  const actionPath = `/services/data/v67.0/actions/custom/apex/${actionName}`;
-  const nativeBody = '[{"actionName":"nativeResponseAction","isSuccess":false,"errors":["native error"]}]';
-  const seen = mockSalesforce({
-    "/services/data/": [{ version: "67.0", url: "/services/data/v67.0" }],
-    "/services/data/v67.0/actions/custom": { apex: "/services/data/v67.0/actions/custom/apex" },
-    "/services/data/v67.0/actions/custom/apex": {
-      actions: [{ name: actionName, url: actionPath }],
-    },
-    [actionPath]: (init) => init?.method === "POST"
-      ? new Response(nativeBody, {
-          status: 207,
-          statusText: "Multi-Status",
-          headers: {
-            "Content-Type": "application/vnd.salesforce.action+json",
-            "Cache-Control": "private, max-age=17",
-            "X-Salesforce-Request-Id": "sf-request-123",
-          },
-        })
-      : Response.json({ name: actionName, inputs: [], outputs: [] }),
-  });
-
-  const response = await worker.fetch(toolRequest("/internal/channels/tools/invoke", {
-    type: "apex", name: actionName,
-  }, { input: "value" }), await fixture() as never);
-
-  expect(response.status).toBe(207);
-  expect(response.statusText).toBe("Multi-Status");
-  expect(await response.text()).toBe(nativeBody);
-  expect(response.headers.get("Content-Type")).toBe("application/vnd.salesforce.action+json");
-  expect(response.headers.get("Cache-Control")).toBe("private, max-age=17");
-  expect(response.headers.get("X-Salesforce-Request-Id")).toBe("sf-request-123");
-  expect(response.headers.get("X-Request-Id")).toBeNull();
-  expect(seen.at(-1)?.method).toBe("POST");
-});
-
-test("maps prompt and predictive model targets to the correct live action catalogs", async () => {
-  const promptName = "ServiceSummary";
-  const modelName = "Sentiment_Model";
-  const seen = mockSalesforce({
-    "/services/data/": [{ version: "67.0", url: "/services/data/v67.0" }],
-    "/services/data/v67.0/actions/custom": {
-      generatePromptResponse: "/services/data/v67.0/actions/custom/generatePromptResponse",
-      cdpMlPrediction: "/services/data/v67.0/actions/custom/cdpMlPrediction",
-    },
-    "/services/data/v67.0/actions/custom/generatePromptResponse": {
-      actions: [{ name: promptName, url: `/services/data/v67.0/actions/custom/generatePromptResponse/${promptName}` }],
-    },
-    [`/services/data/v67.0/actions/custom/generatePromptResponse/${promptName}`]: {
-      name: promptName, inputs: [], outputs: [],
-    },
-    "/services/data/v67.0/actions/custom/cdpMlPrediction": {
-      actions: [{ name: modelName, url: `/services/data/v67.0/actions/custom/cdpMlPrediction/${modelName}` }],
-    },
-    [`/services/data/v67.0/actions/custom/cdpMlPrediction/${modelName}`]: {
-      name: modelName, inputs: [], outputs: [],
-    },
-  });
-  const env = await fixture();
-
-  const prompt = await worker.fetch(toolRequest("/internal/channels/tools/describe", {
-    type: "prompt", name: promptName,
-  }), env as never);
-  const model = await worker.fetch(toolRequest("/internal/channels/tools/describe", {
-    type: "predictiveModel", name: modelName,
-  }), env as never);
-
-  expect((await prompt.json() as { route: string }).route).toBe(`/services/data/v67.0/actions/custom/generatePromptResponse/${promptName}`);
-  expect((await model.json() as { route: string }).route).toBe(`/services/data/v67.0/actions/custom/cdpMlPrediction/${modelName}`);
-  expect(seen.some(item => item.url.pathname.includes("/generatePromptResponse/"))).toBe(true);
-  expect(seen.some(item => item.url.pathname.includes("/cdpMlPrediction/"))).toBe(true);
-});
-
-test("API invocation pins a live API version and encodes query values", async () => {
-  const seen = mockSalesforce({
-    "/services/data/": [
-      { version: "65.0", url: "/services/data/v65.0" },
-      { version: "67.0", url: "/services/data/v67.0" },
-    ],
-    "/services/data/v67.0/": {
-      sobjects: "/services/data/v67.0/sobjects",
-    },
-    "/services/data/v67.0/sobjects/Account": (init, url) => {
-      expect(init?.method).toBe("GET");
-      expect(url.searchParams.get("q")).toBe("Name = 'A&B'");
-      expect(url.searchParams.get("limit")).toBe("5");
-      return Response.json({ ok: true });
-    },
-  });
-  const response = await worker.fetch(toolRequest("/internal/channels/tools/invoke", {
-    type: "api",
-    name: "accountSearch",
-    method: "GET",
-    path: "/services/data/sobjects/{objectName}",
-    queryParams: { q: "{soql}", limit: 5 },
-  }, { objectName: "Account", soql: "Name = 'A&B'" }), await fixture() as never);
-
-  expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ ok: true });
-  expect(seen.map(item => item.url.pathname)).toContain("/services/data/v67.0/");
-  expect(seen.at(-1)?.url.search).toContain("A%26B");
-});
-
-test("API write verbs forward arguments as the raw JSON body", async () => {
-  const seen = mockSalesforce({
-    "/services/data/": [{ version: "67.0", url: "/services/data/v67.0" }],
-    "/services/data/v67.0/": { sobjects: "/services/data/v67.0/sobjects" },
-    "/services/data/v67.0/sobjects/Account": (init) => Response.json({
-      method: init?.method,
-      body: init?.body,
-    }),
-  });
-  const env = await fixture();
-  const args = { Name: "Acme" };
-
-  for (const method of ["POST", "PATCH", "DELETE"]) {
-    const response = await worker.fetch(toolRequest("/internal/channels/tools/invoke", {
-      type: "api", name: "accountWrite", method, path: "/services/data/sobjects/Account",
-    }, args), env as never);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ method, body: JSON.stringify(args) });
-  }
-  expect(seen.filter(item => item.url.pathname.endsWith("/sobjects/Account")).map(item => item.method)).toEqual([
-    "POST", "PATCH", "DELETE",
-  ]);
-});
-
-test("API targets reject external hosts, unsafe methods, and paths outside REST resources", async () => {
-  const seen = mockSalesforce({});
-  const env = await fixture();
-  const attempts = [
-    { type: "api", name: "badHost", method: "GET", path: "https://evil.invalid/services/data/v67.0/query" },
-    { type: "api", name: "badMethod", method: "PUT", path: "/services/data/query" },
-    { type: "api", name: "badPath", method: "POST", path: "/services/oauth2/token" },
-    { type: "toString", name: "prototypeLookup" },
-  ];
-
-  for (const target of attempts) {
-    const response = await worker.fetch(toolRequest("/internal/channels/tools/invoke", target, { q: "SELECT Id" }), env as never);
-    expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ available: false });
-  }
-  expect(seen.map(item => item.url.pathname)).toEqual([]);
-});
-
-test("tool endpoints require an active channel grant before any Salesforce request", async () => {
-  const seen = mockSalesforce({});
-  const response = await worker.fetch(toolRequest("/internal/channels/tools/describe", {
-    type: "flow", name: "ExistingFlow",
-  }), await fixture(false) as never);
-
-  expect(response.status).toBe(403);
-  expect(seen).toHaveLength(0);
-});
-
 test("temporary speech test creates, invokes, and deletes only its tenant-scoped WAV fixture", async () => {
   const versionPath = "/services/data/v67.0/sobjects/ContentVersion";
   const queryPath = "/services/data/v67.0/query";
@@ -1339,7 +768,7 @@ test("summary probe rejects revoked grants and other routes before upstream acce
   globalThis.fetch = (async () => { called = true; return Response.json({}); }) as typeof fetch;
   const input = { apiVersion: "67.0", route: "/services/data/v67.0/actions/standard/summarizeRecord" };
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordSummaryWithContext(
-    { teamId: "team", orgId, channelId: "channel" }, input)).rejects.toThrow("channel_not_authorized");
+    { teamId: "team", orgId, channelId: "channel" }, input)).rejects.toThrow("channel_not_found");
   await expect(new TubotSfAuthEntrypoint(null, await fixture()).invokeRecordSummaryWithContext(
     { teamId: "team", orgId, channelId: "channel" }, { ...input, route: input.route.replace("summarizeRecord", "createRecord") }
   )).rejects.toThrow("invalid_summary_probe");
@@ -1435,7 +864,7 @@ test("data graph probe refuses revoked grants and mismatched routes before Sales
   const ref = { teamId: "team", orgId, channelId: "channel" };
   await expect(entrypoint.invokeDataGraphMetadataWithSyntheticGraph(ref, {
     apiVersion: "67.0", route: "/services/data/v67.0/actions/standard/cdpGetDataGraphMetadata",
-  })).rejects.toThrow("channel_not_authorized");
+  })).rejects.toThrow("channel_not_found");
   await expect(entrypoint.invokeDataGraphMetadataWithSyntheticGraph(ref, {
     apiVersion: "67.0", route: "/services/data/v67.0/actions/standard/createRecord",
   })).rejects.toThrow("invalid_synthetic_graph_test");
@@ -1885,7 +1314,7 @@ test("global Quick Actions verify and clean only the unique created tenant recor
   expect(result.contextSchema).toMatchObject({ targetObject: "Tenant_Record__c", verified: true, verificationRecordIds: [id] });
   expect(seen.at(-1)?.method).toBe("GET");
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeQuickActionWithContext(
-    { teamId: "team", orgId, channelId: "channel" }, { route })).rejects.toThrow("channel_not_authorized");
+    { teamId: "team", orgId, channelId: "channel" }, { route })).rejects.toThrow("channel_not_found");
 });
 
 test("object Quick Actions update only a freshly created tenant context", async () => {
@@ -2631,7 +2060,7 @@ for (const action of ["createRecord", "updateRecord"]) test(`standard ${action} 
   expect(result.contextSchema).toMatchObject({ verified: true, source: "salesforce_live_record_action", verificationRecordIds: [id] });
   expect(result.cleanupError).toBeUndefined(); expect(deleted).toBe(true);
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordActionWithContext(
-    { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_authorized");
+    { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_found");
 });
 
 for (const action of ["updateRecord"]) test(`rejected standard ${action} cleans its owned fixture`, async () => {
@@ -2661,7 +2090,7 @@ for (const action of ["updateRecord"]) test(`rejected standard ${action} cleans 
   expect(result.contextSchema).toMatchObject({ verified: false, source: "salesforce_live_record_action", verificationRecordIds: [] });
   expect(result.cleanupError).toBeUndefined(); expect(deleted).toBe(true);
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordActionWithContext(
-    { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_authorized");
+    { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_found");
 });
 
 for (const action of ["createRecord"]) test(`unverified standard ${action} rejects a success response without a real record`, async () => {
@@ -2691,7 +2120,7 @@ for (const action of ["createRecord"]) test(`unverified standard ${action} rejec
   expect(result.contextSchema).toMatchObject({ verified: false, source: "salesforce_live_record_action", verificationRecordIds: [] });
   expect(result.cleanupError).toBeUndefined(); expect(deleted).toBe(false);
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordActionWithContext(
-    { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_authorized");
+    { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_found");
 });
 
 test("Flow creation prepares live parent inputs and verifies and cleans actual children", async () => {
@@ -2914,4 +2343,298 @@ test("inspectSalesforce falls back to direct fetches when the batch envelope fai
   ]);
   expect(seen.filter((s) => s.url.pathname === batchPath)).toHaveLength(1);
   expect(seen).toHaveLength(3);
+});
+
+function b64urlBytes(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+const cleanupHmacKey = "0123456789abcdef0123456789abcdef";
+
+async function signedCleanupRequest(teamId: string, orgId: string): Promise<Request> {
+  const body = JSON.stringify({ teamId, orgId });
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = "abcdefghijklmnopqrstuvwx";
+  const bodyDigest = b64urlBytes(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))));
+  const canonical = `POST\n/internal/orgs/cleanup\n${timestamp}\n${nonce}\n${bodyDigest}`;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(cleanupHmacKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = b64urlBytes(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(canonical))));
+  return new Request("http://auth/internal/orgs/cleanup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-tubot-sf-auth-timestamp": timestamp,
+      "x-tubot-sf-auth-nonce": nonce,
+      "x-tubot-sf-auth-signature": signature,
+    },
+    body,
+  });
+}
+
+function cleanupDb(opts: { conflictTable?: string } = {}) {
+  const seen: Array<{ sql: string; bindings: unknown[] }> = [];
+  const present = new Set([
+    "panel_salesforce_channels", "panel_salesforce_execution_users", "panel_salesforce_setup_oauth_pending",
+    "salesforce_self_oauth_credential", "salesforce_self_oauth_pending", "sf_agent_snapshot_chunk",
+    "sf_agent_snapshot_file", "sf_agent_snapshot_job", "sf_agent_metadata_user", "action_graph_context",
+    "sf_user_data_cache_v2", "panel_messaging_proxies",
+    "panel_org_oauth_clients", "panel_routing_backups", "panel_activate_tokens",
+  ]);
+  return {
+    seen,
+    prepare(sql: string) {
+      const bound = (bindings: unknown[]) => {
+        const entry = { sql, bindings };
+        return {
+          sql,
+          bindings,
+          async run() {
+            seen.push(entry);
+            return { success: true, meta: { changes: sql.includes("nonce") ? 1 : 0 } };
+          },
+          async first() {
+            if (sql.includes("FROM sqlite_master")) {
+              const table = bindings[0];
+              if (typeof table === "string") return present.has(table) ? { present: 1 } : null;
+              return null;
+            }
+            if (sql.includes("team_id<>?")) {
+              if (opts.conflictTable && sql.includes(opts.conflictTable)) return { present: 1 };
+              return null;
+            }
+            if (sql.includes("COUNT(*)")) return { count: 0 };
+            return null;
+          },
+          async all() { return { results: [] }; },
+        };
+      };
+      return { bind: (...bindings: unknown[]) => bound(bindings), ...bound([]) };
+    },
+    async batch(statements: Array<{ sql: string; bindings: unknown[] }>) {
+      for (const s of statements) seen.push({ sql: s.sql, bindings: s.bindings });
+      return statements.map(() => ({ success: true, meta: { changes: 0 } }));
+    },
+  };
+}
+
+test("org cleanup deletes and verifies the per-org oauth, routing-backup, and activate-token tables", async () => {
+  const db = cleanupDb();
+  const env = { DB: db, SELF_OAUTH_NEW_PANEL_HMAC_KEY: cleanupHmacKey };
+  const response = await worker.fetch(await signedCleanupRequest("team", orgId), env as never);
+  expect(response.status).toBe(200);
+  const payload = await response.json() as Record<string, unknown>;
+  expect(payload.ok).toBe(true);
+  const remaining = payload.remaining as Record<string, number>;
+  expect(remaining.org_oauth_clients).toBe(0);
+  expect(remaining.routing_backups).toBe(0);
+  expect(remaining.activate_tokens).toBe(0);
+  const deletes = db.seen.filter((s) => s.sql.startsWith("DELETE FROM panel_"));
+  for (const table of ["panel_org_oauth_clients", "panel_routing_backups", "panel_activate_tokens"]) {
+    const match = deletes.filter((s) => s.sql.includes(`DELETE FROM ${table} `));
+    expect(match).toHaveLength(1);
+    expect(match[0].sql).toContain("team_id=? AND org_id=?");
+    expect(match[0].bindings).toEqual(["team", orgId]);
+  }
+});
+
+test("org cleanup refuses when another team owns rows in the newly covered tables", async () => {
+  const db = cleanupDb({ conflictTable: "panel_routing_backups" });
+  const env = { DB: db, SELF_OAUTH_NEW_PANEL_HMAC_KEY: cleanupHmacKey };
+  const response = await worker.fetch(await signedCleanupRequest("team", orgId), env as never);
+  expect(response.status).toBe(409);
+  const payload = await response.json() as Record<string, unknown>;
+  expect(payload.error).toBe("org_cleanup_conflict");
+  const tenantDeletes = db.seen.filter((s) => s.sql.startsWith("DELETE FROM") && !s.sql.includes("nonce"));
+  expect(tenantDeletes).toHaveLength(0);
+});
+
+test("org cleanup rejects a forged internal signature", async () => {
+  const db = cleanupDb();
+  const env = { DB: db, SELF_OAUTH_NEW_PANEL_HMAC_KEY: cleanupHmacKey };
+  const request = await signedCleanupRequest("team", orgId);
+  const tampered = new Request(request, {
+    headers: {
+      "Content-Type": "application/json",
+      "x-tubot-sf-auth-timestamp": request.headers.get("x-tubot-sf-auth-timestamp") ?? "",
+      "x-tubot-sf-auth-nonce": request.headers.get("x-tubot-sf-auth-nonce") ?? "",
+      "x-tubot-sf-auth-signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    },
+  });
+  const response = await worker.fetch(tampered, env as never);
+  expect(response.status).toBe(401);
+});
+
+// Mobile deployments: live SCRT serves them when published, but the iamessage
+// token endpoint rejects them ("Supported deployment types: API"), so the
+// broker must fail closed with an explicit code instead of misrouting.
+const mobileChannelId = "0Mj000000000001AAA";
+const mobileScope = { teamId: "team", orgId, channelId: mobileChannelId };
+const echoFlowAction = {
+  name: "Echo_Flow",
+  definitionName: "Tubot_Proxy_Echo",
+  inputMapping: { definition: "definition", recipients: "recipients", parameters: "parameters" },
+  outputMapping: { requestId: "requestId" },
+};
+const mobileScrtPayload = {
+  embeddedServiceConfig: {
+    deploymentType: "Mobile",
+    embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+  },
+};
+const apiScrtPayload = {
+  embeddedServiceConfig: {
+    deploymentType: "API",
+    embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+  },
+};
+
+function mockBrokerSalesforce(scrt: (url: URL) => unknown) {
+  return mockSalesforce({
+    "/services/data/": [{ version: "65.0", url: "/services/data/v65.0" }],
+    "/services/data/v65.0/actions/custom": { flow: "/services/data/v65.0/actions/custom/flow" },
+    "/services/data/v65.0/actions/custom/flow": {
+      actions: [{ name: "Echo_Flow", url: "/services/data/v65.0/actions/custom/flow/Echo_Flow" }],
+    },
+    "/services/data/v65.0/actions/custom/flow/Echo_Flow": {
+      name: "Echo_Flow",
+      inputs: [
+        { name: "definition", required: true },
+        { name: "recipients", required: true },
+        { name: "parameters", required: true },
+      ],
+      outputs: [{ name: "requestId" }],
+    },
+    [`/services/data/v65.0/sobjects/MessagingChannel/${mobileChannelId}`]: {
+      IsActive: true, ChannelAddressIdentifier: "chan-addr-1",
+    },
+    "/embeddedservice/v1/embedded-service-config": (_init, url) => Response.json(scrt(url)),
+  });
+}
+
+test("broker validate rejects a Mobile deployment with an explicit unsupported-type error", async () => {
+  mockBrokerSalesforce(() => mobileScrtPayload);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  const failure = await broker.validate(mobileScope, { deploymentName: "Mobile_Deployment", action: echoFlowAction })
+    .then(() => null, (error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toBe("proxy_broker_proxy_deployment_type_unsupported");
+  expect((failure as Error).message).not.toContain("mismatch");
+});
+
+test("broker validate accepts a matching API deployment", async () => {
+  mockBrokerSalesforce(() => apiScrtPayload);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.validate(mobileScope, { deploymentName: "Api_Deployment", action: echoFlowAction }))
+    .resolves.toEqual({ scrtOrigin: "https://test.my.salesforce-scrt.com" });
+});
+
+test("broker validate rejects a Mobile browser deployment with an explicit error", async () => {
+  mockBrokerSalesforce((url) => url.searchParams.get("esConfigName") === "Mobile_Deployment" ? mobileScrtPayload : apiScrtPayload);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  const failure = await broker.validate(mobileScope, {
+    deploymentName: "Api_Deployment", browserDeploymentName: "Mobile_Deployment", action: echoFlowAction,
+  }).then(() => null, (error: unknown) => error);
+  expect((failure as Error).message).toBe("proxy_broker_browser_deployment_type_unsupported");
+});
+
+test("assertApiDeployment accepts API and rejects Mobile, mismatched, and empty payloads", () => {
+  expect(() => assertApiDeployment(apiScrtPayload, "chan-addr-1")).not.toThrow();
+  const codes = (payload: unknown) => {
+    try { assertApiDeployment(payload, "chan-addr-1"); } catch (error) {
+      return (error as { failure?: { code?: string } }).failure?.code;
+    }
+    return "accepted";
+  };
+  expect(codes(mobileScrtPayload)).toBe("proxy_deployment_type_unsupported");
+  expect(codes({
+    embeddedServiceConfig: {
+      deploymentType: "API",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "other-channel" },
+    },
+  })).toBe("proxy_deployment_mismatch");
+  expect(codes({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })).toBe("proxy_deployment_mismatch");
+  expect(codes(null)).toBe("proxy_deployment_mismatch");
+});
+
+test("browserConfig rejects a Mobile deployment before any Salesforce read", async () => {
+  globalThis.fetch = (async () => Response.json(mobileScrtPayload)) as typeof fetch;
+  const read = async (_path: string): Promise<Response> => { throw new Error("salesforce read must not run"); };
+  await expect(browserConfig(read, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Mobile_Deployment", "chan-addr-1")).rejects.toThrow("browser_deployment_type_unsupported");
+});
+
+test("browserConfig accepts a matching Web deployment", async () => {
+  globalThis.fetch = (async () => Response.json({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      siteUrl: "https://example.com/chat",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })) as typeof fetch;
+  const read = async (_path: string) => Response.json({ fields: [{ name: "Proxy_Echo_Visitor_Ref__c" }] });
+  await expect(browserConfig(read, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toEqual({
+    origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c",
+    visitorFields: ["Proxy_Echo_Visitor_Ref__c"],
+  });
+});
+
+test("browserConfig prefers the unpackaged field when both packaged and unpackaged exist", async () => {
+  globalThis.fetch = (async () => Response.json({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      siteUrl: "https://example.com/chat",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })) as typeof fetch;
+  const read = async (_path: string) => Response.json({ fields: [{ name: "tubot__Proxy_Echo_Visitor_Ref__c" }, { name: "Proxy_Echo_Visitor_Ref__c" }] });
+  await expect(browserConfig(read, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toEqual({
+    origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c",
+    visitorFields: ["Proxy_Echo_Visitor_Ref__c", "tubot__Proxy_Echo_Visitor_Ref__c"],
+  });
+});
+
+test("browserConfig accepts lone namespaced fields, orders multiples, rejects missing", async () => {
+  globalThis.fetch = (async () => Response.json({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      siteUrl: "https://example.com/chat",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })) as typeof fetch;
+  const lone = async (_path: string) => Response.json({ fields: [{ name: "tubot__Proxy_Echo_Visitor_Ref__c" }] });
+  await expect(browserConfig(lone, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toMatchObject({
+    visitorField: "tubot__Proxy_Echo_Visitor_Ref__c", visitorFields: ["tubot__Proxy_Echo_Visitor_Ref__c"],
+  });
+  const multi = async (_path: string) => Response.json({ fields: [{ name: "b__Proxy_Echo_Visitor_Ref__c" }, { name: "a__Proxy_Echo_Visitor_Ref__c" }] });
+  await expect(browserConfig(multi, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toMatchObject({
+    visitorFields: ["a__Proxy_Echo_Visitor_Ref__c", "b__Proxy_Echo_Visitor_Ref__c"],
+  });
+  const none = async (_path: string) => Response.json({ fields: [{ name: "Subject" }] });
+  await expect(browserConfig(none, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).rejects.toThrow("browser_binding_field_unavailable");
+});
+
+test("verifyBrowserTurn distinguishes binding, transcript, and verified outcomes", async () => {
+  const config = { origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c" };
+  const turn = { reference: "a".repeat(64), conversationId: "11111111-1111-4111-8111-111111111111", messageId: "22222222-2222-4222-8222-222222222222", text: "hi" };
+  const session = { records: [{ Id: "0Mw000000000001AAA" }] };
+  const transcript = { conversationEntries: [{ identifier: turn.messageId, sender: { role: "EndUser" }, messageText: "hi" }] };
+  const empty = async (path: string) => Response.json(path.includes("/query?") ? { records: [] } : { conversationEntries: [] });
+  await expect(verifyBrowserTurn(empty, mobileScope, config, turn)).resolves.toEqual({ ok: false, code: "binding_absent" });
+  const noEntry = async (path: string) => Response.json(path.includes("/query?") ? session : { conversationEntries: [] });
+  await expect(verifyBrowserTurn(noEntry, mobileScope, config, turn)).resolves.toEqual({ ok: false, code: "transcript_mismatch" });
+  const good = async (path: string) => Response.json(path.includes("/query?") ? session : transcript);
+  await expect(verifyBrowserTurn(good, mobileScope, config, turn)).resolves.toEqual({ ok: true, code: "verified" });
+  await expect(verifyBrowserTurn(good, mobileScope, config, { ...turn, reference: "short" })).resolves.toEqual({ ok: false, code: "invalid_turn" });
 });

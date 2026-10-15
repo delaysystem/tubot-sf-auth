@@ -35,6 +35,7 @@ function makeSalesforce(seed: {
     FulfillmentOrder: '0qV', ReturnOrder: '0qU', ProgramRebateType: '0qT', TransactionJournal: '0qS',
     CardPaymentMethod: '8ZJ', PaymentAuthorization: '8WJ', Invoice: '0qR', CustomRebatePayout: 'a0R',
     CartDeliveryGroup: '0a8', CartCheckoutSession: '2z9', OrderItem: '802', OrderDeliveryGroup: '0wD',
+    BuyerAccount: 'a0X', CartTax: 'a0Z', BuyerGroupMember: 'a0Y', Contact: '003', OrderItemTaxLineItem: '0wE',
   };
   const runQuery = (soql: string): Rec[] => {
     const from = soql.match(/FROM\s+([A-Za-z][A-Za-z0-9_]*)/i)?.[1];
@@ -76,6 +77,29 @@ function makeSalesforce(seed: {
     return { statusCode: 404, result: null };
   };
   const request: Req = async (path, method = 'GET', body) => {
+    if (path === `${ROOT}/composite` && method === 'POST') {
+      const reqs = (body as any)?.compositeRequest ?? [];
+      const refs: Record<string, string> = {};
+      const compositeResponse = reqs.map((entry: any) => {
+        let url = String(entry.url ?? '');
+        const ref = url.match(/@\{(\w+)\.id\}/);
+        if (ref && refs[ref[1]]) url = url.replace(ref[0], refs[ref[1]]);
+        const rel = url.startsWith(ROOT) ? url.slice(ROOT.length) : url;
+        if (entry.method === 'POST') {
+          const mm = rel.match(/^\/sobjects\/(\w+)$/);
+          const object = mm?.[1] ?? 'Account';
+          const id = mint(object, prefixes[object] ?? '0x0');
+          store.set(`${object}:${id}`, { Id: id, ...(entry.body ?? {}) });
+          refs[entry.referenceId] = id;
+          return { httpStatusCode: 201, referenceId: entry.referenceId, body: { id, success: true } };
+        }
+        const gm = rel.match(/^\/sobjects\/(\w+)\/([A-Za-z0-9]+)$/);
+        const rec = gm ? store.get(`${gm[1]}:${gm[2]}`) : null;
+        if (!rec) return { httpStatusCode: 404, referenceId: entry.referenceId, body: null };
+        return { httpStatusCode: 200, referenceId: entry.referenceId, body: rec };
+      });
+      return ok({ compositeResponse });
+    }
     if (path === ROOT + '/composite/batch' && method === 'POST') {
       const batch = Array.isArray(body?.batchRequests) ? body.batchRequests : [];
       return ok({ results: batch.map((entry: any) => subrequest(entry.method, entry.url, entry.richInput)) });
@@ -421,6 +445,7 @@ describe('commerce executors', () => {
     const { request, build } = makeSalesforce({
       describes: {
         Account: describeOf('Account'),
+        BuyerAccount: describeOf('BuyerAccount', [markerField(), { ...markerField('BuyerStatus'), picklistValues: [{ value: 'Active', active: true }] }, { ...markerField('CommerceType'), picklistValues: [{ value: 'Buyer', active: true }] }]),
         CardPaymentMethod: describeOf('CardPaymentMethod', [
           { name: 'Status', picklistValues: [{ active: true, value: 'Active' }] },
           { name: 'ProcessingMode', picklistValues: [{ active: true, value: 'External' }] },
@@ -440,6 +465,7 @@ describe('commerce executors', () => {
       describes: {
         WebStore: describeOf('WebStore', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'B2B' }] }]),
         Account: describeOf('Account'),
+        BuyerAccount: describeOf('BuyerAccount', [markerField(), { ...markerField('BuyerStatus'), picklistValues: [{ value: 'Active', active: true }] }, { ...markerField('CommerceType'), picklistValues: [{ value: 'Buyer', active: true }] }]),
         WebCart: describeOf('WebCart', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Cart' }] }]),
       },
       descriptors: {
@@ -463,7 +489,7 @@ describe('commerce executors', () => {
     expect((out.body as any)[0].isSuccess).toBe(true);
     expect((out.contextSchema as any).verified).toBe(true);
     expect(out.cleanupError).toBeUndefined();
-    expect((out.contextSchema as any).ownedRecords).toHaveLength(3);
+    expect((out.contextSchema as any).ownedRecords).toHaveLength(4);
     expect(store.size).toBe(0);
   });
 
@@ -474,6 +500,7 @@ describe('commerce executors', () => {
       describes: {
         WebStore: describeOf('WebStore', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'B2B' }] }]),
         Account: describeOf('Account'),
+        BuyerAccount: describeOf('BuyerAccount', [markerField(), { ...markerField('BuyerStatus'), picklistValues: [{ value: 'Active', active: true }] }, { ...markerField('CommerceType'), picklistValues: [{ value: 'Buyer', active: true }] }]),
         WebCart: describeOf('WebCart', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Cart' }] }]),
         CartDeliveryGroup: describeOf('CartDeliveryGroup'),
         CartItem: describeOf('CartItem', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Product' }] }]),
@@ -549,6 +576,7 @@ describe('commerce executors', () => {
       describes: {
         WebStore: describeOf('WebStore', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'B2B' }] }]),
         Account: describeOf('Account'),
+        BuyerAccount: describeOf('BuyerAccount', [markerField(), { ...markerField('BuyerStatus'), picklistValues: [{ value: 'Active', active: true }] }, { ...markerField('CommerceType'), picklistValues: [{ value: 'Buyer', active: true }] }]),
         WebCart: describeOf('WebCart', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Cart' }] }]),
       },
       descriptors: {
@@ -585,6 +613,7 @@ describe('commerce executors', () => {
       describes: {
         WebStore: describeOf('WebStore', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'B2B' }] }]),
         Account: describeOf('Account'),
+        BuyerAccount: describeOf('BuyerAccount', [markerField(), { ...markerField('BuyerStatus'), picklistValues: [{ value: 'Active', active: true }] }, { ...markerField('CommerceType'), picklistValues: [{ value: 'Buyer', active: true }] }]),
         WebCart: describeOf('WebCart', [markerField(), { name: 'Type', type: 'picklist', createable: true, picklistValues: [{ active: true, value: 'Cart' }] }]),
       },
       descriptors: {

@@ -1,20 +1,15 @@
 import { unzipSync, strFromU8 } from "fflate";
-import { token, type AuthEnv } from "./index";
+import type { AuthEnv } from "./index";
 
 export interface Credential {
   team_id: string;
   org_id: string;
   channel_id: string;
   instance_url: string;
-  client_id: string;
-  // Null on JWT rows: the packaged execution client holds no per-row secret.
-  client_secret_cipher: string | null;
-  client_secret_iv: string | null;
   integration_user_id: string;
-  // JWT rows only: the asserted username and environment bit for minting.
-  integration_username?: string | null;
-  is_sandbox?: number | null;
-  channel_secret_hash: string;
+  integration_username: string;
+  is_sandbox: number;
+  client_id?: string | null;
 }
 
 export interface CallableToolsOptions {
@@ -22,7 +17,6 @@ export interface CallableToolsOptions {
   conn?: SalesforceConnection;
   orgId?: string;
   teamId?: string;
-  channelSecret?: string;
   apiVersion?: string;
   maxPollAttempts?: number;
   pollIntervalMs?: number;
@@ -763,56 +757,8 @@ export async function retrieveAgentScriptForChannel(
 }
 
 /**
- * Finds a Salesforce credential in D1 by exact tenant triple. Preferred
- * whenever the caller already authenticated the tenant: unlike channel-only
- * discovery it cannot select another team's enrollment of the same channel.
- */
-export async function findCredentialByScope(
-  db: D1Database,
-  teamId: string,
-  orgId: string,
-  channelId: string
-): Promise<Credential | null> {
-  if (!teamId || !orgId || !channelId?.trim()) return null;
-  return db
-    .prepare("SELECT * FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=? LIMIT 1")
-    .bind(teamId, orgId, channelId.trim())
-    .first<Credential>();
-}
-
-/**
- * Finds a Salesforce credential in D1 by exact channel_id, or by 15-character prefix.
- */
-export async function findCredentialByChannelId(
-  db: D1Database,
-  channelId: string
-): Promise<Credential | null> {
-  const cleanId = channelId.trim();
-  if (!cleanId) return null;
-
-  const exact = await db
-    .prepare("SELECT * FROM salesforce_auth_credential WHERE channel_id = ? LIMIT 1")
-    .bind(cleanId)
-    .first<Credential>();
-  if (exact) return exact;
-
-  if (cleanId.length >= 15) {
-    const prefix = cleanId.slice(0, 15);
-    const prefixMatch = await db
-      .prepare(
-        "SELECT * FROM salesforce_auth_credential WHERE substr(channel_id, 1, 15) = ? OR channel_id LIKE ? LIMIT 1"
-      )
-      .bind(prefix, `${prefix}%`)
-      .first<Credential>();
-    if (prefixMatch) return prefixMatch;
-  }
-
-  return null;
-}
-
-/**
- * Retrieves callable tool URLs for an Agentforce channel by resolving credentials,
- * retrieving the agent script and prompt templates, and submitting to retrieve64.
+ * Retrieves callable tool URLs for an Agentforce channel from a pre-authorized,
+ * explicitly scoped Salesforce connection.
  */
 export async function getCallableToolUrlsForChannel(
   channelId: string,
@@ -824,56 +770,13 @@ export async function getCallableToolUrlsForChannel(
       : (options as CallableToolsOptions) || {};
 
   const env = opts.env;
-  let conn = opts.conn;
+  const conn = opts.conn;
   let orgId = opts.orgId;
   let teamId = opts.teamId;
 
-  // Resolve credentials & SalesforceConnection
-  if (!conn) {
-    if (!env?.DB) {
-      throw new Error(
-        `Unable to resolve Salesforce credentials for channel '${channelId}': neither conn nor env.DB was provided.`
-      );
-    }
-    let cred: Credential | null;
-    if (teamId && orgId) {
-      // Authenticated scope is known (HTTP path): exact-triple lookup so a
-      // channel_id enrolled under another team can never be selected.
-      cred = await findCredentialByScope(env.DB, teamId, orgId, channelId);
-    } else {
-      cred = await findCredentialByChannelId(env.DB, channelId);
-      // Partial scope: never mint a token for a row outside the known half.
-      if (cred && ((teamId && cred.team_id !== teamId) || (orgId && cred.org_id !== orgId))) {
-        cred = null;
-      }
-    }
-    if (!cred) {
-      throw new Error(`No Salesforce credentials found for channel '${channelId}'.`);
-    }
-    if (!orgId) orgId = cred.org_id;
-    if (!teamId) teamId = cred.team_id;
-
-    const auth = await token(env, cred);
-    conn = {
-      instanceUrl: auth.instanceUrl,
-      accessToken: auth.accessToken,
-    };
-  } else if (!orgId || !teamId) {
-    if (env?.DB) {
-      try {
-        const cred = await findCredentialByChannelId(env.DB, channelId);
-        // Only fill labels from a row that agrees with any known half; a
-        // colliding channel_id under another team must not misattribute.
-        if (cred && (!orgId || cred.org_id === orgId) && (!teamId || cred.team_id === teamId)) {
-          if (!orgId) orgId = cred.org_id;
-          if (!teamId) teamId = cred.team_id;
-        }
-      } catch {}
-    }
+  if (!conn || !env?.DB || !teamId || !orgId) {
+    throw new Error("A verified Salesforce connection and explicit tenant scope are required.");
   }
-
-  orgId = orgId || "";
-  teamId = teamId || "";
 
   // Retrieve Agent Script and prompt templates
   const agentResult = await retrieveAgentScriptForChannel(conn, channelId, {

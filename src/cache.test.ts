@@ -2,6 +2,9 @@ import {tenantKey,scopedTags} from "./request-security";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import worker, {
   TubotSfAuthEntrypoint,
+  type AuthEnv,
+} from "./index";
+import {
   UserDataCacheStore,
   computeETag,
   createCachedResponse,
@@ -12,10 +15,9 @@ import worker, {
   sanitizeVaryHeader,
   DEFAULT_CACHE_CONTROL,
   FORBIDDEN_VARY_HEADERS,
-  type AuthEnv,
-  type Credential,
   type UserDataCacheRow,
-} from "./index";
+} from "./cache-helper";
+import type { Credential } from "./agent-script";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = (globalThis as any).caches;
@@ -64,21 +66,14 @@ function createMockContext(): MockContext {
 }
 
 async function createTestEnv(channelId = "0Mjg00000000001AAA") {
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, enc.encode("salesforce-secret"))
-  );
   const row: Credential = {
     team_id: "team-test",
     org_id: orgId,
     channel_id: channelId,
     instance_url: "https://test.my.salesforce.com",
-    client_id: "client-id",
-    client_secret_cipher: btoa(String.fromCharCode(...cipher)),
-    client_secret_iv: btoa(String.fromCharCode(...iv)),
     integration_user_id: userId,
-    channel_secret_hash: await hash(secret),
+    integration_username: "integration@example.com",
+    is_sandbox: 1,
   };
 
   const userCacheMap = new Map<string, UserDataCacheRow>();
@@ -92,14 +87,16 @@ async function createTestEnv(channelId = "0Mjg00000000001AAA") {
           return this;
         },
         async first() {
-          if (sql.includes("salesforce_auth_credential")) {
+          if (sql.includes("FROM panel_salesforce_channels") ||
+              sql.includes("panel_salesforce_execution_users")) {
+            if (sql.includes("team_id = ? AND org_id = ? AND channel_id = ?")) {
+              return bound[0] === row.team_id && bound[1] === row.org_id && bound[2] === row.channel_id ? row : null;
+            }
             if (sql.includes("channel_id = ?")) {
-              return bound[0] === row.channel_id ? row : null;
+              const target = sql.includes("team_id") ? bound[2] : bound[0];
+              return target === row.channel_id ? row : null;
             }
             return row;
-          }
-          if (sql.includes("salesforce_channel_connection")) {
-            return { secret_hash: row.channel_secret_hash };
           }
           if (sql.includes("sf_user_data_cache")) {
             const key = bound[0];
@@ -117,6 +114,9 @@ async function createTestEnv(channelId = "0Mjg00000000001AAA") {
             return cached;
           }
           return null;
+        },
+        async all() {
+          return { results: [] };
         },
         async run() {
           if (sql.includes("INSERT INTO sf_user_data_cache")) {
@@ -148,6 +148,10 @@ async function createTestEnv(channelId = "0Mjg00000000001AAA") {
   const env: AuthEnv = {
     DB: db as any,
     SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    PANEL_JWT_SIGNER: {
+      async signAssertion(_input: unknown) { return "test-assertion"; },
+    } as never,
+    AUTH_RPC_WARN_MODE: "1",
   };
 
   return { env, row, userCacheMap };
@@ -423,185 +427,6 @@ describe("Declarative Workers Cache & Cache Helper", () => {
   });
 });
 
-describe("Salesforce User Data & Data360 HTTP Endpoints", () => {
-  beforeEach(() => {
-    setupMockSalesforceFetch();
-  });
-
-  test("POST /v1/salesforce/user/data and /internal/channels/user/data saves to D1 and purges edge cache", async () => {
-    const { env, userCacheMap } = await createTestEnv();
-    const ctx = createMockContext();
-
-    const payload = {
-      userId: "usr-456",
-      channelId: "0Mjg00000000001AAA",
-      data: { sessionToken: "token-abc", preferences: { theme: "dark" } },
-    };
-
-    // 1. POST /v1/salesforce/user/data
-    const req1 = scopedRequest("https://auth.internal/v1/salesforce/user/data", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const res1 = await worker.fetch(req1, env, ctx);
-    expect(res1.status).toBe(201);
-    const body1 = (await res1.json()) as any;
-    expect(body1.ok).toBe(true);
-    expect(body1.userId).toBe("usr-456");
-    expect(userCacheMap.has(cacheKey("usr-456"))).toBe(true);
-    expect(ctx.purgedTags).toContainEqual(scopedTags(scope,["sf-user-usr-456"]));
-
-    // 2. POST /internal/channels/user/data
-    const req2 = scopedRequest("https://auth.internal/internal/channels/user/data", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_id: "usr-789",
-        sessionContext: { step: "checkout" },
-      }),
-    });
-
-    const res2 = await worker.fetch(req2, env, ctx);
-    expect(res2.status).toBe(201);
-    expect(userCacheMap.has(cacheKey("usr-789"))).toBe(true);
-  });
-
-  test("GET /v1/salesforce/user/data/:userId returns Declarative Cache headers and safe ETag", async () => {
-    const { env } = await createTestEnv();
-    const store = new UserDataCacheStore(env.DB, scope);
-    await store.put({
-      userId: "usr-cached-1",
-      data: { email: "user@example.com" },
-    });
-
-    const req = scopedRequest("https://auth.internal/v1/salesforce/user/data/usr-cached-1");
-    const res = await worker.fetch(req, env);
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Tag")).toBe("sf-user,sf-user-usr-cached-1");
-    expect(res.headers.get("ETag")).toBeTruthy();
-    expect(res.headers.get("Vary")).toBeNull(); // No forbidden Vary headers!
-
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.userId).toBe("usr-cached-1");
-    expect(body.data).toEqual({ email: "user@example.com" });
-
-    // Conditional 304 check
-    const etag = res.headers.get("ETag")!;
-    const req304 = scopedRequest("https://auth.internal/v1/salesforce/user/data/usr-cached-1", {
-      headers: { "If-None-Match": etag },
-    });
-    const res304 = await worker.fetch(req304, env);
-    expect(res304.status).toBe(304);
-    expect(res304.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-  });
-
-  test("GET /v1/salesforce/user/data/:userId returns 404 for unknown user", async () => {
-    const { env } = await createTestEnv();
-    const req = scopedRequest("https://auth.internal/v1/salesforce/user/data/unknown-user-999");
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(404);
-  });
-
-  test("GET /v1/salesforce/data360/user/:userId queries Salesforce, caches in D1, and returns Declarative Cache headers", async () => {
-    const { env, userCacheMap } = await createTestEnv();
-
-    const req = scopedRequest(`https://auth.internal/v1/salesforce/data360/user/${userId}`);
-    const res = await worker.fetch(req, env);
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Tag")).toBe(`sf-user,sf-user-${userId}`);
-    expect(res.headers.get("Vary")).toBeNull();
-
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.userId).toBe(userId);
-    expect(body.data?.Username).toBe("testuser@salesforce.com");
-
-    // Verify it was cached in D1
-    expect(userCacheMap.has(cacheKey(userId))).toBe(true);
-
-    // Second call should return cached: true
-    const resCached = await worker.fetch(req, env);
-    expect(resCached.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    const bodyCached = (await resCached.json()) as any;
-    expect(bodyCached.cached).toBe(true);
-  });
-
-  test("GET /v1/salesforce/data360/messagingsession/:sessionId queries MessagingSession SOQL, caches in D1, and returns Declarative Cache headers", async () => {
-    const { env, userCacheMap } = await createTestEnv();
-    const sessionId = "0Mw000000000001AAA";
-
-    const req = scopedRequest(
-      `https://auth.internal/v1/salesforce/data360/messagingsession/${sessionId}?t=123456&sig=fake_sig`
-    );
-    const res = await worker.fetch(req, env);
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Tag")).toBe(`sf-session,sf-session-${sessionId}`);
-    expect(res.headers.get("Link")).toContain("rel=\"canonical\"");
-    expect(res.headers.get("Vary")).toBeNull();
-
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.sessionId).toBe(sessionId);
-    expect(body.data?.ChannelName).toBe("WebChat");
-    expect(body.data?.Status).toBe("Active");
-
-    // Verify cached in D1
-    expect(userCacheMap.has(cacheKey(sessionId))).toBe(true);
-
-    // Second call returns cached: true
-    const resCached = await worker.fetch(req, env);
-    expect(resCached.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    const bodyCached = (await resCached.json()) as any;
-    expect(bodyCached.cached).toBe(true);
-  });
-
-  test("POST /v1/salesforce/cache/purge purges cache by tags and removes from D1", async () => {
-    const { env, userCacheMap } = await createTestEnv();
-    const ctx = createMockContext();
-    const store = new UserDataCacheStore(env.DB, scope);
-
-    await store.put({ userId: "user-to-purge", data: { foo: "bar" } });
-    await store.put({ userId: "session-to-purge", data: { active: true } });
-
-    expect(userCacheMap.has(cacheKey("user-to-purge"))).toBe(true);
-    expect(userCacheMap.has(cacheKey("session-to-purge"))).toBe(true);
-
-    const purgeReq = scopedRequest("https://auth.internal/v1/salesforce/cache/purge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        tags: ["sf-user-user-to-purge", "sf-session-session-to-purge"],
-      }),
-    });
-
-    const res = await worker.fetch(purgeReq, env, ctx);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.purged).toBe(true);
-
-    // Verify removed from D1
-    expect(userCacheMap.has(cacheKey("user-to-purge"))).toBe(false);
-    expect(userCacheMap.has(cacheKey("session-to-purge"))).toBe(false);
-    expect(ctx.purgedTags).toContainEqual(scopedTags(scope,[
-      "sf-user-user-to-purge",
-      "sf-session-session-to-purge",
-    ]));
-  });
-});
-
 describe("TubotSfAuthEntrypoint RPC Methods", () => {
   beforeEach(() => {
     setupMockSalesforceFetch();
@@ -651,75 +476,6 @@ describe("TubotSfAuthEntrypoint RPC Methods", () => {
     expect(purged).toBe(true);
     expect(userCacheMap.has(cacheKey("rpc-user-1"))).toBe(false);
     expect(userCacheMap.has(cacheKey(sessionId))).toBe(false);
-  });
-});
-
-describe("Fresh Delivery Headers (Live Salesforce & Token Endpoints)", () => {
-  beforeEach(() => {
-    setupMockSalesforceFetch();
-  });
-
-  test("Token endpoint POST /internal/channels/token serves fresh delivery headers", async () => {
-    const { env } = await createTestEnv();
-    const req = scopedRequest("https://auth.internal/internal/channels/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channelId: "0Mjg00000000001AAA",
-      }),
-    });
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
-  });
-
-  test("Live Salesforce query endpoint POST /internal/channels/query serves fresh delivery headers", async () => {
-    const { env } = await createTestEnv();
-    const req = scopedRequest("https://auth.internal/internal/channels/query", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        teamId: "team-test",
-        orgId,
-        channelId: "0Mjg00000000001AAA",
-        channelSecret: secret,
-        soql: "SELECT Id, Name FROM Account LIMIT 1",
-      }),
-    });
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
-  });
-
-  test("Live Salesforce read endpoint POST /internal/channels/read serves fresh delivery headers", async () => {
-    const { env } = await createTestEnv();
-    const req = scopedRequest("https://auth.internal/internal/channels/read", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        teamId: "team-test",
-        orgId,
-        channelId: "0Mjg00000000001AAA",
-        channelSecret: secret,
-        objectApiName: "Account",
-        recordId: "001000000000001AAA",
-      }),
-    });
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
-  });
-
-  test("Error and 404 responses serve fresh delivery headers", async () => {
-    const { env } = await createTestEnv();
-    const req = scopedRequest("https://auth.internal/v1/salesforce/user/data/unknown-user-999");
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(404);
-    expect(res.headers.get("Cache-Control")).toBe("no-cache, no-store, must-revalidate");
-    expect(res.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
   });
 });
 

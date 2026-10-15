@@ -9,3 +9,5 @@ The Salesforce ECA needs client credentials flow, the `api` and `id` scopes, and
 Channel setup, ECA requirements, error codes, and recovery steps are documented in [`tubot-sf-app channel-auth guide`](https://github.com/mountaintops/tubot-sf-app/blob/v2/docs/SALESFORCE_CHANNEL_AUTH.md). The app automatically assigns its channel API permission set; ECA policy remains admin-controlled because Salesforce metadata deployment and secret exposure require org-level authority.
 
 Run `bun run release:check` before deployment. This runs the auth worker tests, TypeScript checks, and a Wrangler dry run. Deploy using the workspace's `bun run deploy:changed` protocol.
+
+Server-to-server callers authenticate with per-caller HMAC envelopes; see [RPC signing guide](docs/rpc-signing.md) for the protocol, provisioning, rotation, and how to add a caller.

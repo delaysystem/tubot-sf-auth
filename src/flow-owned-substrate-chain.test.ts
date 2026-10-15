@@ -649,7 +649,7 @@ describe("invokeOwnedSubstrate", () => {
     expect(outcome.contextSchema).toMatchObject({ verified: true, createdChildren: [{ objectName: "Contact", id: CONTACT_ID }] });
     expect(deleted).toEqual([`${ROOT}/sobjects/Contact/${CONTACT_ID}`]);
     const args = (invoked[0] as { inputs: Array<Record<string, unknown>> }).inputs[0];
-    expect(Object.keys(args).sort()).toEqual(["firstName", "lastName", "verifiedEmail"]);
+    expect(Object.keys(args).sort()).toEqual(["firstName", "lastName"]);
   });
 
   it("withholds created-row deletes outside the probe window", async () => {

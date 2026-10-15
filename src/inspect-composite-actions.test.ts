@@ -19,16 +19,11 @@ const hash = async (s: string) => btoa(String.fromCharCode(
   .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 async function fixture() {
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = new Uint8Array(await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv }, cryptoKey, enc.encode("salesforce-secret")));
   const row = {
     team_id: "team", org_id: orgId, channel_id: "channel",
-    instance_url: "https://test.my.salesforce.com", client_id: "client",
-    client_secret_cipher: btoa(String.fromCharCode(...cipher)),
-    client_secret_iv: btoa(String.fromCharCode(...iv)),
-    integration_user_id: userId, channel_secret_hash: await hash("a".repeat(48)),
+    instance_url: "https://test.my.salesforce.com",
+    integration_user_id: userId, integration_username: "integration@example.com",
+    is_sandbox: 1,
   };
   const db = {
     prepare(sql: string) {
@@ -37,18 +32,22 @@ async function fixture() {
           return {
             async run() { return { success: true }; },
             async first() {
-              if (sql.includes("FROM salesforce_auth_credential")) return row;
-              if (sql.includes("FROM salesforce_channel_connection")) {
-                return { secret_hash: row.channel_secret_hash };
+              if (sql.includes("FROM panel_salesforce_channels") ||
+                  sql.includes("panel_salesforce_execution_users")) {
+                return row;
               }
               return null;
             },
+            async all() { return { results: [] }; },
           };
         },
       };
     },
   };
-  return { DB: db, SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey, row };
+  const PANEL_JWT_SIGNER = {
+    async signAssertion(_input: unknown) { return "test-assertion"; },
+  };
+  return { DB: db, SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey, PANEL_JWT_SIGNER, row, AUTH_RPC_WARN_MODE: "1" };
 }
 
 type Canned = { status: number; body?: unknown; raw?: string };

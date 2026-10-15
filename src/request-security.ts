@@ -66,24 +66,6 @@ export async function readJsonBounded(request: Request, maxBytes = 64_000): Prom
 		throw new SecurityError(400, 'invalid_json');
 	}
 }
-export function requestScope(request: Request, body: any = {}): TenantScope & { channelSecret: string } {
-	const q = new URL(request.url).searchParams;
-	const result = {
-		teamId: request.headers.get('x-team-id') || body.teamId || q.get('teamId'),
-		orgId: request.headers.get('x-org-id') || body.orgId || q.get('orgId'),
-		channelId: request.headers.get('x-channel-id') || body.channelId || q.get('channelId'),
-		channelSecret: request.headers.get('x-channel-secret') || body.channelSecret,
-	};
-	requireScope(result);
-	if (typeof result.channelSecret !== 'string' || result.channelSecret.length < 32 || result.channelSecret.length > 512)
-		throw new SecurityError(401, 'channel_credential_required');
-	// Multiple representations must agree; avoid authenticating one tenant and using another.
-	for (const key of ['teamId', 'orgId', 'channelId', 'channelSecret'] as const) {
-		for (const supplied of [body[key], q.get(key)])
-			if (supplied && supplied !== result[key]) throw new SecurityError(403, 'conflicting_tenant_scope');
-	}
-	return result as TenantScope & { channelSecret: string };
-}
 export function scopedTags(scope: TenantScope, tags: string[]): string[] {
 	requireScope(scope);
 	if (

@@ -1,10 +1,12 @@
+import { validScope, validConfig, type TenantScope, type ProxyConfig, type EchoAction } from '../../tubot-sf-proxy/src/contracts';
+import {browserConfig,verifyBrowserTurn,transcriptText} from './browser-echo';
 import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
 import { provisionCommerceFixtureAccess } from "./commerce-fixture-access";
 import { deleteOwnedOrderSummary } from "./delete-owned-order-summary";
 import { provisionOwnedOrderAccess } from "./owned-order-access";
 import { flowReadFields, provisionFlowReadFields } from "./flow-read-field-grants";
 import { isQueryOnlyFlowMetadata } from "./flow-read-metadata";
-import { buildJwtAssertion, JWT_BEARER_GRANT_TYPE, TUBOT_CHANNEL_API_CLIENT_ID } from "./jwt";
+import { buildJwtAssertion, JWT_BEARER_GRANT_TYPE } from "./jwt";
 import { extractTrailingResponseDocuments, parseSalesforceResponseJson } from './salesforce-response-json';
 import { isCompoundParent, isNameMarkerField } from "./describe-marker-field";
 import { invokeOwnedRecordAction } from './record-action-context';
@@ -79,9 +81,10 @@ import { researchActionName, invokeResearchWithOwnedContext } from "./research-l
 import { invokeSkippedStandardWithOwnedContext, skippedStandardFamilySlug, skippedStandardRouteInfo } from "./skipped-standard-lifecycle";
 import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
 import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
-import { readBodyBounded, readJsonBounded, requestScope, requireScope, scopedTags, SecurityError } from "./request-security";
-import { getAgentScripts, getCallableToolUrlsForChannel, findCredentialByChannelId, type Credential } from "./agent-script";
-import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions } from "./agent-snapshot";
+import { readBodyBounded, readJsonBounded, requireScope, scopedTags, SecurityError } from "./request-security";
+import { equalHash, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
+import { getAgentScripts, getCallableToolUrlsForChannel, type Credential } from "./agent-script";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, type AgentScope } from "./agent-snapshot";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
 import {
   UserDataCacheStore,
@@ -91,16 +94,15 @@ import {
   computeETag,
   isNotModified,
 } from "./cache-helper";
-export * from "./agent-script";
-export * from "./cache-helper";
+// NOTE: no `export *` here — workerd rejects non-function module exports at
+// boot (e.g. cache-helper's DEFAULT_CACHE_CONTROL string). Import helpers
+// from their source modules directly.
 
 /** Private service-binding API for channel-scoped Salesforce operations. */
 export interface AuthEnv {
   DB: D1Database;
   /** Base64-encoded 32-byte AES-GCM key, configured as a Worker secret. */
   SF_CREDENTIAL_ENCRYPTION_KEY: string;
-  /** Same 32-byte key used by panel to encrypt Salesforce channel secrets in D1. */
-  CHANNEL_ENCRYPTION_KEY?: string;
   /** Dedicated New Panel service key; the retired Panel key is never accepted. */
   SELF_OAUTH_NEW_PANEL_HMAC_KEY?: string;
   /** MailSlurp API key for disposable verification inboxes, configured as a Worker secret. Absent in tests. */
@@ -111,6 +113,20 @@ export interface AuthEnv {
   };
   /** Local/test fallback only; production signing uses PANEL_JWT_SIGNER. */
   TUBOT_JWT_PRIVATE_KEY?: string;
+  /** Per-caller RPC envelope keys (>=32 chars); *_NEXT is the rotation-overlap fallback. */
+  AUTH_CALLER_KEY_PROXY?: string;
+  AUTH_CALLER_KEY_SEARCHER?: string;
+  AUTH_CALLER_KEY_DATA360?: string;
+  AUTH_CALLER_KEY_CONVERSATION?: string;
+  AUTH_CALLER_KEY_AGENTCODE?: string;
+  AUTH_CALLER_KEY_PROXY_NEXT?: string;
+  AUTH_CALLER_KEY_SEARCHER_NEXT?: string;
+  AUTH_CALLER_KEY_DATA360_NEXT?: string;
+  AUTH_CALLER_KEY_CONVERSATION_NEXT?: string;
+  AUTH_CALLER_KEY_AGENTCODE_NEXT?: string;
+  /** When "1", RPC envelope failures warn and proceed instead of rejecting. */
+  AUTH_RPC_WARN_MODE?: string;
+  AUTH_RPC_ALLOW_LEGACY?: string;
   RETRIEVE64?: {
     getCallableToolUrls?(params: any): Promise<string[]>;
     registerDefinition?(params: any): Promise<any>;
@@ -122,7 +138,6 @@ type Key = { teamId: string; orgId: string; channelId: string };
 export type Token = { accessToken: string; instanceUrl: string; expiresAt: number };
 type ExecutionUserReference = Key & { integrationUserId: string; isPrimary: boolean };
 type ExecutionUserDbRow = Omit<ExecutionUserReference, "isPrimary"> & { isPrimary: number };
-type ExecutionUserCredential = Credential & { created_at: number; updated_at: number };
 type SelfOAuthPending = {
   state_hash: string;
   team_id: string;
@@ -132,7 +147,6 @@ type SelfOAuthPending = {
   redirect_uri: string;
   return_url: string;
   salesforce_user_id: string;
-  oauth_token_id: string;
   code_verifier_cipher: string;
   code_verifier_iv: string;
   created_at: number;
@@ -151,7 +165,7 @@ type SelfOAuthCredential = {
   updated_at: number;
 };
 type SelfAccessToken = { accessToken: string; expiresAt: number };
-type SelfOAuthGrant = { teamId: string; orgId: string; tokenId?: string | null };
+type SelfOAuthGrant = { teamId: string; orgId: string };
 type ToolTarget = {
   type: string;
   name: string;
@@ -176,6 +190,9 @@ class AuthFailure extends Error {
 
 const tokenCache = new Map<string, Token>();
 const tokenInflight = new Map<string, Promise<Token>>();
+// Resolved Flow routes per org+action. Discovery costs 3-4 Salesforce calls;
+// the echo hot path reuses routes for 5 minutes and re-resolves on mismatch.
+const flowRouteCache = new Map<string, { at: number; resolved: ToolResolution }>();
 const selfTokenCache = new Map<string, SelfAccessToken>();
 const encoder = new TextEncoder();
 const API_VERSION = "v65.0";
@@ -282,30 +299,16 @@ async function decryptValue(env: AuthEnv, cipher: string, iv: string): Promise<s
     await aesKey(env), unb64(cipher));
   return new TextDecoder().decode(plain);
 }
-async function decrypt(env: AuthEnv, row: Credential): Promise<string> {
-  // JWT rows carry no per-row secret: callers must branch on jwtRow() first.
-  if (row.client_secret_cipher == null || row.client_secret_iv == null) {
-    throw authFailure(500, "credential_misconfigured", "Credential misconfigured. Reconnect the channel.", false);
-  }
-  return decryptValue(env, row.client_secret_cipher, row.client_secret_iv);
-}
 async function hash(v: string): Promise<string> {
   return b64(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(v))))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function equalHash(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let difference = 0;
-  for (let i = 0; i < a.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return difference === 0;
-}
 function cacheKey(row: Credential & { agent_registration_version?: number }): string {
-  // The random IV changes for every registration, including rotations of the
-  // same client secret. Cached tokens can never cross credential versions.
-  // JWT rows carry no per-row secret: the asserted username scopes the cache.
-  const version = row.client_secret_iv ?? `jwt:${row.integration_username ?? ""}${row.agent_registration_version === undefined ? "" : ":" + row.agent_registration_version}`;
-  return [row.team_id, row.org_id, row.channel_id, row.instance_url,
-    row.client_id, version, row.channel_secret_hash].join("\u0000");
+  // Tenant scope and asserted username prevent cached JWTs crossing orgs or
+  // execution identities; metadata-user registration changes the version.
+  const version = row.agent_registration_version === undefined ? "" : String(row.agent_registration_version);
+  return [row.team_id, row.org_id, row.channel_id, row.instance_url, row.integration_username,
+    row.is_sandbox, version].join("\u0000");
 }
 
 function jwtRow(row: Credential): row is Credential & { integration_username: string; is_sandbox: number } {
@@ -333,23 +336,8 @@ function selfReturnUrl(instanceUrl: string): string {
   return salesforceReturnUrl(instanceUrl);
 }
 
-async function activePanelGrant(
-  env: AuthEnv,
-  body: Record<string, unknown>,
-): Promise<{ teamId: string; orgId: string; tokenId: string } | null> {
-  if (!str(body.teamId, 128) || !validSalesforceOrgId(body.orgId) ||
-      !str(body.panelAccessToken, 4096) || !str(body.panelTokenId, 128) || !str(body.panelClientId, 128)) return null;
-  const presentedHash = await hash(body.panelAccessToken);
-  const token = await env.DB.prepare(`SELECT id, teamId, clientId FROM oauth_token
-    WHERE id = ? AND teamId = ? AND (accessToken = ? OR accessToken = ?) AND expiresAt > unixepoch()
-    LIMIT 1`).bind(body.panelTokenId, body.teamId, presentedHash, body.panelAccessToken)
-    .first<{ id: string; teamId: string; clientId: string }>();
-  if (!token || token.clientId !== body.panelClientId) return null;
-  return { teamId: token.teamId, orgId: body.orgId, tokenId: token.id };
-}
-
 async function selfOAuthStart(env: AuthEnv, body: Record<string, unknown>): Promise<{ authorizationUrl: string }> {
-  const grant = await selfOAuthGrantOrNull(env, body);
+  const grant = selfOAuthGrantOrNull(body);
   if (!grant || !validSalesforceUserId(body.salesforceUserId) || !str(body.clientId, 255) ||
       !str(body.instanceUrl, 512) || !validInstanceUrl(body.instanceUrl) ||
       !str(body.redirectUri, 2048) || !validSelfOAuthCallbackUrl(body.redirectUri)) {
@@ -366,12 +354,12 @@ async function selfOAuthStart(env: AuthEnv, body: Record<string, unknown>): Prom
   await env.DB.prepare(`DELETE FROM salesforce_self_oauth_pending WHERE expires_at <= ?`).bind(now).run();
   await env.DB.prepare(`INSERT INTO salesforce_self_oauth_pending
     (state_hash, team_id, org_id, instance_url, client_id, redirect_uri, return_url,
-     salesforce_user_id, oauth_token_id, code_verifier_cipher, code_verifier_iv,
+     salesforce_user_id, code_verifier_cipher, code_verifier_iv,
      created_at, expires_at, consumed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
     .bind(await hash(state), grant.teamId, grant.orgId, instanceUrl, body.clientId, body.redirectUri,
-      returnUrl, body.salesforceUserId, grant.tokenId ?? null, encryptedVerifier.cipher,
-      encryptedVerifier.iv, now, now + SELF_OAUTH_PENDING_SECONDS).run();
+      returnUrl, body.salesforceUserId, encryptedVerifier.cipher, encryptedVerifier.iv,
+      now, now + SELF_OAUTH_PENDING_SECONDS).run();
 
   const authorizeUrl = new URL("/services/oauth2/authorize", instanceUrl);
   authorizeUrl.search = new URLSearchParams({
@@ -696,25 +684,184 @@ async function selfOAuthDisconnect(env: AuthEnv, grant: { teamId: string; orgId:
     .first<SelfOAuthCredential>();
   if (!row) return;
   const refreshToken = await decryptValue(env, row.refresh_token_cipher, row.refresh_token_iv);
+  let response: Response;
   try {
-    await fetch(row.instance_url + "/services/oauth2/revoke", {
+    response = await fetch(row.instance_url + "/services/oauth2/revoke", {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ token: refreshToken }),
+      signal: AbortSignal.timeout(10_000),
     });
-  } catch { /* Local revocation still clears access from the broker. */ }
+  } catch {
+    throw authFailure(502, "salesforce_revoke_unconfirmed", "Salesforce could not be reached to revoke the stored grant; the connection was retained so disconnect can be retried.", true);
+  }
+  if (!response.ok) {
+    throw authFailure(502, "salesforce_revoke_unconfirmed", "Salesforce did not confirm revocation; the connection was retained so disconnect can be retried.", true);
+  }
   selfTokenCache.delete(selfOAuthCacheKey(row));
   await env.DB.prepare(`DELETE FROM salesforce_self_oauth_credential WHERE team_id = ? AND org_id = ?`)
     .bind(grant.teamId, grant.orgId).run();
 }
 
-async function selfOAuthGrantOrNull(env: AuthEnv, body: Record<string, unknown>): Promise<SelfOAuthGrant | null> {
-  // These routes are HMAC-verified before this function runs. Panel has already
-  // authenticated the caller and supplies the team scope; the Salesforce
-  // credential is always resolved using both teamId and orgId.
+async function hasOtherTeamOrgData(env: AuthEnv, scope: { teamId: string; orgId: string }): Promise<boolean> {
+  const tables = [
+    "panel_salesforce_channels",
+    "panel_salesforce_execution_users",
+    "panel_salesforce_setup_oauth_pending",
+    "salesforce_self_oauth_credential",
+    "salesforce_self_oauth_pending",
+    "sf_agent_snapshot_chunk",
+    "sf_agent_snapshot_file",
+    "sf_agent_snapshot_job",
+    "sf_agent_metadata_user",
+    "action_graph_context",
+    "sf_user_data_cache_v2",
+    "panel_messaging_proxies",
+    "panel_org_oauth_clients",
+    "panel_routing_backups",
+    "panel_activate_tokens",
+  ];
+  for (const table of tables) {
+    const exists = await env.DB.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?")
+      .bind(table).first<{ present: number }>();
+    if (!exists) continue;
+    const rows = await env.DB.prepare(`SELECT 1 AS present FROM ${table}
+      WHERE org_id=? AND team_id<>? LIMIT 1`).bind(scope.orgId, scope.teamId).first<{ present: number }>();
+    if (rows) return true;
+  }
+  return false;
+}
+
+async function cleanupSalesforceOrg(
+  env: AuthEnv,
+  scope: { teamId: string; orgId: string },
+): Promise<{ deleted: Record<string, number>; remaining: Record<string, number>; remoteRevocation: { attempted: boolean; confirmed: boolean; status: number | null } }> {
+  if (await hasOtherTeamOrgData(env, scope)) {
+    throw authFailure(409, "org_cleanup_conflict", "This Salesforce org still has TuBot data owned by another Panel team. Remove that team's connection first.");
+  }
+  const oauth = await env.DB.prepare(`SELECT * FROM salesforce_self_oauth_credential
+    WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(scope.teamId, scope.orgId)
+    .first<SelfOAuthCredential>();
+  let remoteStatus: number | null = null;
+  if (oauth) {
+    try {
+      const refreshToken = await decryptValue(env, oauth.refresh_token_cipher, oauth.refresh_token_iv);
+      const response = await fetch(oauth.instance_url + "/services/oauth2/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token: refreshToken }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      remoteStatus = response.status;
+      if (!response.ok) {
+        throw authFailure(502, "salesforce_revoke_unconfirmed", "Salesforce did not confirm revocation; the stored grant was retained so teardown can be retried.");
+      }
+    } catch {
+      if (remoteStatus === null) {
+        throw authFailure(502, "salesforce_revoke_unconfirmed", "Salesforce could not be reached to revoke the stored grant; teardown can be retried.");
+      }
+      throw authFailure(502, "salesforce_revoke_unconfirmed", "Salesforce did not confirm revocation; the stored grant was retained so teardown can be retried.");
+    }
+    selfTokenCache.delete(selfOAuthCacheKey(oauth));
+  }
+
+  const channels = await env.DB.prepare(`SELECT channel_id FROM panel_salesforce_channels
+    WHERE team_id = ? AND org_id = ?`).bind(scope.teamId, scope.orgId)
+    .all<{ channel_id: string }>();
+  for (const row of channels.results ?? []) {
+    clearChannelTokens({ teamId: scope.teamId, orgId: scope.orgId, channelId: row.channel_id });
+  }
+
+  const namedStatements: Array<[string, D1PreparedStatement]> = [
+    ["agent_snapshot_chunks", env.DB.prepare(`DELETE FROM sf_agent_snapshot_chunk WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["agent_snapshot_files", env.DB.prepare(`DELETE FROM sf_agent_snapshot_file WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["agent_snapshot_jobs", env.DB.prepare(`DELETE FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["agent_metadata_users", env.DB.prepare(`DELETE FROM sf_agent_metadata_user WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["action_graph_context", env.DB.prepare(`DELETE FROM action_graph_context WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["self_oauth_pending", env.DB.prepare(`DELETE FROM salesforce_self_oauth_pending WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["panel_setup_oauth_pending", env.DB.prepare(`DELETE FROM panel_salesforce_setup_oauth_pending WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["self_oauth_credentials", env.DB.prepare(`DELETE FROM salesforce_self_oauth_credential WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["panel_execution_users", env.DB.prepare(`DELETE FROM panel_salesforce_execution_users WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+    ["panel_channels", env.DB.prepare(`DELETE FROM panel_salesforce_channels WHERE team_id=? AND org_id=?`).bind(scope.teamId, scope.orgId)],
+  ];
+  const cache = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='sf_user_data_cache_v2'`)
+    .first<{ name: string }>();
+  if (cache) {
+    namedStatements.push(["user_data_cache", env.DB.prepare(`DELETE FROM sf_user_data_cache_v2 WHERE team_id=? AND org_id=?`)
+      .bind(scope.teamId, scope.orgId)]);
+  }
+  const optionalTenantTables: Array<[string, string]> = [
+    ["org_oauth_clients", "panel_org_oauth_clients"],
+    ["routing_backups", "panel_routing_backups"],
+    ["activate_tokens", "panel_activate_tokens"],
+  ];
+  const presentOptionalTables: string[] = [];
+  for (const [label, table] of optionalTenantTables) {
+    const exists = await env.DB.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?")
+      .bind(table).first<{ present: number }>();
+    if (!exists) continue;
+    presentOptionalTables.push(table);
+    namedStatements.push([label, env.DB.prepare(`DELETE FROM ${table} WHERE team_id=? AND org_id=?`)
+      .bind(scope.teamId, scope.orgId)]);
+  }
+  const data360Tables = [
+    "data360_user_cache",
+    "data360_session_cache",
+    "data360_conversation_cache",
+    "data360_global_cache",
+    "data360_agent_code_cache",
+    "data360_tool_urls_cache",
+  ];
+  const presentData360Tables: string[] = [];
+  for (const table of data360Tables) {
+    const exists = await env.DB.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?")
+      .bind(table).first<{ present: number }>();
+    if (!exists) continue;
+    presentData360Tables.push(table);
+    namedStatements.push([`data360:${table}`, env.DB.prepare(`DELETE FROM ${table} WHERE org_id=?`).bind(scope.orgId)]);
+  }
+  const results = await env.DB.batch(namedStatements.map(([, statement]) => statement));
+  const deleted = Object.fromEntries(namedStatements.map(([name], index) => [name, results[index]?.meta.changes ?? 0]));
+
+  const remaining: Record<string, number> = {};
+  const checks: Array<[string, string, string]> = [
+    ["agent_snapshot_chunks", "sf_agent_snapshot_chunk", "team_id=? AND org_id=?"],
+    ["agent_snapshot_files", "sf_agent_snapshot_file", "team_id=? AND org_id=?"],
+    ["agent_snapshot_jobs", "sf_agent_snapshot_job", "team_id=? AND org_id=?"],
+    ["agent_metadata_users", "sf_agent_metadata_user", "team_id=? AND org_id=?"],
+    ["action_graph_context", "action_graph_context", "team_id=? AND org_id=?"],
+    ["self_oauth_pending", "salesforce_self_oauth_pending", "team_id=? AND org_id=?"],
+    ["panel_setup_oauth_pending", "panel_salesforce_setup_oauth_pending", "team_id=? AND org_id=?"],
+    ["self_oauth_credentials", "salesforce_self_oauth_credential", "team_id=? AND org_id=?"],
+    ["panel_execution_users", "panel_salesforce_execution_users", "team_id=? AND org_id=?"],
+    ["panel_channels", "panel_salesforce_channels", "team_id=? AND org_id=?"],
+  ];
+  if (cache) checks.push(["user_data_cache", "sf_user_data_cache_v2", "team_id=? AND org_id=?"]);
+  for (const table of presentOptionalTables) {
+    const label = optionalTenantTables.find(([, name]) => name === table)?.[0] ?? table;
+    checks.push([label, table, "team_id=? AND org_id=?"]);
+  }
+  for (const table of presentData360Tables) checks.push([`data360:${table}`, table, "org_id=?"]);
+  for (const [label, table, where] of checks) {
+    const statement = where === "org_id=?"
+      ? env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).bind(scope.orgId)
+      : env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).bind(scope.teamId, scope.orgId);
+    const row = await statement.first<{ count: number }>();
+    remaining[label] = Number(row?.count ?? 0);
+  }
+  return {
+    deleted,
+    remaining,
+    remoteRevocation: { attempted: !!oauth, confirmed: !oauth || (remoteStatus !== null && remoteStatus >= 200 && remoteStatus < 300), status: remoteStatus },
+  };
+}
+
+function selfOAuthGrantOrNull(body: Record<string, unknown>): SelfOAuthGrant | null {
+  // These routes are HMAC-verified before this function runs. New Panel supplies
+  // the authenticated team and org; there is no legacy token-table fallback.
   if (str(body.teamId, 128) && validSalesforceOrgId(body.orgId)) {
     return { teamId: body.teamId, orgId: body.orgId };
   }
-  return activePanelGrant(env, body);
+  return null;
 }
 
 async function verifySignedSelfOAuthRequest(request: Request, env: AuthEnv, path: string): Promise<boolean> {
@@ -755,83 +902,38 @@ async function verifySignedSelfOAuthRequest(request: Request, env: AuthEnv, path
   return inserted.meta.changes === 1;
 }
 
-async function credential(env: AuthEnv, k: Key): Promise<Credential | null> {
-  return env.DB.prepare(
-    "SELECT * FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
-  ).bind(k.teamId, k.orgId, k.channelId).first<Credential>();
-}
-
 type PanelCredentialDbRow = {
   team_id: string;
   org_id: string;
   channel_id: string;
   instance_url: string | null;
-  client_id: string | null;
-  client_secret: string | null;
   integration_user_id: string | null;
   integration_username: string | null;
   is_sandbox: number | null;
+  client_id: string | null;
 };
 
-function decodePanelBase64(value: string): Uint8Array {
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-    throw new Error("invalid base64");
-  }
-  return unb64(value);
-}
-
-async function decryptPanelSecret(env: AuthEnv, stored: string | null): Promise<string | null> {
-  if (stored === null) return null;
-  if (!env.CHANNEL_ENCRYPTION_KEY) {
-    throw authFailure(500, "channel_encryption_key_missing", "Panel channel credential decryption is not configured.");
-  }
-  let envelope: { v?: unknown; iv?: unknown; ct?: unknown };
-  try {
-    envelope = JSON.parse(stored);
-  } catch {
-    throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is invalid.", false);
-  }
-  if (envelope?.v !== 1 || typeof envelope.iv !== "string" || typeof envelope.ct !== "string") {
-    throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is invalid.", false);
-  }
-  try {
-    const rawKey = decodePanelBase64(env.CHANNEL_ENCRYPTION_KEY);
-    const iv = decodePanelBase64(envelope.iv);
-    const ciphertext = decodePanelBase64(envelope.ct);
-    if (rawKey.length !== 32 || iv.length !== 12 || ciphertext.length === 0) throw new Error("invalid envelope");
-    const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
-    return new TextDecoder().decode(plaintext);
-  } catch {
-    throw authFailure(500, "credential_decryption_failed", "The Salesforce channel credential could not be decrypted.", false);
-  }
-}
-
 async function panelCredential(env: AuthEnv, scope: Key): Promise<Credential | null> {
-  const row = await env.DB.prepare(`SELECT team_id, org_id, channel_id, instance_url, client_id, client_secret,
-      integration_user_id, integration_username, is_sandbox
+  const row = await env.DB.prepare(`SELECT team_id, org_id, channel_id, instance_url,
+      integration_user_id, integration_username, is_sandbox, client_id
     FROM panel_salesforce_channels
     WHERE team_id = ? AND org_id = ? AND channel_id = ? LIMIT 1`)
     .bind(scope.teamId, scope.orgId, scope.channelId)
     .first<PanelCredentialDbRow>();
   if (!row) return null;
-  if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.client_id || !row.integration_user_id) {
+  if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.integration_user_id ||
+      !row.integration_username || (row.is_sandbox !== 0 && row.is_sandbox !== 1)) {
     throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is incomplete.", false);
   }
-  const plaintext = await decryptPanelSecret(env, row.client_secret);
-  const encrypted = plaintext === null ? null : await encrypt(env, plaintext);
   return {
     team_id: row.team_id,
     org_id: row.org_id,
     channel_id: row.channel_id,
     instance_url: new URL(row.instance_url).origin,
-    client_id: row.client_id,
-    client_secret_cipher: encrypted?.cipher ?? null,
-    client_secret_iv: encrypted?.iv ?? null,
     integration_user_id: row.integration_user_id,
     integration_username: row.integration_username,
     is_sandbox: row.is_sandbox,
-    channel_secret_hash: await hash(["panel-d1", row.team_id, row.org_id, row.channel_id].join("\u0000")),
+    client_id: row.client_id,
   };
 }
 
@@ -841,70 +943,33 @@ async function panelExecutionUserCredential(
   integrationUserId: string,
 ): Promise<Credential | null> {
   const row = await env.DB.prepare(`SELECT e.team_id, e.org_id, e.channel_id, e.integration_user_id,
-      COALESCE(e.client_id, c.client_id) AS client_id, e.client_secret,
-      c.instance_url, c.integration_username, c.is_sandbox
+      c.instance_url, c.integration_username, c.is_sandbox, c.client_id
     FROM panel_salesforce_execution_users e
     JOIN panel_salesforce_channels c ON c.team_id=e.team_id AND c.org_id=e.org_id AND c.channel_id=e.channel_id
     WHERE e.team_id=? AND e.org_id=? AND e.channel_id=? AND substr(e.integration_user_id, 1, 15)=? LIMIT 1`)
     .bind(scope.teamId, scope.orgId, scope.channelId, integrationUserId.slice(0, 15))
     .first<PanelCredentialDbRow>();
   if (!row || !sameSalesforceId(row.integration_user_id, integrationUserId)) return null;
-  if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.client_id || !row.integration_user_id) {
+  if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.integration_user_id ||
+      !row.integration_username || (row.is_sandbox !== 0 && row.is_sandbox !== 1)) {
     throw authFailure(500, "credential_misconfigured", "The stored Salesforce execution credential is incomplete.", false);
   }
-  const plaintext = await decryptPanelSecret(env, row.client_secret);
-  const encrypted = plaintext === null ? null : await encrypt(env, plaintext);
   return {
     team_id: row.team_id,
     org_id: row.org_id,
     channel_id: row.channel_id,
     instance_url: new URL(row.instance_url).origin,
-    client_id: row.client_id,
-    client_secret_cipher: encrypted?.cipher ?? null,
-    client_secret_iv: encrypted?.iv ?? null,
     integration_user_id: row.integration_user_id,
     integration_username: row.integration_username,
     is_sandbox: row.is_sandbox,
-    channel_secret_hash: await hash(["panel-d1", row.team_id, row.org_id, row.channel_id].join("\u0000")),
+    client_id: row.client_id,
   };
 }
 
-async function authorized(env: AuthEnv, body: Key & { channelSecret: string }): Promise<Credential | null> {
-  const row = await credential(env, body);
-  if (!row) {
-    // Panel-owned credentials share this D1 database and remain authoritative
-    // when no staging enrollment exists for the exact triple.
-    return panelCredential(env, body);
-  }
-  if (!equalHash(row.channel_secret_hash, await hash(body.channelSecret))) return null;
-  // The Panel grant is the authority for every read, including reads made with
-  // a previously issued channel secret. Revocation deletes the linked row.
-  const grant = await env.DB.prepare(`SELECT c.channelSecretHash AS secret_hash
-    FROM salesforce_channel_connection c
-    JOIN oauth_token t ON t.id = c.oauthTokenId
-    WHERE c.teamId = ? AND c.orgId = ? AND c.channelId = ?
-      AND t.teamId = c.teamId AND t.expiresAt > unixepoch()`)
-    .bind(body.teamId, body.orgId, body.channelId)
-    .first<{ secret_hash: string }>();
-  if (!grant || !equalHash(grant.secret_hash, row.channel_secret_hash)) return null;
-  return row;
-}
-
 export async function credentialForEntrypoint(env: AuthEnv, ref: Key): Promise<Credential> {
-  const row = await credential(env, ref);
-  if (row) {
-    const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
-      JOIN oauth_token t ON t.id = c.oauthTokenId AND t.teamId = c.teamId
-      WHERE c.teamId = ? AND c.orgId = ? AND c.channelId = ?
-        AND c.channelSecretHash = ? AND t.expiresAt > unixepoch()`)
-      .bind(ref.teamId, ref.orgId, ref.channelId, row.channel_secret_hash)
-      .first<{ valid: number }>();
-    if (!grant) throw authFailure(403, "channel_not_authorized", "The Salesforce channel grant is unavailable.");
-    return row;
-  }
-  const panelRow = await panelCredential(env, ref);
-  if (!panelRow) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
-  return panelRow;
+  const row = await panelCredential(env, ref);
+  if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+  return row;
 }
 
 async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Promise<ExecutionUserReference[]> {
@@ -913,35 +978,15 @@ async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Pro
   }
   const prefix = channelId.slice(0, 15);
   const rows = await env.DB.prepare(`
-    SELECT a.team_id AS teamId, a.org_id AS orgId, a.channel_id AS channelId,
-      a.integration_user_id AS integrationUserId, 1 AS isPrimary
-    FROM salesforce_auth_credential a
-    JOIN salesforce_channel_connection c ON c.teamId=a.team_id AND c.orgId=a.org_id
-      AND c.channelId=a.channel_id AND c.channelSecretHash=a.channel_secret_hash
-    JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
-    WHERE substr(a.channel_id, 1, 15)=? AND t.expiresAt>unixepoch()
-    UNION ALL
-    SELECT e.team_id AS teamId, e.org_id AS orgId, e.channel_id AS channelId,
-      e.integration_user_id AS integrationUserId, 0 AS isPrimary
-    FROM salesforce_auth_execution_user e
-    JOIN salesforce_auth_credential a ON a.team_id=e.team_id AND a.org_id=e.org_id
-      AND a.channel_id=e.channel_id
-    JOIN salesforce_channel_connection c ON c.teamId=a.team_id AND c.orgId=a.org_id
-      AND c.channelId=a.channel_id AND c.channelSecretHash=a.channel_secret_hash
-    JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
-    WHERE substr(e.channel_id, 1, 15)=? AND t.expiresAt>unixepoch()
-    ORDER BY isPrimary DESC, integrationUserId ASC
-  `).bind(prefix, prefix).all<ExecutionUserDbRow>();
-  const result: ExecutionUserReference[] = [];
-  const seenUsers = new Set<string>();
-  const panelRows = await env.DB.prepare(`
     SELECT team_id AS teamId, org_id AS orgId, channel_id AS channelId,
       integration_user_id AS integrationUserId, is_primary AS isPrimary
     FROM panel_salesforce_execution_users
     WHERE substr(channel_id, 1, 15)=?
     ORDER BY isPrimary DESC, integrationUserId ASC
   `).bind(prefix).all<ExecutionUserDbRow>();
-  for (const row of [...(rows.results ?? []), ...(panelRows.results ?? [])]) {
+  const result: ExecutionUserReference[] = [];
+  const seenUsers = new Set<string>();
+  for (const row of rows.results ?? []) {
     const userKey = `${row.teamId}\u0000${row.orgId}\u0000${row.channelId}\u0000${row.integrationUserId.slice(0, 15)}`;
     if (seenUsers.has(userKey)) continue;
     seenUsers.add(userKey);
@@ -958,26 +1003,9 @@ async function activeChannelExecutionUsers(env: AuthEnv, channelId: string): Pro
 }
 
 async function activeExecutionCredential(env: AuthEnv, scope: Key, integrationUserId: string): Promise<Credential | null> {
-  const primary = await credential(env, scope);
-  if (!primary) {
-    const panelPrimary = await panelCredential(env, scope);
-    if (panelPrimary && sameSalesforceId(panelPrimary.integration_user_id, integrationUserId)) return panelPrimary;
-    return panelExecutionUserCredential(env, scope, integrationUserId);
-  }
-  const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
-    JOIN oauth_token t ON t.id=c.oauthTokenId AND t.teamId=c.teamId
-    WHERE c.teamId=? AND c.orgId=? AND c.channelId=? AND c.channelSecretHash=? AND t.expiresAt>unixepoch()`)
-    .bind(scope.teamId, scope.orgId, scope.channelId, primary.channel_secret_hash)
-    .first<{ valid: number }>();
-  if (!grant) return null;
-  if (sameSalesforceId(primary.integration_user_id, integrationUserId)) return primary;
-  const row = await env.DB.prepare(`SELECT e.*, a.channel_secret_hash FROM salesforce_auth_execution_user e
-    JOIN salesforce_auth_credential a ON a.team_id=e.team_id AND a.org_id=e.org_id AND a.channel_id=e.channel_id
-    WHERE e.team_id=? AND e.org_id=? AND e.channel_id=? AND substr(e.integration_user_id, 1, 15)=? LIMIT 1`)
-    .bind(scope.teamId, scope.orgId, scope.channelId, integrationUserId.slice(0, 15))
-    .first<ExecutionUserCredential>();
-  if (!row || !sameSalesforceId(row.integration_user_id, integrationUserId)) return null;
-  return row;
+  const primary = await panelCredential(env, scope);
+  if (primary && sameSalesforceId(primary.integration_user_id, integrationUserId)) return primary;
+  return panelExecutionUserCredential(env, scope, integrationUserId);
 }
 
 function validSalesforceChannelId(value: string): boolean {
@@ -1003,37 +1031,32 @@ export async function token(env: AuthEnv, row: Credential): Promise<Token> {
 }
 
 async function fetchToken(env: AuthEnv, row: Credential, id: string, cacheResult = true): Promise<Token> {
-  // JWT rows (packaged execution client): mint a signed assertion for the
-  // pre-authorized integration username. Legacy rows keep the per-row
-  // client-secret grant byte-for-byte.
-  let form: URLSearchParams;
-  if (jwtRow(row)) {
-    let assertion: string;
-    try {
-      if (env.PANEL_JWT_SIGNER) {
-        assertion = await env.PANEL_JWT_SIGNER.signAssertion({
-          subjectUsername: row.integration_username,
-          isSandbox: row.is_sandbox === 1,
-        });
-      } else if (env.TUBOT_JWT_PRIVATE_KEY) {
-        assertion = await buildJwtAssertion(env.TUBOT_JWT_PRIVATE_KEY, row.integration_username, row.is_sandbox === 1);
-      } else {
-        throw new Error("jwt_private_key_misconfigured");
-      }
-      if (!str(assertion, 8192)) throw new Error("jwt_assertion_invalid");
-    } catch (cause) {
-      if (cause instanceof Error && cause.message === "jwt_private_key_misconfigured") {
-        throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
-      }
-      throw authFailure(503, "jwt_signer_unavailable", "JWT signing is temporarily unavailable. Retry the request.", true);
-    }
-    form = new URLSearchParams({ grant_type: JWT_BEARER_GRANT_TYPE, assertion });
-  } else {
-    form = new URLSearchParams({
-      grant_type: "client_credentials", client_id: row.client_id,
-      client_secret: await decrypt(env, row),
-    });
+  if (!jwtRow(row)) {
+    throw authFailure(500, "credential_misconfigured", "The Salesforce channel is missing its verified execution user. Reconnect the channel.", false);
   }
+  let assertion: string;
+  try {
+    const clientId = typeof row.client_id === "string" && row.client_id ? row.client_id : undefined;
+    if (env.PANEL_JWT_SIGNER) {
+      assertion = await env.PANEL_JWT_SIGNER.signAssertion({
+        subjectUsername: row.integration_username,
+        isSandbox: row.is_sandbox === 1,
+        ...(clientId ? { clientId } : {}),
+      });
+    } else if (env.TUBOT_JWT_PRIVATE_KEY) {
+      assertion = await buildJwtAssertion(env.TUBOT_JWT_PRIVATE_KEY, row.integration_username, row.is_sandbox === 1,
+        Math.floor(Date.now() / 1000), clientId);
+    } else {
+      throw new Error("jwt_private_key_misconfigured");
+    }
+    if (!str(assertion, 8192)) throw new Error("jwt_assertion_invalid");
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === "jwt_private_key_misconfigured") {
+      throw authFailure(500, "jwt_private_key_misconfigured", "JWT signing is misconfigured. Contact support.", false);
+    }
+    throw authFailure(503, "jwt_signer_unavailable", "JWT signing is temporarily unavailable. Retry the request.", true);
+  }
+  const form = new URLSearchParams({ grant_type: JWT_BEARER_GRANT_TYPE, assertion });
   let response: Response;
   try {
     response = await fetch(row.instance_url + "/services/oauth2/token", {
@@ -1053,16 +1076,13 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string, cacheResult
     if (response.status === 429 || response.status >= 500) {
       throw authFailure(503, "salesforce_oauth_unavailable", "Salesforce OAuth is temporarily unavailable. Retry the connection.", true);
     }
-    if (oauthCode === "invalid_client") {
-      throw authFailure(422, "salesforce_invalid_client_credentials", "Salesforce rejected the ECA consumer key or secret. Check both values and retry.");
-    }
-    if (oauthCode === "invalid_app_access" || (jwtRow(row) && oauthCode === "invalid_grant")) {
+    if (oauthCode === "invalid_app_access" || oauthCode === "invalid_grant") {
       throw authFailure(422, "salesforce_preauth_required", "The integration user is not pre-authorized for the packaged execution client. Run setup-eca-policies.mjs, assign the TuBot JWT PreAuth set, and retry.");
     }
     if (["invalid_grant", "unauthorized_client", "unsupported_grant_type"].includes(oauthCode)) {
-      throw authFailure(422, "salesforce_oauth_not_configured", "Salesforce rejected the client credentials setup. Check that the ECA is active, client credentials flow is enabled, and the Run As user is configured.");
+      throw authFailure(422, "salesforce_oauth_not_configured", "Salesforce rejected the JWT grant. Check that the packaged execution client is active and the user is pre-authorized.");
     }
-    throw authFailure(422, "salesforce_oauth_rejected", "Salesforce rejected the ECA credentials or OAuth configuration. Check the ECA setup and retry.");
+    throw authFailure(422, "salesforce_oauth_rejected", "Salesforce rejected the packaged JWT execution client. Check the org setup and retry.");
   }
   let data: unknown;
   try { data = await response.json(); }
@@ -1093,9 +1113,8 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string, cacheResult
   }
   if (!object(identity) || !sameSalesforceId(identity.organization_id, row.org_id) ||
       !sameSalesforceId(identity.user_id, row.integration_user_id)) {
-    throw authFailure(422, "salesforce_identity_mismatch", jwtRow(row)
-      ? "The JWT grant resolved to a different Salesforce org or user. Check the selected org and integration username."
-      : "The ECA credentials belong to a different Salesforce org or Run As user. Check the selected org and integration user.");
+    throw authFailure(422, "salesforce_identity_mismatch",
+      "The JWT grant resolved to a different Salesforce org or user. Check the selected org and integration username.");
   }
   const seconds = typeof data.expires_in === "number" && data.expires_in > 0
     ? Math.min(data.expires_in, 300) : 120;
@@ -1200,13 +1219,9 @@ async function runJwtApiDiagnostics(
     org_id: input.orgId,
     channel_id: input.channelId,
     instance_url: new URL(input.instanceUrl).origin,
-    client_id: TUBOT_CHANNEL_API_CLIENT_ID,
-    client_secret_cipher: null,
-    client_secret_iv: null,
     integration_user_id: input.integrationUserId,
     integration_username: input.integrationUsername,
     is_sandbox: input.isSandbox ? 1 : 0,
-    channel_secret_hash: "ephemeral-jwt-api-diagnostic",
   };
 
   // Do not use token(): it deliberately caches regular channel tokens in the
@@ -1282,13 +1297,9 @@ async function runJwtApiPermissionDiagnostics(
     org_id: input.orgId,
     channel_id: "permission-diagnostic",
     instance_url: new URL(input.instanceUrl).origin,
-    client_id: TUBOT_CHANNEL_API_CLIENT_ID,
-    client_secret_cipher: null,
-    client_secret_iv: null,
     integration_user_id: input.integrationUserId,
     integration_username: input.integrationUsername,
     is_sandbox: input.isSandbox ? 1 : 0,
-    channel_secret_hash: "ephemeral-permission-diagnostic",
   };
   // This token is request-scoped. It is neither stored in D1 nor put in the
   // regular token cache, and every Salesforce response is reduced to flags.
@@ -2042,13 +2053,15 @@ async function resolveCredentialForChannel(
   env: AuthEnv,
   channelId?: string | null
 ): Promise<Credential | null> {
-  if (!channelId) return null;
-  const row = await findCredentialByChannelId(env.DB, channelId);
-  if (!row) return null;
-  const grant = await env.DB.prepare(`SELECT c.channelSecretHash AS secret_hash FROM salesforce_channel_connection c
-    JOIN oauth_token t ON t.id=c.oauthTokenId WHERE c.teamId=? AND c.orgId=? AND c.channelId=?
-      AND t.teamId=c.teamId AND t.expiresAt>unixepoch()`).bind(row.team_id,row.org_id,row.channel_id).first<{secret_hash:string}>();
-  return grant && equalHash(grant.secret_hash,row.channel_secret_hash) ? row : null;
+  if (!channelId || !validSalesforceChannelId(channelId)) return null;
+  const rows = await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId, channel_id AS channelId
+    FROM panel_salesforce_channels WHERE channel_id = ? OR substr(channel_id, 1, 15) = ? LIMIT 3`)
+    .bind(channelId, channelId.slice(0, 15)).all<Key>();
+  const matches = rows.results ?? [];
+  if (!matches.length) return null;
+  const scopes = new Set(matches.map(row => `${row.teamId}\u0000${row.orgId}\u0000${row.channelId}`));
+  if (scopes.size !== 1) throw authFailure(409, "channel_org_ambiguous", "More than one connected Salesforce org matches this channel.");
+  return panelCredential(env, matches[0]);
 }
 
 async function querySalesforceUserData(
@@ -2308,18 +2321,11 @@ async function querySalesforceUserConversations(
 
 async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: any): Promise<Response> {
   const path = new URL(request.url).pathname;
-  // Channel credential lifecycle (register/DELETE) requires the same HMAC
-  // service signature as the self-oauth paths: only bound services holding
-  // the internal key may create or destroy credentials. Data paths below
-  // use channel-secret auth instead.
-  const channelLifecyclePath =
-    (path === "/internal/channels/register" && request.method === "POST") ||
-    (path === "/internal/channels" && request.method === "DELETE");
-  if (channelLifecyclePath) return error(requestId, 410, "legacy_panel_retired", "Use New Panel to manage Salesforce connections.");
   const panelChannelCleanupPath = path === "/internal/channels/cleanup";
+  const orgCleanupPath = path === "/internal/orgs/cleanup";
   const panelJwtDiagnosticsPath = path === "/internal/jwt-api-diagnostics";
   const panelJwtPermissionDiagnosticsPath = path === "/internal/jwt-api-permission-diagnostics";
-  if (path.startsWith("/internal/self-oauth/") || path.startsWith("/internal/agents/") || panelChannelCleanupPath || panelJwtDiagnosticsPath || panelJwtPermissionDiagnosticsPath) {
+  if (path.startsWith("/internal/self-oauth/") || path.startsWith("/internal/agents/") || panelChannelCleanupPath || orgCleanupPath || panelJwtDiagnosticsPath || panelJwtPermissionDiagnosticsPath) {
     if (request.method !== "POST") return error(requestId, 405, "method_not_allowed", "Use POST for this internal Salesforce service operation.");
     try {
       if (!await verifySignedSelfOAuthRequest(request, env, path)) {
@@ -2341,8 +2347,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     let row: Credential & { agent_registration_version?: number } = await credentialForEntrypoint(env, scope);
     if (path === "/internal/agents/connect") {
       if (!validSalesforceUserId(body.metadataUserId) || !str(body.metadataUsername, 254) || /\s/.test(body.metadataUsername) || !jwtRow(row)) throw new SecurityError(400, "invalid_metadata_user");
-      const candidate: Credential = { ...row, integration_user_id: body.metadataUserId, integration_username: body.metadataUsername,
-        client_secret_cipher: null, client_secret_iv: null };
+      const candidate: Credential = { ...row, integration_user_id: body.metadataUserId, integration_username: body.metadataUsername };
       const auth = await fetchToken(env, candidate, `agent-metadata-verify:${requestId}`, false);
       await discoverAgents({ instanceUrl: auth.instanceUrl, accessToken: auth.accessToken });
       await env.DB.prepare(`INSERT INTO sf_agent_metadata_user(team_id,org_id,channel_id,integration_user_id,integration_username,verified_at)
@@ -2356,7 +2361,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     if (path === "/internal/agents/download") return downloadAgentSnapshot(env.DB, scope, body.jobId as string);
     const metadataUser = await env.DB.prepare("SELECT integration_user_id,integration_username,verified_at FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
       .bind(scope.teamId, scope.orgId, scope.channelId).first<{ integration_user_id: string; integration_username: string; verified_at: number }>();
-    if (metadataUser) row = { ...row, ...metadataUser, agent_registration_version: metadataUser.verified_at, client_secret_cipher: null, client_secret_iv: null };
+    if (metadataUser) row = { ...row, ...metadataUser, agent_registration_version: metadataUser.verified_at };
     const execute = async () => {
       const auth = await token(env, row);
       const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken, integrationUserId: row.integration_user_id };
@@ -2384,11 +2389,18 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       .bind(body.teamId, body.orgId, body.channelId).run();
     await env.DB.prepare("DELETE FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=? AND channel_id=?")
       .bind(body.teamId, body.orgId, body.channelId).run();
-    const result = await env.DB.prepare(
-      "DELETE FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
-    ).bind(body.teamId, body.orgId, body.channelId).run();
     clearChannelTokens(body as Key);
-    return json({ ok: true, credentialRemoved: result.meta.changes > 0 }, requestId);
+    await env.DB.prepare("DELETE FROM action_graph_context WHERE team_id=? AND org_id=? AND channel_id=?")
+      .bind(body.teamId, body.orgId, body.channelId).run();
+    return json({ ok: true }, requestId);
+  }
+
+  if (orgCleanupPath) {
+    if (!body || !str(body.teamId, 128) || !validSalesforceOrgId(body.orgId)) {
+      return error(requestId, 400, "invalid_request", "A valid Panel team and Salesforce org are required.");
+    }
+    const result = await cleanupSalesforceOrg(env, { teamId: body.teamId, orgId: body.orgId });
+    return json({ ok: true, ...result }, requestId);
   }
 
   if (path === "/internal/jwt-api-diagnostics") {
@@ -2430,7 +2442,7 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
         const result = await completeSelfOAuth(env, body);
         return json({ ok: true, ...result }, requestId);
       }
-      const grant = await selfOAuthGrantOrNull(env, body);
+      const grant = selfOAuthGrantOrNull(body);
       if (!grant) return error(requestId, 401, "unauthorized", "A valid active Panel Salesforce grant is required.");
       if (path === "/internal/self-oauth/start") {
         const result = await selfOAuthStart(env, body);
@@ -2457,681 +2469,6 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     }
   }
 
-  // Authenticate tenant scope before reads, writes, ETags, or cache operations.
-  let httpCredential: Credential | null = null;
-  const dataRoute = path.startsWith("/v1/salesforce/") || path === "/internal/channels/user/data" ||
-    ["/internal/channels/token", "/internal/channels/user/conversations", "/internal/channels/callable-tools", "/internal/channels/authorize"].includes(path);
-  if (dataRoute) {
-    const scope = requestScope(request, body || {});
-    httpCredential = await authorized(env, scope);
-    if (!httpCredential) throw new SecurityError(403, "channel_not_authorized");
-    if (path === "/internal/channels/authorize" && request.method === "POST") {
-      return json({ok:true,teamId:scope.teamId,orgId:scope.orgId,channelId:scope.channelId}, requestId);
-    }
-  }
-
-  if (
-    (path === "/v1/salesforce/user/data" || path === "/internal/channels/user/data") &&
-    request.method === "POST"
-  ) {
-    if (!body) {
-      return error(requestId, 400, "invalid_request", "A valid JSON request is required.");
-    }
-    const userId = (body.userId ?? body.user_id) as string | undefined;
-    if (!userId || typeof userId !== "string" || userId.trim().length === 0) {
-      return error(requestId, 400, "invalid_request", "A valid userId is required.");
-    }
-    let userData = body.data;
-    if (userData === undefined) {
-      if (body.sessionContext !== undefined) {
-        userData = body.sessionContext;
-      } else {
-        const { userId: _u, user_id: _u2, channelId: _c, channel_id: _c2, orgId: _o, org_id: _o2, teamId: _t, team_id: _t2, ttlSeconds: _ttl, ttl: _ttl2, channelSecret: _secret, accessToken: _access, instanceUrl: _instance, ...rest } = body;
-        userData = Object.keys(rest).length > 0 ? rest : body;
-      }
-    }
-
-    const channelId = httpCredential!.channel_id;
-    const orgId = httpCredential!.org_id;
-    const teamId = httpCredential!.team_id;
-    const ttlSeconds = typeof body.ttlSeconds === "number" ? body.ttlSeconds : typeof body.ttl === "number" ? body.ttl : undefined;
-
-    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
-    await cacheStore.put({
-      userId: userId.trim(),
-      channelId,
-      orgId,
-      teamId,
-      data: userData,
-      ttlSeconds,
-    });
-
-    await purgeEdgeCache(ctx, scopedTags({teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id},[`sf-user-${userId.trim()}`]));
-
-    return json({ ok: true, userId: userId.trim(), channelId, requestId }, requestId, 201);
-  }
-
-  if (request.method === "GET" && path.startsWith("/v1/salesforce/user/data/")) {
-    const rawUserId = path.slice("/v1/salesforce/user/data/".length);
-    let userId: string;
-    try {
-      userId = decodeURIComponent(rawUserId).trim();
-    } catch {
-      userId = rawUserId.trim();
-    }
-    if (!userId) {
-      return error(requestId, 400, "invalid_request", "A valid userId is required.");
-    }
-
-    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
-    if (request.headers.get("if-none-match")) {
-      const storedEtag = await cacheStore.getUserETag(userId);
-      if (storedEtag && isNotModified(request, storedEtag)) {
-        return new Response(null, {
-          status: 304,
-          headers: getDeclarativeCacheHeaders({
-            tags: [`sf-user`, `sf-user-${userId}`],
-            etag: storedEtag,
-          }),
-        });
-      }
-    }
-
-    const cached = await cacheStore.get(userId);
-    if (!cached) {
-      return error(requestId, 404, "user_not_found", `User data for '${userId}' not found.`);
-    }
-
-    let parsedData: unknown = cached.data;
-    try {
-      parsedData = JSON.parse(cached.data);
-    } catch {}
-
-    const payload = {
-      ok: true,
-      userId: cached.user_id,
-      channelId: cached.channel_id,
-      orgId: cached.org_id,
-      teamId: cached.team_id,
-      data: parsedData,
-      updatedAt: cached.updated_at,
-    };
-
-    return createCachedResponse(payload, {
-      tags: [`sf-user`, `sf-user-${userId}`],
-      requestId,
-      request,
-      etag: cached.etag || undefined,
-    });
-  }
-
-  if (request.method === "GET" && path.startsWith("/v1/salesforce/data360/user/")) {
-    const rawUserId = path.slice("/v1/salesforce/data360/user/".length);
-    let userId: string;
-    try {
-      userId = decodeURIComponent(rawUserId).trim();
-    } catch {
-      userId = rawUserId.trim();
-    }
-    if (!userId) {
-      return error(requestId, 400, "invalid_request", "A valid userId is required.");
-    }
-
-    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
-    if (request.headers.get("if-none-match")) {
-      const storedEtag = await cacheStore.getUserETag(userId);
-      if (storedEtag && isNotModified(request, storedEtag)) {
-        return new Response(null, {
-          status: 304,
-          headers: getDeclarativeCacheHeaders({
-            tags: [`sf-user`, `sf-user-${userId}`],
-            etag: storedEtag,
-          }),
-        });
-      }
-    }
-
-    const cached = await cacheStore.get(userId);
-    if (cached) {
-      let parsedData: unknown = cached.data;
-      try {
-        parsedData = JSON.parse(cached.data);
-      } catch {}
-
-      return createCachedResponse(
-        {
-          ok: true,
-          cached: true,
-          userId: cached.user_id,
-          channelId: cached.channel_id,
-          orgId: cached.org_id,
-          teamId: cached.team_id,
-          data: parsedData,
-          updatedAt: cached.updated_at,
-        },
-        {
-          tags: [`sf-user`, `sf-user-${userId}`],
-          requestId,
-          request,
-          etag: cached.etag || undefined,
-        }
-      );
-    }
-
-    const url = new URL(request.url);
-    const channelId = url.searchParams.get("channelId") || request.headers.get("x-channel-id") || undefined;
-    const cred = httpCredential;
-    if (!cred) {
-      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
-    }
-
-    const userData = await querySalesforceUserData(env, cred, userId, requestId);
-    if (!userData) {
-      return error(requestId, 404, "user_not_found", `User '${userId}' not found in Salesforce.`);
-    }
-
-    const rawData = JSON.stringify(userData);
-    const etag = await computeETag(rawData);
-
-    await cacheStore.put({
-      userId,
-      channelId: cred.channel_id,
-      orgId: cred.org_id,
-      teamId: cred.team_id,
-      data: userData,
-      etag,
-      ttlSeconds: 300,
-    });
-
-    return createCachedResponse(
-      {
-        ok: true,
-        cached: false,
-        userId,
-        channelId: cred.channel_id,
-        orgId: cred.org_id,
-        teamId: cred.team_id,
-        data: userData,
-        updatedAt: Math.floor(Date.now() / 1000),
-      },
-      {
-        tags: [`sf-user`, `sf-user-${userId}`],
-        requestId,
-        request,
-        etag,
-      }
-    );
-  }
-
-  if (request.method === "GET" && path.startsWith("/v1/salesforce/data360/messagingsession/")) {
-    const rawSessionId = path.slice("/v1/salesforce/data360/messagingsession/".length);
-    let sessionId: string;
-    try {
-      sessionId = decodeURIComponent(rawSessionId).trim();
-    } catch {
-      sessionId = rawSessionId.trim();
-    }
-    if (!sessionId) {
-      return error(requestId, 400, "invalid_request", "A valid sessionId is required.");
-    }
-
-    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
-    if (request.headers.get("if-none-match")) {
-      const storedEtag = await cacheStore.getUserETag(sessionId);
-      if (storedEtag && isNotModified(request, storedEtag)) {
-        return new Response(null, {
-          status: 304,
-          headers: getDeclarativeCacheHeaders({
-            tags: [`sf-session`, `sf-session-${sessionId}`],
-            etag: storedEtag,
-          }),
-        });
-      }
-    }
-
-    const cached = await cacheStore.get(sessionId);
-    if (cached) {
-      let parsedData: unknown = cached.data;
-      try {
-        parsedData = JSON.parse(cached.data);
-      } catch {}
-
-      return createCachedResponse(
-        {
-          ok: true,
-          cached: true,
-          sessionId: cached.user_id,
-          channelId: cached.channel_id,
-          orgId: cached.org_id,
-          teamId: cached.team_id,
-          data: parsedData,
-          updatedAt: cached.updated_at,
-        },
-        {
-          tags: [`sf-session`, `sf-session-${sessionId}`],
-          requestId,
-          request,
-          etag: cached.etag || undefined,
-        }
-      );
-    }
-
-    const url = new URL(request.url);
-    const channelId = url.searchParams.get("channelId") || request.headers.get("x-channel-id") || undefined;
-    const cred = httpCredential;
-    if (!cred) {
-      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
-    }
-
-    const sessionData = await querySalesforceMessagingSession(env, cred, sessionId, requestId);
-    if (!sessionData) {
-      return error(requestId, 404, "session_not_found", `MessagingSession '${sessionId}' not found.`);
-    }
-
-    const rawData = JSON.stringify(sessionData);
-    const etag = await computeETag(rawData);
-
-    await cacheStore.put({
-      userId: sessionId,
-      channelId: cred.channel_id,
-      orgId: cred.org_id,
-      teamId: cred.team_id,
-      data: sessionData,
-      etag,
-      ttlSeconds: 300,
-    });
-
-    return createCachedResponse(
-      {
-        ok: true,
-        cached: false,
-        sessionId,
-        channelId: cred.channel_id,
-        orgId: cred.org_id,
-        teamId: cred.team_id,
-        data: sessionData,
-        updatedAt: Math.floor(Date.now() / 1000),
-      },
-      {
-        tags: [`sf-session`, `sf-session-${sessionId}`],
-        requestId,
-        request,
-        etag,
-      }
-    );
-  }
-
-  const convMatch = path.match(/^\/v1\/salesforce\/user\/conversations(?:\/([^/]+))?$/);
-  if (convMatch && request.method === "GET") {
-    const url = new URL(request.url);
-    const userId = convMatch[1] || url.searchParams.get("userId") || url.searchParams.get("id");
-    if (!userId) {
-      return error(requestId, 400, "invalid_request", "userId parameter is required.");
-    }
-    const channelId = url.searchParams.get("channelId") || request.headers.get("x-channel-id") || undefined;
-    const cred = httpCredential;
-    if (!cred) {
-      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
-    }
-    const currentSessionId = url.searchParams.get("sessionId") || url.searchParams.get("currentSessionId") || undefined;
-    const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : undefined;
-    try {
-      const history = await querySalesforceUserConversations(env, cred, userId, { currentSessionId, limit }, requestId);
-      return json(history, requestId);
-    } catch (err: unknown) {
-      return error(requestId, 502, "conversation_query_failed", err instanceof Error ? err.message : String(err), true);
-    }
-  }
-
-  if (path === "/v1/salesforce/cache/purge" && request.method === "POST") {
-    let tags: string[] = [];
-    if (body) {
-      if (Array.isArray(body.tags)) {
-        tags = body.tags.filter((t): t is string => typeof t === "string" && t.length > 0);
-      } else if (typeof body.tags === "string") {
-        tags = body.tags.split(",").map((s) => s.trim()).filter(Boolean);
-      } else if (typeof body.tag === "string") {
-        tags = [body.tag.trim()];
-      }
-      if (typeof body.userId === "string" && body.userId.trim()) {
-        tags.push(`sf-user-${body.userId.trim()}`);
-      }
-      if (typeof body.sessionId === "string" && body.sessionId.trim()) {
-        tags.push(`sf-session-${body.sessionId.trim()}`);
-      }
-    }
-
-    if (tags.length === 0) {
-      return error(requestId, 400, "invalid_request", "A tag or tags array is required to purge cache.");
-    }
-
-    const verifiedTags = scopedTags({teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id}, tags);
-    const cacheStore = new UserDataCacheStore(env.DB, {teamId:httpCredential!.team_id,orgId:httpCredential!.org_id,channelId:httpCredential!.channel_id});
-    for (const tag of tags) {
-      if (tag.startsWith("sf-user-")) {
-        await cacheStore.delete(tag.slice("sf-user-".length));
-      } else if (tag.startsWith("sf-session-")) {
-        await cacheStore.delete(tag.slice("sf-session-".length));
-      }
-    }
-
-    const purged = await purgeEdgeCache(ctx, verifiedTags);
-    return json({ ok: true, purged, tags, requestId }, requestId);
-  }
-
-  if (path === "/internal/channels/callable-tools" && request.method === "POST") {
-    if (!body || !str(body.channelId, 128)) {
-      return error(requestId, 400, "invalid_request", "A valid JSON request with channelId is required.");
-    }
-    try {
-      const urls = await getCallableToolUrlsForChannel(body.channelId as string, {
-        env,
-        teamId: httpCredential!.team_id,
-        channelSecret: requestScope(request,body).channelSecret,
-        orgId: httpCredential!.org_id,
-        apiVersion: typeof body.apiVersion === "string" ? body.apiVersion : undefined,
-      });
-      return json({ ok: true, channelId: body.channelId, urls }, requestId);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return error(requestId, 502, "callable_tools_failed", msg, true);
-    }
-  }
-
-  if (path === "/internal/channels/resolve" && request.method === "POST") {
-    if (!body || !str(body.teamId, 128) || !str(body.channelId, 128) || !str(body.channelSecret, 4096) ||
-        body.channelSecret.length < 32 || (body.orgId !== undefined &&
-          (typeof body.orgId !== "string" || !/^00D[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/.test(body.orgId)))) {
-      return error(requestId, 400, "invalid_request", "A valid team, channel, and channel credential are required.");
-    }
-    const statement = env.DB.prepare("SELECT * FROM salesforce_auth_credential WHERE team_id=? AND channel_id=?")
-      .bind(body.teamId, body.channelId);
-    const result = await statement.all<Credential>();
-    const matches: Credential[] = [];
-    const candidates = (result.results || []).filter(candidate =>
-      typeof body.orgId !== "string" || sameSalesforceId(candidate.org_id, body.orgId));
-    for (const candidate of candidates) {
-      const row = await authorized(env, {
-        teamId: body.teamId,
-        orgId: candidate.org_id,
-        channelId: body.channelId,
-        channelSecret: body.channelSecret,
-      });
-      if (row) matches.push(row);
-    }
-    if (matches.length !== 1) {
-      if (matches.length > 1) return error(requestId, 409, "channel_org_ambiguous", "More than one connected Salesforce org matches this channel credential.");
-      return error(requestId, 403, "channel_not_authorized", "This channel is not connected or its Panel grant has expired.");
-    }
-    return json({ teamId: matches[0].team_id, orgId: matches[0].org_id, channelId: matches[0].channel_id }, requestId);
-  }
-
-  if (path === "/internal/channels/token" && request.method === "POST") {
-    if (!body || !str(body.channelId, 128)) {
-      return error(requestId, 400, "invalid_request", "A valid JSON request with channelId is required.");
-    }
-    try {
-      const row = httpCredential;
-      if (!row) {
-        return error(requestId, 404, "channel_not_found", "No Salesforce credentials found for this channel.");
-      }
-      const auth = await token(env, row);
-      return json({
-        ok: true,
-        accessToken: auth.accessToken,
-        instanceUrl: auth.instanceUrl,
-        expiresAt: auth.expiresAt,
-        channelId: body.channelId,
-        orgId: row.org_id,
-        teamId: row.team_id,
-      }, requestId);
-    } catch (err: unknown) {
-      if (err instanceof AuthFailure) {
-        return failure(requestId, err.failure);
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      return error(requestId, 502, "token_failed", msg, true);
-    }
-  }
-
-  if (path === "/internal/channels/user/conversations" && request.method === "POST") {
-    if (!body) {
-      return error(requestId, 400, "invalid_request", "A valid JSON request is required.");
-    }
-    const userId = (body.userId || body.user_id) as string | undefined;
-    if (!userId || typeof userId !== "string" || userId.trim().length === 0) {
-      return error(requestId, 400, "invalid_request", "A valid userId parameter is required.");
-    }
-    const channelId = (body.channelId || request.headers.get("x-channel-id")) as string | undefined;
-    let cred: Credential | null = null;
-    if (typeof body.channelSecret === "string" && key(body)) {
-      cred = await authorized(env, body as Key & { channelSecret: string });
-    } else {
-      cred = httpCredential;
-    }
-    if (!cred) {
-      return error(requestId, 404, "channel_not_found", `No Salesforce credentials found for channel '${channelId || "default"}'.`);
-    }
-    const currentSessionId = (body.currentSessionId || body.sessionId) as string | undefined;
-    const limit = typeof body.limit === "number" ? body.limit : undefined;
-    try {
-      const history = await querySalesforceUserConversations(env, cred, userId, { currentSessionId, limit }, requestId);
-      return json(history, requestId);
-    } catch (err: unknown) {
-      return error(requestId, 502, "conversation_query_failed", err instanceof Error ? err.message : String(err), true);
-    }
-  }
-
-  if (!body || !key(body)) return error(requestId, 400, "invalid_request", "A valid JSON request with team, org, and channel IDs is required.");
-
-  if (path === "/internal/channels/register" && request.method === "POST") {
-    if (!str(body.instanceUrl) || !validInstanceUrl(body.instanceUrl) ||
-        !str(body.integrationUserId, 128) || !str(body.channelSecret) ||
-        body.channelSecret.length < 32) return error(requestId, 400, "invalid_connection", "The Salesforce connection details are incomplete or invalid.");
-    // JWT registrations (packaged execution client) carry no per-row secret:
-    // integrationUsername + isSandbox select the mint. Legacy registrations
-    // keep the encrypted per-row client secret byte-for-byte.
-    const jwtRegister = !str(body.clientSecret, 4096);
-    const regUsername = typeof body.integrationUsername === "string" ? body.integrationUsername : null;
-    const regSandbox = typeof body.isSandbox === "boolean" ? body.isSandbox : null;
-    const regClientId = typeof body.clientId === "string" ? body.clientId : null;
-    const regClientSecret = typeof body.clientSecret === "string" ? body.clientSecret : null;
-    if (jwtRegister && (!regUsername || regUsername.length < 1 || regUsername.length > 254 || regSandbox === null)) {
-      return error(requestId, 400, "invalid_connection", "JWT registration requires the integration username and environment.");
-    }
-    if (!jwtRegister && (!regClientId || regClientId.length > 512 || !regClientSecret || regClientSecret.length < 1 || regClientSecret.length > 4096)) {
-      return error(requestId, 400, "invalid_connection", "The Salesforce connection details are incomplete or invalid.");
-    }
-    const encrypted = jwtRegister || !regClientSecret ? null : await encrypt(env, regClientSecret);
-    const secretHash = await hash(body.channelSecret);
-    const now = Math.floor(Date.now() / 1000);
-    const candidate: Credential = {
-      team_id: body.teamId, org_id: body.orgId, channel_id: body.channelId,
-      instance_url: new URL(body.instanceUrl).origin,
-      client_id: jwtRegister || !regClientId ? TUBOT_CHANNEL_API_CLIENT_ID : regClientId,
-      client_secret_cipher: encrypted ? encrypted.cipher : null,
-      client_secret_iv: encrypted ? encrypted.iv : null,
-      integration_user_id: body.integrationUserId,
-      integration_username: jwtRegister && regUsername ? regUsername : null,
-      is_sandbox: jwtRegister && regSandbox !== null ? (regSandbox ? 1 : 0) : null,
-      channel_secret_hash: secretHash,
-    };
-    clearChannelTokens(body);
-    // Prove both that the grant works and that Salesforce issued the token
-    // for this org and the configured user before making the mapping durable.
-    await token(env, candidate);
-    await env.DB.prepare(`INSERT INTO salesforce_auth_credential
-      (team_id,org_id,channel_id,instance_url,client_id,client_secret_cipher,client_secret_iv,integration_user_id,integration_username,is_sandbox,channel_secret_hash,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(team_id,org_id,channel_id) DO UPDATE SET
-      instance_url=excluded.instance_url,client_id=excluded.client_id,
-      client_secret_cipher=excluded.client_secret_cipher,client_secret_iv=excluded.client_secret_iv,
-      integration_user_id=excluded.integration_user_id,integration_username=excluded.integration_username,
-      is_sandbox=excluded.is_sandbox,channel_secret_hash=excluded.channel_secret_hash,
-      updated_at=excluded.updated_at`).bind(
-      body.teamId, body.orgId, body.channelId, candidate.instance_url,
-      candidate.client_id, candidate.client_secret_cipher, candidate.client_secret_iv,
-      body.integrationUserId, candidate.integration_username ?? null, candidate.is_sandbox ?? null,
-      secretHash, now, now,
-    ).run();
-    return json({ ok: true, requestId }, requestId, 201);
-  }
-  if (path === "/internal/channels" && request.method === "DELETE") {
-    await env.DB.prepare(
-      "DELETE FROM salesforce_auth_credential WHERE team_id=? AND org_id=? AND channel_id=?"
-    ).bind(body.teamId, body.orgId, body.channelId).run();
-    clearChannelTokens(body);
-    return json({ ok: true, requestId }, requestId);
-  }
-  if (!str(body.channelSecret)) return error(requestId, 400, "invalid_request", "A channel credential is required.");
-  const row = await authorized(env, body as Key & { channelSecret: string });
-  if (!row) return error(requestId, 403, "channel_not_authorized", "This channel is not connected or its Panel grant has expired.");
-
-  if (path === "/internal/channels/execution-users" && request.method === "POST") {
-    const operation = body.operation;
-    if (operation === "list") {
-      const users = await activeChannelExecutionUsers(env, row.channel_id);
-      return json({
-        ok: true,
-        executionUsers: users.map(user => ({
-          integrationUserId: user.integrationUserId,
-          isPrimary: user.isPrimary,
-        })),
-      }, requestId);
-    }
-
-    if (operation === "add") {
-      if (!str(body.clientId, 255) || !str(body.clientSecret, 4096) ||
-          !validSalesforceUserId(body.integrationUserId)) {
-        return error(requestId, 400, "invalid_connection", "A valid ECA client ID, client secret, and execution user ID are required.");
-      }
-      if (sameSalesforceId(row.integration_user_id, body.integrationUserId)) {
-        return error(requestId, 409, "primary_execution_user", "The primary execution user is managed by the main channel connection.");
-      }
-      const encrypted = await encrypt(env, body.clientSecret);
-      const candidate: Credential = {
-        ...row,
-        client_id: body.clientId,
-        client_secret_cipher: encrypted.cipher,
-        client_secret_iv: encrypted.iv,
-        integration_user_id: body.integrationUserId,
-      };
-      // Validate that this ECA is configured for the same org and the selected
-      // Run As identity before saving its encrypted secret.
-      await token(env, candidate);
-      const now = Math.floor(Date.now() / 1000);
-      await env.DB.prepare(`INSERT INTO salesforce_auth_execution_user
-        (team_id,org_id,channel_id,instance_url,client_id,client_secret_cipher,client_secret_iv,integration_user_id,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(team_id,org_id,channel_id,integration_user_id) DO UPDATE SET
-        instance_url=excluded.instance_url,client_id=excluded.client_id,
-        client_secret_cipher=excluded.client_secret_cipher,client_secret_iv=excluded.client_secret_iv,
-        updated_at=excluded.updated_at`).bind(
-        row.team_id, row.org_id, row.channel_id, row.instance_url, body.clientId,
-        encrypted.cipher, encrypted.iv, body.integrationUserId, now, now,
-      ).run();
-      clearChannelTokens(body as Key);
-      return json({ ok: true, integrationUserId: body.integrationUserId, isPrimary: false }, requestId, 201);
-    }
-
-    if (operation === "remove") {
-      if (!validSalesforceUserId(body.integrationUserId)) {
-        return error(requestId, 400, "invalid_request", "A valid execution user ID is required.");
-      }
-      if (sameSalesforceId(row.integration_user_id, body.integrationUserId)) {
-        return error(requestId, 409, "primary_execution_user", "The primary execution user is managed by the main channel connection.");
-      }
-      const removed = await env.DB.prepare(`DELETE FROM salesforce_auth_execution_user
-        WHERE team_id=? AND org_id=? AND channel_id=? AND substr(integration_user_id,1,15)=?`)
-        .bind(row.team_id, row.org_id, row.channel_id, body.integrationUserId.slice(0, 15)).run();
-      if (!removed.meta.changes) return error(requestId, 404, "execution_user_not_found", "This execution user is not connected to the channel.");
-      clearChannelTokens(body as Key);
-      return json({ ok: true, integrationUserId: body.integrationUserId, removed: true }, requestId);
-    }
-
-    return error(requestId, 400, "invalid_operation", "Use list, add, or remove for channel execution users.");
-  }
-
-  if (path === "/internal/channels/tools/describe" && request.method === "POST") {
-    if (!isToolTarget(body.target)) return error(requestId, 400, "invalid_tool_target", "A valid Salesforce tool target is required.");
-    let result: ToolResolution;
-    try { result = await resolveTool(env, row, body.target, requestId); }
-    catch (cause) { result = safeDiagnosticFromFailure(cause); }
-    if (!result.available) return json({ available: false, diagnostic: result.diagnostic }, requestId);
-    return json({ available: true, route: result.route, inputs: result.inputs, outputs: result.outputs }, requestId);
-  }
-  if (path === "/internal/channels/tools/invoke" && request.method === "POST") {
-    if (!isToolTarget(body.target) || !object(body.arguments)) {
-      return error(requestId, 400, "invalid_tool_invocation", "A valid Salesforce tool target and arguments object are required.");
-    }
-    let resolved: ToolResolution;
-    try { resolved = await resolveTool(env, row, body.target, requestId); }
-    catch (cause) { resolved = safeDiagnosticFromFailure(cause); }
-    if (!resolved.available) return json({ available: false, diagnostic: resolved.diagnostic }, requestId, 404);
-
-    let invokePath = resolved.route;
-    let method = resolved.method;
-    let invokeBody: string | undefined;
-    if (resolved.api) {
-      const applied = applyApiArguments(resolved.route, resolved.target, body.arguments);
-      if (!applied || !apiRequestTarget(applied, row.instance_url)) {
-        return error(requestId, 400, "invalid_api_arguments", "The API arguments do not safely match the declared Salesforce route.");
-      }
-      invokePath = applied;
-      if (method !== "GET") invokeBody = JSON.stringify(body.arguments);
-    } else {
-      invokeBody = JSON.stringify({ inputs: [body.arguments] });
-    }
-    return sfRequest(env, row, invokePath, method, invokeBody, requestId, true);
-  }
-
-  if (path === "/internal/channels/query" && request.method === "POST") {
-    if (!str(body.soql, 20_000) || !/^\s*SELECT\b/i.test(body.soql) ||
-        /;|--|\/\*/.test(body.soql)) return error(requestId, 400, "read_query_required", "Only a single read-only SELECT query is allowed.");
-    return sfGet(env, row, "/services/data/" + API_VERSION + "/query?q=" + encodeURIComponent(body.soql), requestId);
-  }
-  if (path === "/internal/channels/read" && request.method === "POST") {
-    if (!str(body.objectApiName, 128) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(body.objectApiName) ||
-        !str(body.recordId, 18) || !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(body.recordId)) {
-      return error(requestId, 400, "invalid_record", "A valid Salesforce object API name and record ID are required.");
-    }
-    return sfGet(env, row, "/services/data/" + API_VERSION + "/sobjects/" +
-      encodeURIComponent(body.objectApiName) + "/" + encodeURIComponent(body.recordId), requestId);
-  }
-  if (path === "/internal/channels/agent-script" && request.method === "POST") {
-    const channelNames = Array.isArray(body.channelNames)
-      ? (body.channelNames as string[])
-      : typeof body.channelName === "string"
-        ? [body.channelName]
-        : undefined;
-    const agentNames = Array.isArray(body.agentNames)
-      ? (body.agentNames as string[])
-      : typeof body.agentName === "string"
-        ? [body.agentName]
-        : undefined;
-    const singleName = typeof body.name === "string" ? body.name : undefined;
-
-    if (!channelNames?.length && !agentNames?.length && !singleName) {
-      return error(requestId, 400, "invalid_request", "A channelName, channelNames, agentName, or agentNames parameter is required.");
-    }
-
-    const auth = await token(env, row);
-    const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken };
-
-    try {
-      const result = await getAgentScripts(conn, {
-        channelNames,
-        agentNames,
-        name: singleName,
-        apiVersion: typeof body.apiVersion === "string" ? body.apiVersion : undefined,
-      });
-      return json({ ...result, requestId }, requestId);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return error(requestId, 502, "agent_retrieve_failed", msg, true);
-    }
-  }
-
   return error(requestId, 404, "not_found", "The requested auth service endpoint was not found.");
 }
 
@@ -3148,31 +2485,228 @@ try {
   // Fallback for non-workerd runtimes
 }
 
+// Live SCRT serves published Mobile deployments, but the iamessage token
+// endpoint rejects them ("Supported deployment types: API"), so Mobile can
+// never ride the API echo path and must fail here with its own code.
+export function assertApiDeployment(payload: unknown, channelAddressIdentifier: string): void {
+  const root = object(payload) ? payload : null;
+  const config = root && object(root.embeddedServiceConfig) ? root.embeddedServiceConfig : null;
+  const channel = config && object(config.embeddedServiceMessagingChannel) ? config.embeddedServiceMessagingChannel : null;
+  if (config?.deploymentType === "Mobile") {
+    throw authFailure(400, "proxy_deployment_type_unsupported", "The Mobile deployment cannot be proxied through the API messaging path. Register an API deployment instead.");
+  }
+  if (config?.deploymentType !== "API" || channel?.channelAddressIdentifier !== channelAddressIdentifier) {
+    throw authFailure(400, "proxy_deployment_mismatch", "The published API deployment must belong to this channel.");
+  }
+}
+
+/** Private service binding for messaging proxies. Never exposes Salesforce tokens or arbitrary API access. */
+function assertActionMapping(action: EchoAction, resolved: Extract<ToolResolution, { available: true }>): void {
+  const inputs = resolved.inputs.filter(object);
+  const names = new Set(inputs.map(field => field.name));
+  const mapped = new Set(Object.values(action.inputMapping));
+  if ([...mapped].some(name => !names.has(name)) || inputs.some(field => field.required === true && !mapped.has(String(field.name))) ||
+      !Object.values(action.outputMapping).every(name => resolved.outputs.some(field => object(field) && field.name === name))) {
+    throw authFailure(400, "proxy_action_mapping_invalid", "The mapping does not match live Flow metadata.");
+  }
+}
+export class MessagingProxyBroker extends BaseWorkerEntrypoint {
+  async #connection(scope: TenantScope) {
+    if (!validScope(scope)) throw authFailure(400, "invalid_proxy_scope", "A valid tenant channel is required.");
+    return credentialForEntrypoint(this.env as AuthEnv, scope);
+  }
+  async authorize(scope:TenantScope, signed?: SignedRpcEnvelope):Promise<void>{await verifySignedRpcCall(this.env as AuthEnv, "authorize", [scope], signed);await this.#connection(scope);}
+  async #action(row: Credential, action: EchoAction) {
+    const resolved = await resolveTool(this.env as AuthEnv, row, {type:"flow",name:action.name}, crypto.randomUUID());
+    if (!resolved.available) throw authFailure(404, "proxy_action_unavailable", "The configured Flow action is unavailable.");
+    assertActionMapping(action, resolved);
+    return resolved;
+  }
+  async #actionCached(row: Credential, action: EchoAction) {
+    const key = `${row.org_id}\n${action.name}`;
+    const hit = flowRouteCache.get(key);
+    if (hit && Date.now() - hit.at < 300000 && hit.resolved.available) {
+      try { assertActionMapping(action, hit.resolved); return hit.resolved; }
+      catch { flowRouteCache.delete(key); }
+    }
+    const resolved = await resolveTool(this.env as AuthEnv, row, {type:"flow",name:action.name}, crypto.randomUUID());
+    if (!resolved.available) throw authFailure(404, "proxy_action_unavailable", "The configured Flow action is unavailable.");
+    assertActionMapping(action, resolved);
+    if (flowRouteCache.size > 500) flowRouteCache.clear();
+    flowRouteCache.set(key, { at: Date.now(), resolved });
+    return resolved;
+  }
+  async validate(scope:TenantScope,config:ProxyConfig, signed?: SignedRpcEnvelope):Promise<{scrtOrigin:string;browser?:import('../../tubot-sf-proxy/src/contracts').BrowserConfig}> {
+    await verifySignedRpcCall(this.env as AuthEnv, "validate", [scope, config], signed);
+    try{return await this.#validate(scope,config);}catch(cause){
+      throw new Error('proxy_broker_'+(cause instanceof AuthFailure?cause.failure.code:'validation_unavailable'));
+    }
+  }
+  async #validate(scope: TenantScope, config: ProxyConfig): Promise<{scrtOrigin:string;browser?:import('../../tubot-sf-proxy/src/contracts').BrowserConfig}> {
+    if (!validConfig(config)) throw authFailure(400, "invalid_proxy_config", "A valid deployment and Flow mapping are required.");
+    let stage="connection";
+    try {
+    const row = await this.#connection(scope);
+    stage="action_discovery";
+    await this.#action(row, config.action);
+    stage="channel_read";
+    const channelResponse = await sfGet(this.env as AuthEnv, row, `/services/data/${API_VERSION}/sobjects/MessagingChannel/${scope.channelId}`, crypto.randomUUID());
+    const channel = channelResponse.ok ? await responseJson(channelResponse) : null;
+    if (!object(channel) || channel.IsActive !== true || typeof channel.ChannelAddressIdentifier !== "string") {
+      throw authFailure(404, "proxy_channel_unavailable", "An active messaging channel is required.");
+    }
+    const host = new URL(row.instance_url).hostname;
+    if (!host.endsWith(".my.salesforce.com")) throw authFailure(400, "unsupported_scrt_domain", "The connection must use its Salesforce My Domain.");
+    const scrtOrigin = `https://${host.slice(0,-".my.salesforce.com".length)}.my.salesforce-scrt.com`;
+    const url = new URL("/embeddedservice/v1/embedded-service-config", scrtOrigin);
+    url.search = new URLSearchParams({orgId:scope.orgId,esConfigName:config.deploymentName,language:"en_US"}).toString();
+    stage="scrt_configuration";
+    const response = await fetch(url.toString(), {redirect:"manual",signal:AbortSignal.timeout(20000)});
+    const payload: any = response.ok ? await response.json() : null;
+    assertApiDeployment(payload, channel.ChannelAddressIdentifier);
+    stage='browser_configuration';
+    let browser;
+    if(config.browserDeploymentName){
+      try{browser=await browserConfig(path=>sfGet(this.env as AuthEnv,row,path,crypto.randomUUID()),API_VERSION,scrtOrigin,scope,config.browserDeploymentName,channel.ChannelAddressIdentifier);}
+      catch(cause){const code=cause instanceof Error?cause.message:'';if(/^browser_(config_unavailable|config_transport_unavailable|config_invalid_json|channel_mismatch|deployment_type_unsupported|site_insecure|site_invalid|schema_unavailable|schema_transport_unavailable|schema_invalid_json|binding_field_unavailable)$/.test(code))throw authFailure(502,code,'Browser configuration validation failed.');throw cause;}
+    }
+    return {scrtOrigin,...(browser?{browser}:{})};
+    } catch(cause) {if(cause instanceof AuthFailure)throw cause;throw authFailure(502,"proxy_"+stage+"_exception","Proxy validation failed.");}
+  }
+  async browserTurn(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string}, signed?: SignedRpcEnvelope):Promise<string>{
+    await verifySignedRpcCall(this.env as AuthEnv, "browserTurn", [scope, config, turn], signed);
+    const row=await this.#connection(scope);
+    return (await verifyBrowserTurn(path=>sfGet(this.env as AuthEnv,row,path,crypto.randomUUID()),scope,config,turn)).code;
+  }
+  async browserTurnAndEcho(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,action:EchoAction,turn:import('../../tubot-sf-proxy/src/contracts').BrowserTurn, signed?: SignedRpcEnvelope):Promise<import('../../tubot-sf-proxy/src/contracts').BrowserTurnResult>{
+    await verifySignedRpcCall(this.env as AuthEnv, "browserTurnAndEcho", [scope, config, action, turn], signed);
+    const t0=Date.now();
+    const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    const fields=(Array.isArray(config.visitorFields)&&config.visitorFields.length?config.visitorFields:[config.visitorField]).filter((f):f is string=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9_]*$/.test(f));
+    if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^[a-f0-9]{64}$/.test(turn.requestKey||'')||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length)
+      return {status:'rejected',code:'invalid_turn',spans:{verifyMs:0}};
+    const env=this.env as AuthEnv;
+    let row:Credential;
+    try{row=await this.#connection(scope);}catch{return {status:'rejected',code:'channel_not_authorized',spans:{verifyMs:Date.now()-t0}};}
+    const read=(path:string)=>sfGet(env,row,path,crypto.randomUUID());
+    // One session query covers binding and recipient (browserTurn and echo each ran their own).
+    // Session and transcript fetch in parallel; verdict order stays session-first.
+    const match=fields.map(f=>`${f}='${turn.reference}'`).join(' OR ');
+    const soql=`SELECT Id,MessagingEndUserId FROM MessagingSession WHERE Conversation.ConversationIdentifier='${turn.conversationId}' AND MessagingChannelId='${scope.channelId}' AND (${match}) LIMIT 1`;
+    let session:Response|null=null,entries:Response|null=null;
+    try{[session,entries]=await Promise.all([
+      read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(soql)}`),
+      read(`/services/data/${config.apiVersion}/connect/conversation/${turn.conversationId}/entries?recordLimit=50`)
+    ]);}catch{return {status:'retryable',code:'verification_unavailable',spans:{verifyMs:Date.now()-t0}};}
+    if(!session.ok)return {status:'retryable',code:'browser_binding_unavailable',spans:{verifyMs:Date.now()-t0}};
+    const sessions:any=await responseJson(session);
+    if(sessions.records?.length!==1)return {status:'rejected',code:'binding_absent',spans:{verifyMs:Date.now()-t0}};
+    const recipient=sessions.records[0]?.MessagingEndUserId;
+    if(typeof recipient!=='string'||!/^0PA[A-Za-z0-9]{12,15}$/.test(recipient))return {status:'retryable',code:'proxy_session_pending',spans:{verifyMs:Date.now()-t0}};
+    if(!entries.ok)return {status:'retryable',code:'browser_entries_unavailable',spans:{verifyMs:Date.now()-t0}};
+    const transcript:any=await responseJson(entries);
+    const entry=transcript.conversationEntries?.find((e:any)=>e.identifier===turn.messageId&&e.sender?.role==='EndUser');
+    if(typeof entry?.messageText!=='string'||entry.messageText!==transcriptText(turn.text))return {status:'rejected',code:'transcript_mismatch',spans:{verifyMs:Date.now()-t0}};
+    const verifyMs=Date.now()-t0;
+    try{
+      const resolved=await this.#actionCached(row,action);
+      const m=action.inputMapping;
+      const response=await sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
+        [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:[{name:"text",textValue:turn.text}]
+      }]}),crypto.randomUUID(),true);
+      const result:any=await responseJson(response);
+      const output=result?.[0]?.outputValues;
+      if(!response.ok||result?.[0]?.isSuccess!==true||!/^[A-Za-z0-9]{15,18}$/.test(output?.[action.outputMapping.requestId]||""))
+        return {status:'retryable',code:'proxy_echo_rejected',spans:{verifyMs}};
+      return {status:'submitted',requestId:output[action.outputMapping.requestId],spans:{verifyMs,submitMs:Date.now()-t0-verifyMs}};
+    }catch{
+      return {status:'retryable',code:'proxy_echo_rejected',spans:{verifyMs}};
+    }
+  }
+  async echo(scope: TenantScope, action: EchoAction, turn: {conversationId:string;text:string;requestKey:string}, signed?: SignedRpcEnvelope): Promise<{requestId:string}> {
+    await verifySignedRpcCall(this.env as AuthEnv, "echo", [scope, action, turn], signed);
+    if (!validConfig({deploymentName:"Validation",action}) || !turn || !/^[a-f0-9-]{36}$/i.test(turn.conversationId) ||
+        typeof turn.text !== "string" || !turn.text.length || turn.text.length > 4096 || !/^[a-f0-9]{64}$/.test(turn.requestKey)) {
+      throw authFailure(400, "invalid_proxy_turn", "The messaging turn is invalid.");
+    }
+    const env = this.env as AuthEnv;
+    const row = await this.#connection(scope);
+    const resolved = await this.#action(row, action);
+    const soql = `SELECT MessagingEndUserId FROM MessagingSession WHERE Conversation.ConversationIdentifier='${turn.conversationId}' AND MessagingChannelId='${scope.channelId}' ORDER BY CreatedDate DESC LIMIT 1`;
+    const lookup = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`, crypto.randomUUID());
+    const sessions: any = lookup.ok ? await responseJson(lookup) : null;
+    const recipient = sessions?.records?.[0]?.MessagingEndUserId;
+    if (typeof recipient !== "string" || !/^0PA[A-Za-z0-9]{12,15}$/.test(recipient)) throw authFailure(404, "proxy_session_pending", "The channel session is not available yet.", true);
+    const m = action.inputMapping;
+    // Typed parameters preserve whitespace; Flow string assignments trim it.
+    const response = await sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
+      [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:[{name:"text",textValue:turn.text}]
+    }]}),crypto.randomUUID(),true);
+    const result: any = await responseJson(response);
+    const output = result?.[0]?.outputValues;
+    if (!response.ok || result?.[0]?.isSuccess !== true ||
+        !/^[A-Za-z0-9]{15,18}$/.test(output?.[action.outputMapping.requestId] || "")) {
+      throw authFailure(502, "proxy_echo_rejected", "Salesforce did not confirm the notification request.", true);
+    }
+    return {requestId:output[action.outputMapping.requestId]};
+  }
+  async confirmInbound(scope:TenantScope, conversationId:string, messageId:string,text?:string, signed?: SignedRpcEnvelope): Promise<boolean> {
+    await verifySignedRpcCall(this.env as AuthEnv, "confirmInbound", [scope, conversationId, messageId, text], signed);
+    if (![conversationId,messageId].every(v=>typeof v === "string" && /^[a-f0-9-]{36}$/i.test(v))) throw authFailure(400,"invalid_proxy_entry","Invalid conversation entry.");
+    const row = await this.#connection(scope);
+    const soql = `SELECT Id FROM MessagingSession WHERE Conversation.ConversationIdentifier='${conversationId}' AND MessagingChannelId='${scope.channelId}' LIMIT 1`;
+    const response = await sfGet(this.env as AuthEnv,row,`/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`,crypto.randomUUID());
+    const sessions:any = response.ok ? await responseJson(response) : null;
+    if (!sessions?.records?.length) return false;
+    const entries = await sfGet(this.env as AuthEnv,row,`/services/data/${API_VERSION}/connect/conversation/${conversationId}/entries?recordLimit=1000`,crypto.randomUUID());
+    if (!entries.ok) throw authFailure(502,"proxy_entries_unavailable","Conversation entries are unavailable.",true);
+    const body:any = await responseJson(entries);
+    return Array.isArray(body?.conversationEntries) && body.conversationEntries.some((entry:any)=>entry.identifier === messageId&&entry.sender?.role==='EndUser'&&(text===undefined||entry.messageText===transcriptText(text)));
+  }
+  async status(scope: TenantScope, requestId:string, signed?: SignedRpcEnvelope): Promise<{state:"pending"|"delivered"|"failed";errors?:string[]}> {
+    await verifySignedRpcCall(this.env as AuthEnv, "status", [scope, requestId], signed);
+    if (!/^1sr[A-Za-z0-9]{12,15}$/.test(requestId)) throw authFailure(400,"invalid_send_request","Invalid notification request.");
+    const row = await this.#connection(scope);
+    const response = await sfGet(this.env as AuthEnv,row,`/services/data/${API_VERSION}/sobjects/ConvMessageSendRequest/${requestId}`,crypto.randomUUID());
+    const result: any = response.ok ? await responseJson(response) : null;
+    if (!result) throw authFailure(502,"proxy_status_unavailable","Notification status is unavailable.",true);
+    if (result.RequestStatus !== "Completed") return {state:"pending"};
+    return result.SuccessMessageCount === 1 && result.FailedMessageCount === 0 ? {state:"delivered"} :
+      {state:"failed",errors:Array.isArray(result.FailedMessageErrorReasons)?result.FailedMessageErrorReasons.filter((v:unknown)=>typeof v==="string"):[]};
+  }
+}
+
 export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   /** Service-binding-only inventory for autonomous, tenant-scoped discovery. */
-  async listConnectedOrgs(): Promise<Key[]> {
+  async listConnectedOrgs(signed?: SignedRpcEnvelope): Promise<Key[]> {
+    const org = await verifySignedRpcCall(this.env as AuthEnv, "listConnectedOrgs", [], signed);
     const env = this.env as AuthEnv;
-    const rows = await env.DB.prepare(`SELECT c.teamId AS teamId, c.orgId AS orgId,
-      MIN(c.channelId) AS channelId FROM salesforce_channel_connection c
-      JOIN oauth_token t ON t.id = c.oauthTokenId AND t.teamId = c.teamId
-      JOIN salesforce_auth_credential a ON a.team_id = c.teamId AND a.org_id = c.orgId
-        AND a.channel_id = c.channelId AND a.channel_secret_hash = c.channelSecretHash
-      WHERE t.expiresAt > unixepoch()
-      GROUP BY c.teamId, c.orgId`).all<Key>();
-    const staging = rows.results ?? [];
-    const panelRows = await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId, channel_id AS channelId
-      FROM panel_salesforce_channels`).all<Key>();
-    const panel = panelRows.results ?? [];
-    const seen = new Set(staging.map(entry =>
-      [entry.teamId, entry.orgId, entry.channelId].join("\u0000")));
-    const merged = [...staging];
-    for (const entry of panel) {
-      const triple = [entry.teamId, entry.orgId, entry.channelId].join("\u0000");
-      if (seen.has(triple)) continue;
-      seen.add(triple);
-      merged.push(entry);
+    const rows = await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId,
+      MIN(channel_id) AS channelId FROM panel_salesforce_channels GROUP BY team_id, org_id`).all<Key>();
+    const all = rows.results ?? [];
+    return org ? all.filter(k => k.orgId === org) : all;
+  }
+
+  /** Agentcode session source: latest ready snapshot per saved agent. Scope-first (arg 0); envelope org binds to scope.orgId. */
+  async listAgentSnapshots(scope: AgentScope, signed?: SignedRpcEnvelope): Promise<Array<{ agentName: string; jobId: string; status: string; updatedAt: number }>> {
+    await verifySignedRpcCall(this.env as AuthEnv, "listAgentSnapshots", [scope], signed);
+    try {
+      return await listAgentSnapshotsForScope((this.env as AuthEnv).DB, scope);
+    } catch (cause) {
+      if (cause instanceof SecurityError) throw authFailure(cause.status, cause.code, cause.code);
+      throw cause;
     }
-    return merged;
+  }
+
+  /** Agentcode session source: reassembled snapshot files for one saved agent. Scope-first (arg 0). */
+  async getAgentSnapshot(scope: AgentScope, agentName: string, signed?: SignedRpcEnvelope): Promise<{ agentName: string; jobId: string; sha: string; manifest: unknown; files: Array<{ path: string; sha256: string; byteSize: number; content: string }> }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getAgentSnapshot", [scope, agentName], signed);
+    try {
+      return await readAgentSnapshotForScope((this.env as AuthEnv).DB, scope, agentName);
+    } catch (cause) {
+      if (cause instanceof SecurityError) throw authFailure(cause.status, cause.code, cause.code);
+      throw cause;
+    }
   }
 
   /** Restricted Salesforce proxy. Tokens never leave this Worker. */
@@ -3180,27 +2714,14 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     method: "GET" | "HEAD" | "POST";
     path: string;
     jsonBody?: Record<string, unknown>;
-  }>):
+  }>, signed?: SignedRpcEnvelope):
     Promise<Array<{ status: number; body: unknown }>> {
+    await verifySignedRpcCall(this.env as AuthEnv, "inspectSalesforce", [ref, requests], signed);
     const env = this.env as AuthEnv;
     if (!key(ref) || !Array.isArray(requests) || requests.length < 1 || requests.length > 25) {
       throw authFailure(400, "invalid_request", "A valid tenant and up to 25 requests are required.");
     }
-    // Staging enrollment is authoritative when present (wrong grant still
-    // denies); otherwise resolve the exact panel-owned row from shared D1.
-    let row = await credential(env, ref);
-    if (row) {
-      const grant = await env.DB.prepare(`SELECT 1 AS valid FROM salesforce_channel_connection c
-        JOIN oauth_token t ON t.id = c.oauthTokenId AND t.teamId = c.teamId
-        WHERE c.teamId = ? AND c.orgId = ? AND c.channelId = ?
-          AND c.channelSecretHash = ? AND t.expiresAt > unixepoch()`)
-        .bind(ref.teamId, ref.orgId, ref.channelId, row.channel_secret_hash)
-        .first<{ valid: number }>();
-      if (!grant) throw authFailure(403, "channel_not_authorized", "The Salesforce channel grant is unavailable.");
-    } else {
-      row = await panelCredential(env, ref);
-      if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
-    }
+    const row = await credentialForEntrypoint(env, ref);
     const results: Array<{ status: number; body: unknown; trailingDocuments?: unknown }> =
       new Array(requests.length);
     // QUOTABURN Q1: fold eligible GETs into composite/batch (25 max, 1 call
@@ -3397,7 +2918,8 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     route: string;
     arguments: Record<string, unknown>;
     audioBase64: string;
-  }): Promise<{ status: number; body: unknown; cleanupError?: string }> {
+  }, signed?: SignedRpcEnvelope): Promise<{ status: number; body: unknown; cleanupError?: string }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeSpeechToTextWithSyntheticAudio", [ref, input], signed);
     if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
         input.route !== `/services/data/v${input.apiVersion}/actions/standard/speechToText` ||
         !object(input.arguments) || Object.hasOwn(input.arguments, "contentDocumentId") ||
@@ -3484,7 +3006,8 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     apiVersion: string;
     route: string;
     arguments: Record<string, unknown>;
-  }): Promise<{ status: number; body: unknown; cleanupError?: string }> {
+  }, signed?: SignedRpcEnvelope): Promise<{ status: number; body: unknown; cleanupError?: string }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeCartReadWithSyntheticWebStore", [ref, input], signed);
     const routeMatch = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/standard\/(getCartItems|getCartPromotions)$/i,
     );
@@ -3882,7 +3405,8 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   async invokeDataGraphMetadataWithSyntheticGraph(ref: Key, input: {
     apiVersion: string;
     route: string;
-  }): Promise<{ status: number; body: unknown; cleanupError?: string; alternative?: { route: string; status: number; success: boolean; errorMessage: string | null } }> {
+  }, signed?: SignedRpcEnvelope): Promise<{ status: number; body: unknown; cleanupError?: string; alternative?: { route: string; status: number; success: boolean; errorMessage: string | null } }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeDataGraphMetadataWithSyntheticGraph", [ref, input], signed);
     return this.#invokeDataGraphContext(ref, input);
   }
 
@@ -4246,12 +3770,14 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Tenant-authorized preparation endpoints for Data Graph read actions. */
-  async invokeDataGraphWithContext(ref: Key, input: { apiVersion: string }) {
+  async invokeDataGraphWithContext(ref: Key, input: { apiVersion: string }, signed?: SignedRpcEnvelope) {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeDataGraphWithContext", [ref, input], signed);
     return this.invokeDataGraphMetadataWithSyntheticGraph(ref, { ...input,
       route: `/services/data/v${input.apiVersion}/actions/standard/cdpGetDataGraph` });
   }
 
-  async invokeDataGraphByLookupWithContext(ref: Key, input: { apiVersion: string }) {
+  async invokeDataGraphByLookupWithContext(ref: Key, input: { apiVersion: string }, signed?: SignedRpcEnvelope) {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeDataGraphByLookupWithContext", [ref, input], signed);
     return this.invokeDataGraphMetadataWithSyntheticGraph(ref, { ...input,
       route: `/services/data/v${input.apiVersion}/actions/standard/cdpGetDataGraphByLookup` });
   }
@@ -4346,8 +3872,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
 
   /** Infer a typed prompt fixture through the real Salesforce preview validator. */
   async prepareTypedPromptContext(ref: Key, input: { apiVersion: string; route: string;
-    arguments: Record<string, unknown> }): Promise<{ status: number; body: unknown;
+    arguments: Record<string, unknown> }, signed?: SignedRpcEnvelope): Promise<{ status: number; body: unknown;
       arguments?: Record<string, unknown>; schemas?: Record<string, unknown>; executionRoute?: string }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "prepareTypedPromptContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/generatePromptResponse\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.arguments) ||
@@ -4409,7 +3936,8 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Build disposable lookup records using the active Flow's own input/filter definitions. */
-  async describeFlowCreationContext(ref: Key, input: { route: string }): Promise<{ status: number; body: unknown; contextSchema?: unknown }> {
+  async describeFlowCreationContext(ref: Key, input: { route: string }, signed?: SignedRpcEnvelope): Promise<{ status: number; body: unknown; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "describeFlowCreationContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match) throw authFailure(400, "invalid_flow_creation_context", "A discovered Flow route is required.");
     const env = this.env as AuthEnv;
@@ -4486,8 +4014,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     return { status: 200, body: { discovered: true }, contextSchema };
   }
 
-  async invokeFlowCreationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeFlowCreationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowCreationWithContext", [ref, input], signed);
     if (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) throw authFailure(400, "invalid_verification_window", "A bounded verification window is required.");
     const described = await this.describeFlowCreationContext(ref, input);
     if (described.status !== 200 || !object(described.contextSchema)) return described;
@@ -4496,8 +4025,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       return { status: 403, body: { errorCode: "FLOW_CREATION_FIXTURE_PERMISSIONS_REQUIRED", message: "Live Flow targets or references lack the create/read/delete or marker access needed for verification. Run dynamic fixture permission setup and retry." }, contextSchema: plan };
     }
     const env = this.env as AuthEnv;
-    const row = (await credential(env, ref)) ?? (await panelCredential(env, ref));
-    if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+    const row = await credentialForEntrypoint(env, ref);
     const root = input.route.split("/actions/")[0];
     const request = async (path: string, method = "GET", body?: unknown) => {
       try {
@@ -4519,8 +4047,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Owned lifecycle for single-recordCreate invocable flows (e.g. Create_Booking). */
-  async invokeRemainderBookingFlow(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeRemainderBookingFlow(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeRemainderBookingFlow", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || match[2] !== "Create_Booking" ||
       (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000))) {
@@ -4541,8 +4070,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Invoke a spec'd managed Flow with a live platform sObject and verify the Finished outcome. */
-  async invokeFlowLiveSObjectWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeFlowLiveSObjectWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowLiveSObjectWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || FLOW_LIVE_SOBJECT_SPECS[match[2]] === undefined ||
       (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000))) {
@@ -4568,8 +4098,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
    * setup script. Attempt-driven: Tooling denials surface as
    * capabilityDenied and the caller keeps its honest setup verdict.
    */
-  async selfProvisionFixtureGrants(ref: Key, input: { apiVersion: string; objects: string[] }):
+  async selfProvisionFixtureGrants(ref: Key, input: { apiVersion: string; objects: string[] }, signed?: SignedRpcEnvelope):
     Promise<{ granted: string[]; failed: Array<{ object: string; status: number }>; assigned: boolean; capabilityDenied: boolean }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "selfProvisionFixtureGrants", [ref, input], signed);
     if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
       !Array.isArray(input.objects) || !input.objects.length || input.objects.length > 12 ||
       input.objects.some(name => typeof name !== "string" || name.length > 128)) {
@@ -4587,8 +4118,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     return provisionFixtureGrants({ root, userId: row.integration_user_id, objects: input.objects, request });
   }
 
-  async invokeRecordActionWithContext(ref: Key, input: { route: string; objectApiName: string; verificationWindowMs?: number; attendeePayloadFields?: string[]; invitationPrefixField?: string; fixtureIdInput?: string; contextArgs?: Record<string, unknown> }):
+  async invokeRecordActionWithContext(ref: Key, input: { route: string; objectApiName: string; verificationWindowMs?: number; attendeePayloadFields?: string[]; invitationPrefixField?: string; fixtureIdInput?: string; contextArgs?: Record<string, unknown> }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeRecordActionWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/(createCart|deleteCart|addCartItem|updateCartItem|createInvRsvForCart|deleteInvRsvForCart|saveAppointmentInvitationDetails|saveServiceAppointmentAttendees|cancelAppointment|createWaitlist|contactRequestAction|createCustomField|invocableApplyLeadAssignmentRules|createRecord|updateRecord|chatterPost|publishKnowledgeArticles|assignKnowledgeArticles|archiveKnowledgeArticles|deleteKnowledgeArticles|createDraftFromOnlineKnowledgeArticle|restoreKnowledgeArticleVersion|getArticleSmartLinkUrl|submitKnowledgeArticleForTranslation|activateSessionPermSet|deactivateSessionPermSet|addWorkPlans|addWorkSteps|deleteWorkPlans|choosePricebook|skillsBasedRouting|routeWork|runCampaign|contentWorkspaceEnableFolders|updateVisualization|changeOrderSummaryPreview|changeOrderSummarySubmit|registerGuestBuyer|createSearchBoostBuryRule|authorizePayment|generateWorkPlans|holdFulfillmentOrderCapacity|confirmHeldFulfillmentOrderCapacity|releaseHeldFulfillmentOrderCapacity|getFulfillmentOrderCapacityValues|createServiceReport|generateWorkOrders|getRecord|getRelatedList)$/);
     if (input?.invitationPrefixField !== undefined && (typeof input.invitationPrefixField !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(input.invitationPrefixField))) throw authFailure(400, "invalid_invitation_schema", "A discovered invitation prefix field is required.");
     if (input?.attendeePayloadFields !== undefined && (!Array.isArray(input.attendeePayloadFields) || input.attendeePayloadFields.length > 20 || input.attendeePayloadFields.some(name => typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name)))) throw authFailure(400, "invalid_attendee_schema", "A bounded live attendee schema is required.");
@@ -4753,8 +4285,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       verificationWindowMs: input.verificationWindowMs, request });
   }
 
-  async invokeApprovalActionWithContext(ref: Key, input: { route: string; verificationWindowMs?: number; reassignUserId?: string }):
+  async invokeApprovalActionWithContext(ref: Key, input: { route: string; verificationWindowMs?: number; reassignUserId?: string }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeApprovalActionWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? approvalActionName(input.route) : null;
@@ -4781,8 +4314,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeProcSimpleApprovalWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeProcSimpleApprovalWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeProcSimpleApprovalWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? procSimpleApprovalActionName(input.route) : null;
@@ -4804,8 +4338,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeNotificationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeNotificationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeNotificationWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/sendNotification\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? notificationActionName(input.route) : null;
@@ -4829,8 +4364,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Invoke a notification-flow email consumer over an owned alert-object fixture. */
-  async invokeNotificationFlowWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeNotificationFlowWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeNotificationFlowWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? notificationFlowActionName(input.route) : null;
@@ -4860,8 +4396,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeEmailAlertWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeEmailAlertWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeEmailAlertWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/emailAlert\/([A-Za-z][A-Za-z0-9_]{0,127})\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const parts = match ? emailAlertRouteParts(input.route) : null;
@@ -4885,8 +4422,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Invoke a side-effect-free invocable Apex relay over owned Ended-session fixtures. */
-  async invokeApexRelayWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeApexRelayWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeApexRelayWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexRelayActionName(input.route) : null;
@@ -4910,8 +4448,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Invoke a generic sObject-id invocable Apex over an owned marked fixture. */
-  async invokeApexExecWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeApexExecWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeApexExecWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexExecActionName(input.route) : null;
@@ -4935,8 +4474,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Invoke an apex SOBJECT-record action with an owned fixture chain. */
-  async invokeApexSObjectRecordWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeApexSObjectRecordWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeApexSObjectRecordWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || !Object.hasOwn(APEX_SOBJECT_RECORD_SPECS, match[2]) ||
@@ -4959,8 +4499,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Invoke a dual-asset standard action with two owned assets. */
-  async invokeAssetReplaceWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeAssetReplaceWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeAssetReplaceWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || !Object.hasOwn(ASSET_REPLACE_SPECS, match[2]) ||
@@ -4983,8 +4524,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Evaluate a decision-table action with a fully populated descriptor-built payload. */
-  async invokeDecisionTableWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeDecisionTableWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeDecisionTableWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/decisionTableAction\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? decisionTableActionName(input.route) : null;
@@ -5005,8 +4547,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       verificationWindowMs: input.verificationWindowMs, request });
   }
 
-  async invokeApexCsvWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeApexCsvWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeApexCsvWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexCsvActionName(input.route) : null;
@@ -5029,8 +4572,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeApexOverlapWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeApexOverlapWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeApexOverlapWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexOverlapActionName(input.route) : null;
@@ -5051,8 +4595,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       verificationWindowMs: input.verificationWindowMs, request });
   }
 
-  async invokeResearchWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeResearchWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeResearchWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? researchActionName(input.route) : null;
@@ -5075,8 +4620,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeSkippedStandardWithContext(ref: Key, input: { route: string; family: string; verificationWindowMs?: number }):
+  async invokeSkippedStandardWithContext(ref: Key, input: { route: string; family: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeSkippedStandardWithContext", [ref, input], signed);
     const info = typeof input?.route === "string" ? skippedStandardRouteInfo(input.route) : null;
     const family = skippedStandardFamilySlug(input?.family);
     if (!key(ref) || !info || !family ||
@@ -5098,8 +4644,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeAgentCustomerWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeAgentCustomerWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeAgentCustomerWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{1,127})$/);
     if (!key(ref) || !match ||
@@ -5121,8 +4668,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeCommerceLifecycleWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeCommerceLifecycleWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeCommerceLifecycleWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/(?:standard|custom\/apex)\/([A-Za-z][A-Za-z0-9_.]{0,127})$/);
     const action = match ? commerceLifecycleActionName(input.route) : null;
@@ -5160,8 +4708,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return "failure" in result ? { failure: { ...result.failure, ok: false } } : result; } });
   }
 
-  async invokeQuickActionWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }):
+  async invokeQuickActionWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeQuickActionWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/quickAction\/([A-Za-z][A-Za-z0-9_]{0,127})\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match) throw authFailure(400, "invalid_quick_action_context", "A discovered Quick Action route is required.");
@@ -5365,8 +4914,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       verificationWindowMs: input.verificationWindowMs, request });
   }
 
-  async invokeFlowWithContext(ref: Key, input: { apiVersion: string; route: string; arguments: Record<string, unknown>; argumentsSynthetic?: boolean }):
+  async invokeFlowWithContext(ref: Key, input: { apiVersion: string; route: string; arguments: Record<string, unknown>; argumentsSynthetic?: boolean }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.arguments)) {
@@ -5851,8 +5401,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Run the verified-contact consumer chain for a metadata-hidden Flow action. */
-  async invokeFlowContactChain(ref: Key, input: { apiVersion: string; route: string }):
+  async invokeFlowContactChain(ref: Key, input: { apiVersion: string; route: string }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowContactChain", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion) {
@@ -5871,8 +5422,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Run the verification-code consumer chain for a metadata-hidden Flow action. */
-  async invokeFlowVerificationCodeChain(ref: Key, input: { apiVersion: string; route: string }):
+  async invokeFlowVerificationCodeChain(ref: Key, input: { apiVersion: string; route: string }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowVerificationCodeChain", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion) {
@@ -5891,8 +5443,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Run the output-linked verification chain for a refused custom Flow action. */
-  async invokeFlowVerifyLinkedChain(ref: Key, input: { apiVersion: string; route: string }):
+  async invokeFlowVerifyLinkedChain(ref: Key, input: { apiVersion: string; route: string }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowVerifyLinkedChain", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion) {
@@ -5911,8 +5464,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Run the owned-substrate chain for a refused custom Flow action. */
-  async invokeFlowOwnedSubstrateChain(ref: Key, input: { apiVersion: string; route: string; plan: OwnedSubstratePlan; verificationWindowMs?: number }):
+  async invokeFlowOwnedSubstrateChain(ref: Key, input: { apiVersion: string; route: string; plan: OwnedSubstratePlan; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowOwnedSubstrateChain", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.plan)) {
@@ -5940,8 +5494,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Apply a planned managed-flow-fault repair and re-probe (searcher repair-consumer entry). */
-  async invokeFlowFaultRepair(ref: Key, input: { apiVersion: string; route: string; fault: { code: string; requirement?: string; retryable?: boolean; objectName?: string; fieldName?: string; actionElement?: string; providerName?: string; invocableName?: string; inputName?: string }; priorArgs?: Record<string, unknown>; gating?: { lastAttemptAt?: number | null; repeatCount?: number | null; builderVersion?: number | null }; verificationWindowMs?: number }):
+  async invokeFlowFaultRepair(ref: Key, input: { apiVersion: string; route: string; fault: { code: string; requirement?: string; retryable?: boolean; objectName?: string; fieldName?: string; actionElement?: string; providerName?: string; invocableName?: string; inputName?: string }; priorArgs?: Record<string, unknown>; gating?: { lastAttemptAt?: number | null; repeatCount?: number | null; builderVersion?: number | null }; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowFaultRepair", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/v(\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !object(input) || !match || match[1] !== input.apiVersion || !object(input.fault) ||
@@ -5973,8 +5528,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Discover Data Cloud publish substrate, invoke natively, and verify the lifecycle state. */
-  async invokeCdpPublishWithContext(ref: Key, input: { actionName: string; apiVersion: string; descriptorInputs: Array<{ name: string; type?: string; required?: boolean }> }):
+  async invokeCdpPublishWithContext(ref: Key, input: { actionName: string; apiVersion: string; descriptorInputs: Array<{ name: string; type?: string; required?: boolean }> }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeCdpPublishWithContext", [ref, input], signed);
     const actions = ["cdpPublishSegment", "cdpPublishCalculatedInsight", "cdpSendToActivation"];
     if (!key(ref) || !object(input) || !actions.includes(input.actionName) ||
       !/^v\d+(?:\.\d+)?$/.test(input.apiVersion ?? "") || !Array.isArray(input.descriptorInputs)) {
@@ -6033,8 +5589,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Refresh ONLY owned ActSetup probe data streams, invoking natively and verifying the lifecycle state. */
-  async invokeCdpRefreshWithContext(ref: Key, input: { actionName: string; apiVersion: string; descriptorInputs: Array<{ name: string; type?: string; required?: boolean }> }):
+  async invokeCdpRefreshWithContext(ref: Key, input: { actionName: string; apiVersion: string; descriptorInputs: Array<{ name: string; type?: string; required?: boolean }> }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeCdpRefreshWithContext", [ref, input], signed);
     if (!key(ref) || !object(input) || input.actionName !== "cdpRefreshDataStream" ||
       !/^v\d+(?:\.\d+)?$/.test(input.apiVersion ?? "") || !Array.isArray(input.descriptorInputs)) {
       throw authFailure(400, "invalid_cdp_refresh", "The discovered CDP refresh action, API version, and descriptor inputs are required.");
@@ -6075,8 +5632,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Ground summaries in a searchable UI API record, creating a disposable record if needed. */
-  async invokeRecordSummaryWithContext(ref: Key, input: { apiVersion: string; route: string }):
+  async invokeRecordSummaryWithContext(ref: Key, input: { apiVersion: string; route: string }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "invokeRecordSummaryWithContext", [ref, input], signed);
     if (!key(ref) || !object(input) || !/^\d+(?:\.\d+)?$/.test(input.apiVersion) ||
         input.route !== `/services/data/v${input.apiVersion}/actions/standard/summarizeRecord`) {
       throw authFailure(400, "invalid_summary_probe", "A discovered record summary route is required.");
@@ -6151,30 +5709,41 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     return result;
   }
 
-  async getCallableToolUrlsForChannel(channelId: string, options?: any): Promise<string[]> {
-    return getCallableToolUrlsForChannel(channelId, { ...options, env: this.env });
+  async getCallableToolUrlsForChannel(
+    channelId: string,
+    options?: { teamId?: string; orgId?: string; apiVersion?: string }, signed?: SignedRpcEnvelope,
+  ): Promise<string[]> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getCallableToolUrlsForChannel", [channelId, options], signed);
+    if (!validSalesforceChannelId(channelId) || (!!options?.teamId !== !!options?.orgId)) {
+      throw authFailure(400, "invalid_request", "A valid channel and complete tenant scope are required.");
+    }
+    const env = this.env as AuthEnv;
+    const row = options?.teamId && options.orgId
+      ? await credentialForEntrypoint(env, { teamId: options.teamId, orgId: options.orgId, channelId })
+      : await resolveCredentialForChannel(env, channelId);
+    if (!row) throw authFailure(404, "channel_not_found", "The Salesforce channel is unavailable.");
+    const auth = await token(env, row);
+    return getCallableToolUrlsForChannel(channelId, {
+      env,
+      conn: { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken },
+      teamId: row.team_id,
+      orgId: row.org_id,
+      apiVersion: options?.apiVersion,
+    });
   }
 
   async getTokenForChannel(
     channelId: string,
-    options?: { teamId?: string; orgId?: string; channelSecret?: string }
+    options?: { teamId?: string; orgId?: string }, signed?: SignedRpcEnvelope
   ): Promise<Token & { orgId: string; teamId: string }> {
-    let row: Credential | null = null;
-    if (options?.channelSecret || options?.teamId || options?.orgId) {
-      if (!options.channelSecret || !options.teamId || !options.orgId) throw new SecurityError(401,"complete_channel_credential_required");
-      row = await authorized(this.env, {
-        channelId,
-        teamId: options.teamId,
-        orgId: options.orgId,
-        channelSecret: options.channelSecret,
-      });
-    } else {
-      row = await resolveCredentialForChannel(this.env, channelId);
-      if (row && ((options?.teamId && options.teamId !== row.team_id) || (options?.orgId && options.orgId !== row.org_id))) row = null;
+    await verifySignedRpcCall(this.env as AuthEnv, "getTokenForChannel", [channelId, options], signed);
+    if (!validSalesforceChannelId(channelId) || (!!options?.teamId !== !!options?.orgId)) {
+      throw authFailure(400, "invalid_request", "A valid channel and complete tenant scope are required.");
     }
-    if (!row) {
-      throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${channelId}'.`);
-    }
+    const row = options?.teamId && options.orgId
+      ? await credentialForEntrypoint(this.env as AuthEnv, { teamId: options.teamId, orgId: options.orgId, channelId })
+      : await resolveCredentialForChannel(this.env as AuthEnv, channelId);
+    if (!row) throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${channelId}'.`);
     const auth = await token(this.env, row);
     return {
       accessToken: auth.accessToken,
@@ -6186,16 +5755,20 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   }
 
   /** Returns the active ECAs attached to one connected channel without exposing secrets. */
-  async listExecutionUsersForChannel(channelId: string): Promise<ExecutionUserReference[]> {
-    return activeChannelExecutionUsers(this.env as AuthEnv, channelId);
+  async listExecutionUsersForChannel(channelId: string, signed?: SignedRpcEnvelope): Promise<ExecutionUserReference[]> {
+    const org = await verifySignedRpcCall(this.env as AuthEnv, "listExecutionUsersForChannel", [channelId], signed);
+    const refs = await activeChannelExecutionUsers(this.env as AuthEnv, channelId);
+    if (org && refs.some(r => r.orgId !== org)) throw authFailure(401, "rpc_unauthorized", "Channel is not bound to the calling org.");
+    return refs;
   }
 
   /** Mints a token for one ECA after rechecking the exact active tenant grant. */
   async getTokenForExecutionUser(
     channelId: string,
     integrationUserId: string,
-    scope: Key,
+    scope: Key, signed?: SignedRpcEnvelope,
   ): Promise<Token & Key & { integrationUserId: string }> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getTokenForExecutionUser", [channelId, integrationUserId, scope], signed);
     const env = this.env as AuthEnv;
     if (!validSalesforceChannelId(channelId) || !validSalesforceUserId(integrationUserId) ||
         !key(scope as unknown as Record<string, unknown>) || !sameSalesforceId(scope.channelId, channelId)) {
@@ -6215,16 +5788,14 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     };
   }
 
-  private async cacheCredential(options: any): Promise<Credential> {
+  async #cacheCredential(options: any): Promise<Credential> {
     const scope=requireScope(options);
-    if(typeof options.channelSecret!=="string" || options.channelSecret.length<32) throw new SecurityError(401,"channel_credential_required");
-    const row=await authorized(this.env, {...scope,channelSecret:options.channelSecret});
-    if(!row) throw new SecurityError(403,"channel_not_authorized");
-    return row;
+    return credentialForEntrypoint(this.env as AuthEnv, scope);
   }
 
-  async getUserData(userId: string, channelId?: string, options?: any): Promise<any> {
-    const cacheRow = await this.cacheCredential(options);
+  async getUserData(userId: string, channelId?: string, options?: any, signed?: SignedRpcEnvelope): Promise<any> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getUserData", [userId, channelId, options], signed);
+    const cacheRow = await this.#cacheCredential(options);
     if (typeof channelId !== "undefined" && channelId !== cacheRow.channel_id) throw new SecurityError(403,"conflicting_tenant_scope");
     const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
     const row = await cacheStore.get(userId);
@@ -6236,8 +5807,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     }
   }
 
-  async getUserETag(userId: string, options?: any): Promise<string | null> {
-    const cacheRow = await this.cacheCredential(options);
+  async getUserETag(userId: string, options?: any, signed?: SignedRpcEnvelope): Promise<string | null> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getUserETag", [userId, options], signed);
+    const cacheRow = await this.#cacheCredential(options);
     const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
     return await cacheStore.getUserETag(userId);
   }
@@ -6247,9 +5819,10 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     channelId: string | undefined,
     data: any,
     ttlSeconds?: number,
-    options?: any
+    options?: any, signed?: SignedRpcEnvelope
   ): Promise<{ ok: boolean }> {
-    const cacheRow = await this.cacheCredential(options);
+    await verifySignedRpcCall(this.env as AuthEnv, "saveUserData", [userId, channelId, data, ttlSeconds, options], signed);
+    const cacheRow = await this.#cacheCredential(options);
     const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
     await cacheStore.put({
       userId,
@@ -6263,8 +5836,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     return { ok: true };
   }
 
-  async getUserData360(userId: string, channelId?: string, options?: any): Promise<any> {
-    const cacheRow = await this.cacheCredential(options);
+  async getUserData360(userId: string, channelId?: string, options?: any, signed?: SignedRpcEnvelope): Promise<any> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getUserData360", [userId, channelId, options], signed);
+    const cacheRow = await this.#cacheCredential(options);
     const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
     const cached = await cacheStore.get(userId);
     if (cached) {
@@ -6298,8 +5872,9 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     return userData;
   }
 
-  async getMessagingSessionData360(sessionId: string, channelId?: string, options?: any): Promise<any> {
-    const cacheRow = await this.cacheCredential(options);
+  async getMessagingSessionData360(sessionId: string, channelId?: string, options?: any, signed?: SignedRpcEnvelope): Promise<any> {
+    await verifySignedRpcCall(this.env as AuthEnv, "getMessagingSessionData360", [sessionId, channelId, options], signed);
+    const cacheRow = await this.#cacheCredential(options);
     const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
     const cached = await cacheStore.get(sessionId);
     if (cached) {
@@ -6333,10 +5908,11 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     return sessionData;
   }
 
-  async purgeCache(tags: string[] | string, options?: any): Promise<boolean> {
+  async purgeCache(tags: string[] | string, options?: any, signed?: SignedRpcEnvelope): Promise<boolean> {
+    await verifySignedRpcCall(this.env as AuthEnv, "purgeCache", [tags, options], signed);
     const tagList = Array.isArray(tags) ? tags : [tags];
     scopedTags(requireScope(options),tagList);
-    const cacheRow = await this.cacheCredential(options);
+    const cacheRow = await this.#cacheCredential(options);
     const cacheStore = new UserDataCacheStore(this.env.DB, {teamId:cacheRow.team_id,orgId:cacheRow.org_id,channelId:cacheRow.channel_id});
     for (const tag of tagList) {
       if (tag.startsWith("sf-user-")) {
@@ -6350,9 +5926,10 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
 
   async getUserConversationHistory(
     userId: string,
-    options?: { channelId?: string; teamId?: string; orgId?: string; channelSecret?: string; currentSessionId?: string; limit?: number }
+    options?: { channelId?: string; teamId?: string; orgId?: string; currentSessionId?: string; limit?: number }, signed?: SignedRpcEnvelope
   ): Promise<UserConversationHistory> {
-    const cred = await this.cacheCredential(options);
+    await verifySignedRpcCall(this.env as AuthEnv, "getUserConversationHistory", [userId, options], signed);
+    const cred = await this.#cacheCredential(options);
     if (!cred) {
       throw authFailure(404, "channel_not_found", `No Salesforce credentials found for channel '${options?.channelId || "default"}'.`);
     }

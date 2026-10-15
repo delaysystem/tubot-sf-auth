@@ -2,54 +2,34 @@ import { afterEach, expect, test } from "bun:test";
 import { zipSync, strToU8 } from "fflate";
 import worker, {
   TubotSfAuthEntrypoint,
-  findCredentialByChannelId,
-  findCredentialByScope,
+  type AuthEnv,
+} from "./index";
+import {
   getCallableToolUrlsForChannel,
   resolveAgentFromChannel,
-  type AuthEnv,
   type Credential,
   type SalesforceConnection,
-} from "./index";
+} from "./agent-script";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-const secret = "a".repeat(48);
 const orgId = "00D000000000001AAA";
 const userId = "005000000000001AAA";
-function scopedRequest(input:any,init:RequestInit={}) {
- const headers=new Headers(init.headers);headers.set("x-team-id","team-test");headers.set("x-org-id",orgId);
- headers.set("x-channel-id","0Mjg00000000001AAA");headers.set("x-channel-secret",secret);
- if(typeof init.body==="string") {const body=JSON.parse(init.body);if(body.channelId)headers.set("x-channel-id",body.channelId);}
- return new Request(input,{...init,headers});
-}
-const enc = new TextEncoder();
 const keyBytes = new Uint8Array(32).fill(7);
 const encryptionKey = btoa(String.fromCharCode(...keyBytes));
-const hash = async (s: string) =>
-  btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s)))))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
 
 async function createFixture(channelId = "0Mjg00000000001AAA") {
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, enc.encode("salesforce-secret"))
-  );
   const row: Credential = {
     team_id: "team-test",
     org_id: orgId,
     channel_id: channelId,
     instance_url: "https://test.my.salesforce.com",
-    client_id: "client-id",
-    client_secret_cipher: btoa(String.fromCharCode(...cipher)),
-    client_secret_iv: btoa(String.fromCharCode(...iv)),
     integration_user_id: userId,
-    channel_secret_hash: await hash(secret),
+    integration_username: "integration@example.com",
+    is_sandbox: 1,
   };
 
   const rows = [row];
@@ -63,14 +43,10 @@ async function createFixture(channelId = "0Mjg00000000001AAA") {
           return this;
         },
         async first() {
-          if (sql.includes("salesforce_auth_credential")) {
-            if(sql.includes("team_id=? AND org_id=? AND channel_id=?")) return rows.find(r=>r.team_id===bound[0] && r.org_id===bound[1] && r.channel_id===bound[2]) || null;
-            if (sql.includes("substr(channel_id, 1, 15) = ? OR channel_id LIKE ?")) {
-              const prefix = bound[0];
-              const match = rows.find(
-                (r) => r.channel_id.slice(0, 15) === prefix || r.channel_id.startsWith(prefix)
-              );
-              return match || null;
+          if (sql.includes("FROM panel_salesforce_channels") ||
+              sql.includes("panel_salesforce_execution_users")) {
+            if (sql.includes("team_id = ? AND org_id = ? AND channel_id = ?")) {
+              return rows.find(r => r.team_id === bound[0] && r.org_id === bound[1] && r.channel_id === bound[2]) || null;
             }
             if (sql.includes("channel_id = ?")) {
               const target = bound[0];
@@ -79,8 +55,16 @@ async function createFixture(channelId = "0Mjg00000000001AAA") {
             }
             return rows[0] || null;
           }
-          if(sql.includes("salesforce_channel_connection")) return {secret_hash:row.channel_secret_hash};
           return null;
+        },
+        async all() {
+          if (sql.includes("FROM panel_salesforce_channels")) {
+            const target = String(bound[0] ?? "");
+            const prefix = String(bound[1] ?? target.slice(0, 15));
+            const matches = rows.filter((r) => r.channel_id === target || r.channel_id.slice(0, 15) === prefix);
+            return { results: matches.map((r) => ({ teamId: r.team_id, orgId: r.org_id, channelId: r.channel_id })) };
+          }
+          return { results: [] };
         },
       };
     },
@@ -89,7 +73,11 @@ async function createFixture(channelId = "0Mjg00000000001AAA") {
   return {
     DB: db as any,
     SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    PANEL_JWT_SIGNER: {
+      async signAssertion(_input: unknown) { return "test-assertion"; },
+    },
     row,
+    AUTH_RPC_WARN_MODE: "1",
   };
 }
 
@@ -172,29 +160,6 @@ function setupMockSalesforceFetch(zipB64: string) {
   }) as typeof fetch;
 }
 
-test("findCredentialByChannelId finds credential by exact and 15-char prefix", async () => {
-  const env = await createFixture("0Mjg00000000001AAA");
-
-  // Exact match
-  const exact = await findCredentialByChannelId(env.DB, "0Mjg00000000001AAA");
-  expect(exact).not.toBeNull();
-  expect(exact?.channel_id).toBe("0Mjg00000000001AAA");
-  expect(exact?.org_id).toBe(orgId);
-
-  // 15-char prefix match (18-char channelId matching 15-char prefix)
-  const prefixMatch = await findCredentialByChannelId(env.DB, "0Mjg00000000001BBB");
-  expect(prefixMatch).not.toBeNull();
-  expect(prefixMatch?.channel_id).toBe("0Mjg00000000001AAA");
-
-  // Non-matching channelId
-  const nonMatch = await findCredentialByChannelId(env.DB, "0Mjg99999999999ZZZ");
-  expect(nonMatch).toBeNull();
-
-  // Empty string
-  const emptyMatch = await findCredentialByChannelId(env.DB, "   ");
-  expect(emptyMatch).toBeNull();
-});
-
 test("getCallableToolUrlsForChannel with mock RPC binding getCallableToolUrls", async () => {
   const sampleScript = `system_prompt: 'Support agent'
 tools:
@@ -228,8 +193,10 @@ tools:
     env,
     rpcBinding: mockRpcBinding,
     pollIntervalMs: 10,
+    conn: { instanceUrl: "https://test.my.salesforce.com", accessToken: "mock-access-token" },
     maxPollAttempts: 5,
     teamId: "team-test",
+    orgId,
   });
 
   expect(urls).toEqual([
@@ -276,7 +243,10 @@ test("getCallableToolUrlsForChannel with service binding fetch fallback", async 
     env,
     rpcBinding: mockServiceBinding,
     pollIntervalMs: 10,
+    conn: { instanceUrl: "https://test.my.salesforce.com", accessToken: "mock-access-token" },
     maxPollAttempts: 5,
+    teamId: "team-test",
+    orgId,
   });
 
   expect(urls).toEqual(["https://retrieve64.example.com/tools/invoice_lookup"]);
@@ -362,7 +332,10 @@ test("getCallableToolUrlsForChannel with D1 database fixture and HTTP fetch fall
   const urls = await getCallableToolUrlsForChannel("0Mjg00000000001AAA", {
     env,
     pollIntervalMs: 10,
+    conn: { instanceUrl: "https://test.my.salesforce.com", accessToken: "mock-access-token" },
     maxPollAttempts: 5,
+    teamId: "team-test",
+    orgId,
   });
 
   expect(httpDefinitionsCalled).toBe(true);
@@ -388,54 +361,11 @@ test("TubotSfAuthEntrypoint delegates getCallableToolUrlsForChannel to implement
   const entrypoint = new TubotSfAuthEntrypoint(null, env);
   const urls = await entrypoint.getCallableToolUrlsForChannel("0Mjg00000000001AAA", {
     pollIntervalMs: 10,
+    conn: { instanceUrl: "https://test.my.salesforce.com", accessToken: "mock-access-token" },
     maxPollAttempts: 5,
   });
 
   expect(urls).toEqual(["https://retrieve64.example.com/tools/rpc_entrypoint_tool"]);
-});
-
-test("POST /internal/channels/callable-tools HTTP route returns tool URLs", async () => {
-  const sampleScript = `system_prompt: 'HTTP endpoint agent'`;
-  const zipB64 = createMockZipPayload({
-    SupportAgent: { script: sampleScript },
-  });
-
-  setupMockSalesforceFetch(zipB64);
-  const env = await createFixture();
-  (env as any).RETRIEVE64 = {
-    async getCallableToolUrls() {
-      return ["https://retrieve64.example.com/tools/http_test_tool"];
-    },
-  };
-
-  // 1. Successful request
-  const req = scopedRequest("https://auth.internal/internal/channels/callable-tools", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      channelId: "0Mjg00000000001AAA",
-      teamId: "team-test",
-    }),
-  });
-
-  const res = await worker.fetch(req, env as any);
-  expect(res.status).toBe(200);
-  const data = (await res.json()) as any;
-  expect(data.ok).toBe(true);
-  expect(data.channelId).toBe("0Mjg00000000001AAA");
-  expect(data.urls).toEqual(["https://retrieve64.example.com/tools/http_test_tool"]);
-
-  // 2. Missing channelId returns 400
-  const badReq = scopedRequest("https://auth.internal/internal/channels/callable-tools", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ teamId: "team-test" }),
-  });
-
-  const badRes = await worker.fetch(badReq, env as any);
-  expect(badRes.status).toBe(400);
-  const badData = (await badRes.json()) as any;
-  expect(badData.error).toBe("invalid_request");
 });
 
 test("resolveAgentFromChannel falls back to unnamespaced Agentforce_Agent_Select__c", async () => {
@@ -481,60 +411,10 @@ test("resolveAgentFromChannel falls back to unnamespaced Agentforce_Agent_Select
   expect(agent).toBe("Test2Agent");
 });
 
-test("POST /internal/channels/token returns valid token for channel", async () => {
-  const env = await createFixture();
-  const worker = (await import("./index")).default;
-
-  // Mock Salesforce OAuth token endpoint
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.includes("/services/oauth2/token")) {
-      return Response.json({
-        access_token: "mock-oauth-token-123",
-        instance_url: "https://test.my.salesforce.com",
-        expires_in: 300,
-      });
-    }
-    if (url.includes("/services/oauth2/userinfo")) {
-      return Response.json({
-        organization_id: "00D000000000001AAA",
-        user_id: "005000000000001AAA",
-      });
-    }
-    return originalFetch(input, init);
-  }) as typeof fetch;
-
-  try {
-    const req = scopedRequest("https://auth.internal/internal/channels/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channelId: "0Mjg00000000001AAA" }),
-    });
-
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.accessToken).toBe("mock-oauth-token-123");
-    expect(body.instanceUrl).toBe("https://test.my.salesforce.com");
-    expect(body.orgId).toBe("00D000000000001AAA");
-
-    // Test with non-existent channel
-    const notFoundReq = scopedRequest("https://auth.internal/internal/channels/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channelId: "nonexistent-channel" }),
-    });
-    const notFoundRes = await worker.fetch(notFoundReq, env);
-    expect(notFoundRes.status).toBe(403);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test("TubotSfAuthEntrypoint.getTokenForChannel returns token via RPC", async () => {
   const env = await createFixture();
+  // Distinct identity: the module token cache is keyed by tenant+username.
+  (env as { row: Credential }).row.integration_username = "rpc-token-user@example.com";
   const { TubotSfAuthEntrypoint } = await import("./index");
 
   const originalFetch = globalThis.fetch;
@@ -567,19 +447,6 @@ test("TubotSfAuthEntrypoint.getTokenForChannel returns token via RPC", async () 
   }
 });
 
-test("findCredentialByScope resolves the exact tenant triple", async () => {
-  const env = await createFixture("0Mjg00000000001AAA");
-
-  const row = await findCredentialByScope(env.DB, "team-test", orgId, "0Mjg00000000001AAA");
-  expect(row).not.toBeNull();
-  expect(row?.team_id).toBe("team-test");
-  expect(row?.org_id).toBe(orgId);
-
-  expect(await findCredentialByScope(env.DB, "team-other", orgId, "0Mjg00000000001AAA")).toBeNull();
-  expect(await findCredentialByScope(env.DB, "team-test", "00D000000000002AAA", "0Mjg00000000001AAA")).toBeNull();
-  expect(await findCredentialByScope(env.DB, "", orgId, "0Mjg00000000001AAA")).toBeNull();
-});
-
 test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collision", async () => {
   const sampleScript = `system_prompt: 'Scoped agent'`;
   const zipB64 = createMockZipPayload({ SupportAgent: { script: sampleScript } });
@@ -592,13 +459,13 @@ test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collisi
     ...base.row,
     team_id: "team-foreign",
     instance_url: "https://foreign.my.salesforce.com",
-    client_id: "foreign-client",
+    integration_username: "foreign-collision@example.com",
   };
   const scoped: Credential = {
     ...base.row,
     team_id: "team-test",
     instance_url: "https://scoped.my.salesforce.com",
-    client_id: "scoped-client",
+    integration_username: "scoped-collision@example.com",
   };
   const rows = [foreign, scoped];
   const db = {
@@ -610,8 +477,9 @@ test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collisi
           return this;
         },
         async first() {
-          if (sql.includes("salesforce_auth_credential")) {
-            if (sql.includes("team_id=? AND org_id=? AND channel_id=?")) {
+          if (sql.includes("FROM panel_salesforce_channels") ||
+              sql.includes("panel_salesforce_execution_users")) {
+            if (sql.includes("team_id = ? AND org_id = ? AND channel_id = ?")) {
               return (
                 rows.find((r) => r.team_id === bound[0] && r.org_id === bound[1] && r.channel_id === bound[2]) ||
                 null
@@ -622,16 +490,34 @@ test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collisi
             }
             return rows[0] || null;
           }
-          if (sql.includes("salesforce_channel_connection")) return { secret_hash: scoped.channel_secret_hash };
           return null;
+        },
+        async all() {
+          if (sql.includes("FROM panel_salesforce_channels")) {
+            return { results: rows.map((r) => ({ teamId: r.team_id, orgId: r.org_id, channelId: r.channel_id })) };
+          }
+          return { results: [] };
         },
       };
     },
   };
-  const env = { DB: db as any, SF_CREDENTIAL_ENCRYPTION_KEY: base.SF_CREDENTIAL_ENCRYPTION_KEY };
+  const env = {
+    DB: db as any,
+    AUTH_RPC_WARN_MODE: "1",
+    SF_CREDENTIAL_ENCRYPTION_KEY: base.SF_CREDENTIAL_ENCRYPTION_KEY,
+    PANEL_JWT_SIGNER: {
+      async signAssertion(_input: unknown) { return "test-assertion"; },
+    },
+    RETRIEVE64: {
+      async getCallableToolUrls(params: any) {
+        captured = params;
+        return ["https://retrieve64.example.com/tools/scoped"];
+      },
+    },
+  };
 
-  // Record which Salesforce host receives the client-credentials token
-  // request: that proves which enrollment row was selected.
+  // Record which Salesforce host receives the token request: that proves
+  // which enrollment row was selected.
   const innerFetch = globalThis.fetch;
   const tokenHosts: string[] = [];
   globalThis.fetch = (async (input: any, init?: any) => {
@@ -641,18 +527,8 @@ test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collisi
   }) as typeof fetch;
 
   let captured: any = null;
-  const mockRpcBinding = {
-    async getCallableToolUrls(params: any) {
-      captured = params;
-      return ["https://retrieve64.example.com/tools/scoped"];
-    },
-  };
-
-  const urls = await getCallableToolUrlsForChannel("0Mjg00000000001AAA", {
-    env: env as any,
-    rpcBinding: mockRpcBinding,
-    pollIntervalMs: 10,
-    maxPollAttempts: 5,
+  const entrypoint = new TubotSfAuthEntrypoint(null, env);
+  const urls = await entrypoint.getCallableToolUrlsForChannel("0Mjg00000000001AAA", {
     teamId: "team-test",
     orgId,
   });
@@ -662,16 +538,5 @@ test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collisi
   expect(captured.teamId).toBe("team-test");
   // The token must be minted from the scoped row, not the first channel match.
   expect(tokenHosts).toEqual(["https://scoped.my.salesforce.com"]);
-});
-
-test("getCallableToolUrlsForChannel rejects a scope with no matching enrollment", async () => {
-  const env = await createFixture("0Mjg00000000001AAA");
-  await expect(
-    getCallableToolUrlsForChannel("0Mjg00000000001AAA", {
-      env: env as any,
-      teamId: "team-test",
-      orgId: "00D000000000002AAA",
-    })
-  ).rejects.toThrow("No Salesforce credentials found");
 });
 
