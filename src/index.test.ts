@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import worker, { TubotSfAuthEntrypoint, MessagingProxyBroker, assertApiDeployment } from "./index";
 import { browserConfig, verifyBrowserTurn } from "./browser-echo";
+import { echoParameters, validGuestId } from "./echo-params";
+import { turnScopeMatches } from "../../tubot-sf-proxy/src/contracts";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleError = console.error;
@@ -2637,4 +2639,30 @@ test("verifyBrowserTurn distinguishes binding, transcript, and verified outcomes
   const good = async (path: string) => Response.json(path.includes("/query?") ? session : transcript);
   await expect(verifyBrowserTurn(good, mobileScope, config, turn)).resolves.toEqual({ ok: true, code: "verified" });
   await expect(verifyBrowserTurn(good, mobileScope, config, { ...turn, reference: "short" })).resolves.toEqual({ ok: false, code: "invalid_turn" });
+});
+
+test("echo parameters carry text plus channel, org, and resolved guest ids", () => {
+  const scope = { teamId: "team_1", orgId: "00Dxx0000000001AAA", channelId: "0Mjxx0000000001AAA" };
+  expect(echoParameters(scope, "0PAxx0000000001AAA", "  hi  ")).toEqual([
+    { name: "text", textValue: "  hi  " },
+    { name: "channelId", textValue: "0Mjxx0000000001AAA" },
+    { name: "orgId", textValue: "00Dxx0000000001AAA" },
+    { name: "guestId", textValue: "0PAxx0000000001AAA" },
+  ]);
+});
+
+test("guest ids accept only MessagingEndUser records", () => {
+  expect(validGuestId("0PAxx0000000001AAA")).toBe(true);
+  expect(validGuestId("0PAxx0000000001")).toBe(true);
+  expect(validGuestId("0Mw000000000001AAA")).toBe(false);
+  expect(validGuestId("a".repeat(64))).toBe(false);
+  expect(validGuestId(undefined)).toBe(false);
+});
+
+test("echoed turn scope must be absent or match the RPC scope", () => {
+  const scope = { teamId: "team_1", orgId: "00Dxx0000000001AAA", channelId: "0Mjxx0000000001AAA" };
+  expect(turnScopeMatches(scope, { conversationId: "c", text: "t", requestKey: "k" })).toBe(true);
+  expect(turnScopeMatches(scope, { channelId: scope.channelId, orgId: scope.orgId })).toBe(true);
+  expect(turnScopeMatches(scope, { channelId: "0Mjxx0000000002AAA" })).toBe(false);
+  expect(turnScopeMatches(scope, { orgId: "00Dxx0000000002AAA" })).toBe(false);
 });

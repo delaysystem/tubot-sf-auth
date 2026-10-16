@@ -1,5 +1,13 @@
 import { unzipSync, strFromU8 } from "fflate";
+import { retrieveMembers, type SoapMember } from "./soap-retrieve";
 import type { AuthEnv } from "./index";
+
+/** Poll budget expired with the retrieve still running: resume via `asyncId`. */
+export class RetrievePendingError extends Error {
+  constructor(readonly asyncId: string, readonly attempts: number) {
+    super(`metadata_retrieve_pending:${asyncId}`);
+  }
+}
 
 export interface Credential {
   team_id: string;
@@ -22,6 +30,8 @@ export interface CallableToolsOptions {
   pollIntervalMs?: number;
   rpcBinding?: any;
   retrieve64Url?: string;
+  /** Skip the agent retrieve when the caller already has the definition. */
+  prefetched?: { script: string; promptTemplates?: Record<string, string> };
 }
 
 export interface SalesforceConnection {
@@ -47,6 +57,8 @@ export interface AgentScriptResult {
   agentGraph?: Record<string, unknown>;
   localActions?: Record<string, LocalActionSchema>;
   rawFiles?: Record<string, string>;
+  /** Maps each rawFiles key to its full snapshot-style path (`bots/…`, `genAiPlannerBundles/…/…`). */
+  rawPaths?: Record<string, string>;
 }
 
 export interface RetrievedAgentPayload {
@@ -58,6 +70,16 @@ export interface RetrievedAgentPayload {
   agentGraph?: Record<string, unknown>;
   localActions?: Record<string, LocalActionSchema>;
   rawFiles?: Record<string, string>;
+  /** Maps each rawFiles key to its full snapshot-style path (`bots/…`, `genAiPlannerBundles/…/…`). */
+  rawPaths?: Record<string, string>;
+}
+
+/** Records content under its legacy relative key plus its full snapshot-style path. */
+function putRawFile(entry: RetrievedAgentPayload, key: string, fullPath: string, content: string): void {
+  entry.rawFiles = entry.rawFiles || {};
+  entry.rawPaths = entry.rawPaths || {};
+  entry.rawFiles[key] = content;
+  entry.rawPaths[key] = fullPath;
 }
 
 export interface BatchRetrieveOptions {
@@ -73,6 +95,8 @@ export interface BatchRetrieveOptions {
   maxPollAttempts?: number;
   /** Polling interval in ms (default: 1500) */
   pollIntervalMs?: number;
+  /** Resume a budget-exhausted retrieve instead of starting a new one. */
+  resumeAsyncId?: string;
 }
 
 export interface BatchRetrieveResult {
@@ -86,25 +110,8 @@ function escapeSoql(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
 function isSalesforceId(value: string): boolean {
   return /^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$/.test(value);
-}
-
-function extractXmlTag(xml: string, tag: string): string | null {
-  if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(tag)) throw new Error("Invalid XML tag name");
-  const match = xml.match(
-    new RegExp(`<(?:[a-zA-Z0-9_]+:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[a-zA-Z0-9_]+:)?${tag}>`, "i")
-  );
-  return match ? match[1].trim() : null;
 }
 
 function decodeBase64Utf8(base64Str: string): string {
@@ -132,12 +139,23 @@ async function soqlQuery<T = Record<string, unknown>>(
   restApiVersion = "v65.0"
 ): Promise<T[]> {
   const url = `${conn.instanceUrl}/services/data/${restApiVersion}/query?q=${encodeURIComponent(soql)}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${conn.accessToken}`,
-      Accept: "application/json",
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${conn.accessToken}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    if ((error as Error)?.name === "TimeoutError") throw new Error("Salesforce SOQL query timed out");
+    throw new Error("Salesforce SOQL query failed: unreachable");
+  }
+  if (Number(res.headers.get("content-length") || 0) > 1_000_000) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error("Salesforce SOQL query failed: response too large");
+  }
 
   if (!res.ok) {
     let errMessage = `HTTP ${res.status}`;
@@ -146,12 +164,20 @@ async function soqlQuery<T = Record<string, unknown>>(
       if (Array.isArray(errJson) && errJson[0]?.message) {
         errMessage = errJson[0].message;
       }
-    } catch {}
+    } catch {
+      // Fall through with the HTTP status; the failure itself is never swallowed.
+    }
     throw new Error(`Salesforce SOQL query failed: ${errMessage}`);
   }
 
   const data = (await res.json()) as { records?: T[] };
   return data.records || [];
+}
+
+/** True when a SOQL failure means the queried object does not exist in the org. */
+function isMissingObjectError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /INVALID_TYPE|sObject type .* is not supported|No such column|INVALID_FIELD/i.test(message);
 }
 
 /**
@@ -164,6 +190,42 @@ async function soqlQuery<T = Record<string, unknown>>(
  * 2. Checks `BotDefinition` directly by DeveloperName, MasterLabel, or Id.
  * 3. Checks custom setting `tubot__Agentforce_Agent_Select__c` by Name or Deployment_Label__c.
  */
+/**
+ * Looks up the agent mapped to a channel/name in the Agent Select custom
+ * setting, trying the namespaced table then the unnamespaced one. Only a
+ * missing custom object falls through to the alternate namespace; every other
+ * failure (auth, timeout, network) throws audibly.
+ */
+async function customSettingAgent(
+  conn: SalesforceConnection,
+  where: { namespaced: string; unnamespaced: string },
+  restApiVersion: string
+): Promise<string | null> {
+  const tables = [
+    { name: "tubot__Agentforce_Agent_Select__c", field: "tubot__Agent_Name__c", where: where.namespaced },
+    { name: "Agentforce_Agent_Select__c", field: "Agent_Name__c", where: where.unnamespaced },
+  ] as const;
+  for (const table of tables) {
+    let selects: Array<{ tubot__Agent_Name__c?: string; Agent_Name__c?: string }>;
+    try {
+      selects = await soqlQuery<{ tubot__Agent_Name__c?: string; Agent_Name__c?: string }>(
+        conn,
+        `SELECT Id, Name, ${table.field} FROM ${table.name} WHERE ${table.where} LIMIT 1`,
+        restApiVersion
+      );
+    } catch (error) {
+      if (!isMissingObjectError(error)) throw error;
+      continue;
+    }
+    const agent = selects.length > 0
+      ? (selects[0]?.tubot__Agent_Name__c || selects[0]?.Agent_Name__c || null)
+      : null;
+    if (agent) return agent;
+    // Empty or agentless rows fall through to the alternate namespace.
+  }
+  return null;
+}
+
 export async function resolveAgentFromChannel(
   conn: SalesforceConnection,
   channelOrName: string,
@@ -172,71 +234,51 @@ export async function resolveAgentFromChannel(
   const cleanName = channelOrName.trim();
   if (!cleanName) return null;
   const esc = escapeSoql(cleanName);
+  // Empty results fall through to the next stage; query failures throw.
+  // Callers record the failure and decide whether direct retrieval applies.
 
   // 1. Check MessagingChannel
-  try {
-    interface MessagingChannelRecord {
-      Id: string;
-      DeveloperName: string;
-      MasterLabel: string;
-      SessionHandlerId?: string | null;
-    }
-    const idClause = isSalesforceId(cleanName) ? ` OR Id = '${esc}'` : "";
-    const channels = await soqlQuery<MessagingChannelRecord>(
-      conn,
-      `SELECT Id, DeveloperName, MasterLabel, SessionHandlerId FROM MessagingChannel WHERE DeveloperName = '${esc}' OR MasterLabel = '${esc}'${idClause} LIMIT 1`,
-      restApiVersion
-    );
+  interface MessagingChannelRecord {
+    Id: string;
+    DeveloperName: string;
+    MasterLabel: string;
+    SessionHandlerId?: string | null;
+  }
+  const idClause = isSalesforceId(cleanName) ? ` OR Id = '${esc}'` : "";
+  const channels = await soqlQuery<MessagingChannelRecord>(
+    conn,
+    `SELECT Id, DeveloperName, MasterLabel, SessionHandlerId FROM MessagingChannel WHERE DeveloperName = '${esc}' OR MasterLabel = '${esc}'${idClause} LIMIT 1`,
+    restApiVersion
+  );
 
-    if (channels.length > 0) {
-      const ch = channels[0];
-      // Direct BotDefinition session handler
-      if (ch.SessionHandlerId && isSalesforceId(ch.SessionHandlerId)) {
-        const botEsc = escapeSoql(ch.SessionHandlerId);
-        const bots = await soqlQuery<{ DeveloperName: string }>(
-          conn,
-          `SELECT Id, DeveloperName FROM BotDefinition WHERE Id = '${botEsc}' LIMIT 1`,
-          restApiVersion
-        );
-        if (bots.length > 0 && bots[0].DeveloperName) {
-          return bots[0].DeveloperName;
-        }
-      }
-
-      // Check tubot__Agentforce_Agent_Select__c for channel name with fallback
-      let channelAgent: string | null = null;
-      try {
-        const selects = await soqlQuery<{ tubot__Agent_Name__c?: string; Agent_Name__c?: string }>(
-          conn,
-          `SELECT Id, Name, tubot__Agent_Name__c FROM tubot__Agentforce_Agent_Select__c WHERE Name = '${escapeSoql(ch.DeveloperName)}' OR Name = '${escapeSoql(ch.MasterLabel)}' OR Name = '${esc}' LIMIT 1`,
-          restApiVersion
-        );
-        if (selects.length > 0 && (selects[0].tubot__Agent_Name__c || selects[0].Agent_Name__c)) {
-          channelAgent = selects[0].tubot__Agent_Name__c || selects[0].Agent_Name__c!;
-        }
-      } catch {}
-
-      if (!channelAgent) {
-        try {
-          const selects = await soqlQuery<{ Agent_Name__c?: string; tubot__Agent_Name__c?: string }>(
-            conn,
-            `SELECT Id, Name, Agent_Name__c FROM Agentforce_Agent_Select__c WHERE Name = '${escapeSoql(ch.DeveloperName)}' OR Name = '${escapeSoql(ch.MasterLabel)}' OR Name = '${esc}' LIMIT 1`,
-            restApiVersion
-          );
-          if (selects.length > 0 && (selects[0].Agent_Name__c || selects[0].tubot__Agent_Name__c)) {
-            channelAgent = selects[0].Agent_Name__c || selects[0].tubot__Agent_Name__c!;
-          }
-        } catch {}
-      }
-
-      if (channelAgent) {
-        return channelAgent;
+  if (channels.length > 0) {
+    const ch = channels[0];
+    // Direct BotDefinition session handler
+    if (ch.SessionHandlerId && isSalesforceId(ch.SessionHandlerId)) {
+      const botEsc = escapeSoql(ch.SessionHandlerId);
+      const bots = await soqlQuery<{ DeveloperName: string }>(
+        conn,
+        `SELECT Id, DeveloperName FROM BotDefinition WHERE Id = '${botEsc}' LIMIT 1`,
+        restApiVersion
+      );
+      if (bots.length > 0 && bots[0].DeveloperName) {
+        return bots[0].DeveloperName;
       }
     }
-  } catch {}
+
+    // Check the Agent Select custom setting for the channel name with fallback
+    const channelWhere = `Name = '${escapeSoql(ch.DeveloperName)}' OR Name = '${escapeSoql(ch.MasterLabel)}' OR Name = '${esc}'`;
+    const channelAgent = await customSettingAgent(conn,
+      { namespaced: channelWhere, unnamespaced: channelWhere },
+      restApiVersion);
+
+    if (channelAgent) {
+      return channelAgent;
+    }
+  }
 
   // 2. Check if the name directly matches a BotDefinition
-  try {
+  {
     const idClause = isSalesforceId(cleanName) ? ` OR Id = '${esc}'` : "";
     const bots = await soqlQuery<{ DeveloperName: string }>(
       conn,
@@ -246,33 +288,15 @@ export async function resolveAgentFromChannel(
     if (bots.length > 0 && bots[0].DeveloperName) {
       return bots[0].DeveloperName;
     }
-  } catch {}
-
-  // 3. Check tubot__Agentforce_Agent_Select__c directly by Name or Deployment Label with fallback
-  let directAgent: string | null = null;
-  try {
-    const selects = await soqlQuery<{ tubot__Agent_Name__c?: string; Agent_Name__c?: string }>(
-      conn,
-      `SELECT Id, Name, tubot__Agent_Name__c FROM tubot__Agentforce_Agent_Select__c WHERE Name = '${esc}' OR tubot__Deployment_Label__c = '${esc}' LIMIT 1`,
-      restApiVersion
-    );
-    if (selects.length > 0 && (selects[0].tubot__Agent_Name__c || selects[0].Agent_Name__c)) {
-      directAgent = selects[0].tubot__Agent_Name__c || selects[0].Agent_Name__c!;
-    }
-  } catch {}
-
-  if (!directAgent) {
-    try {
-      const selects = await soqlQuery<{ Agent_Name__c?: string; tubot__Agent_Name__c?: string }>(
-        conn,
-        `SELECT Id, Name, Agent_Name__c FROM Agentforce_Agent_Select__c WHERE Name = '${esc}' OR Deployment_Label__c = '${esc}' LIMIT 1`,
-        restApiVersion
-      );
-      if (selects.length > 0 && (selects[0].Agent_Name__c || selects[0].tubot__Agent_Name__c)) {
-        directAgent = selects[0].Agent_Name__c || selects[0].tubot__Agent_Name__c!;
-      }
-    } catch {}
   }
+
+  // 3. Check the Agent Select custom setting directly by Name or Deployment Label with fallback
+  const directAgent = await customSettingAgent(conn,
+    {
+      namespaced: `Name = '${esc}' OR tubot__Deployment_Label__c = '${esc}'`,
+      unnamespaced: `Name = '${esc}' OR Deployment_Label__c = '${esc}'`,
+    },
+    restApiVersion);
 
   if (directAgent) {
     return directAgent;
@@ -305,6 +329,7 @@ export async function retrieveAgentScriptsBatch(
     apiVersion?: string;
     maxPollAttempts?: number;
     pollIntervalMs?: number;
+    resumeAsyncId?: string;
   }
 ): Promise<Map<string, RetrievedAgentPayload>> {
   const results = new Map<string, RetrievedAgentPayload>();
@@ -312,143 +337,36 @@ export async function retrieveAgentScriptsBatch(
 
   const apiVersion = options?.apiVersion || "65.0";
   if (!/^\d{1,3}\.\d{1,2}$/.test(apiVersion)) throw new Error("Invalid Salesforce API version");
-  const maxAttempts = options?.maxPollAttempts ?? 30;
-  const pollInterval = options?.pollIntervalMs ?? 1500;
-  const metadataUrl = `${conn.instanceUrl}/services/Soap/m/${apiVersion}`;
 
-  // Deduplicate and escape member names
+  // Deduplicate member names
   const uniqueAgents = Array.from(new Set(agentNames.filter(Boolean)));
 
-  const aiAuthoringMembers = new Set<string>();
-  const genAiPlannerMembers = new Set<string>();
-  const botMembers = new Set<string>();
-
+  const seen = new Set<string>();
+  const members: SoapMember[] = [];
+  const add = (type: string, fullName: string) => {
+    const key = `${type}:${fullName}`;
+    if (!seen.has(key)) { seen.add(key); members.push({ type, fullName }); }
+  };
   for (const name of uniqueAgents) {
-    aiAuthoringMembers.add(name);
-    if (!name.endsWith("_1")) aiAuthoringMembers.add(`${name}_1`);
-    genAiPlannerMembers.add(name);
-    if (!name.endsWith("_v1")) genAiPlannerMembers.add(`${name}_v1`);
-    botMembers.add(name);
+    add("AiAuthoringBundle", name);
+    if (!name.endsWith("_1")) add("AiAuthoringBundle", `${name}_1`);
+    add("GenAiPlannerBundle", name);
+    if (!name.endsWith("_v1")) add("GenAiPlannerBundle", `${name}_v1`);
+    add("Bot", name);
   }
+  add("GenAiPromptTemplate", "*");
 
-  const aiAuthoringXml = Array.from(aiAuthoringMembers)
-    .map((name) => `            <met:members>${escapeXml(name)}</met:members>`)
-    .join("\n");
-  const genAiPlannerXml = Array.from(genAiPlannerMembers)
-    .map((name) => `            <met:members>${escapeXml(name)}</met:members>`)
-    .join("\n");
-  const botXmlMembers = Array.from(botMembers)
-    .map((name) => `            <met:members>${escapeXml(name)}</met:members>`)
-    .join("\n");
-
-  const retrieveEnvelope = `<?xml version="1.0" encoding="utf-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">
-  <soapenv:Header>
-    <met:SessionHeader><met:sessionId>${escapeXml(conn.accessToken)}</met:sessionId></met:SessionHeader>
-  </soapenv:Header>
-  <soapenv:Body>
-    <met:retrieve>
-      <met:retrieveRequest>
-        <met:apiVersion>${apiVersion}</met:apiVersion>
-        <met:unpackaged>
-          <met:types>
-${aiAuthoringXml}
-            <met:name>AiAuthoringBundle</met:name>
-          </met:types>
-          <met:types>
-${genAiPlannerXml}
-            <met:name>GenAiPlannerBundle</met:name>
-          </met:types>
-          <met:types>
-${botXmlMembers}
-            <met:name>Bot</met:name>
-          </met:types>
-          <met:types>
-            <met:members>*</met:members>
-            <met:name>GenAiPromptTemplate</met:name>
-          </met:types>
-          <met:version>${apiVersion}</met:version>
-        </met:unpackaged>
-      </met:retrieveRequest>
-    </met:retrieve>
-  </soapenv:Body>
-</soapenv:Envelope>`;
-
-  const initResponse = await fetch(metadataUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "text/xml; charset=UTF-8",
-      SOAPAction: '""',
-    },
-    body: retrieveEnvelope,
+  // Shared transport: bounded waits, validated SOAP, jittered polling.
+  // Budget exhaustion throws RetrievePendingError carrying a resumable asyncId.
+  const outcome = await retrieveMembers(conn, apiVersion, members, {
+    maxPollAttempts: options?.maxPollAttempts ?? 30,
+    pollIntervalMs: options?.pollIntervalMs ?? 1500,
+    resumeAsyncId: options?.resumeAsyncId,
   });
-
-  const initText = await initResponse.text();
-  if (!initResponse.ok) {
-    const fault = extractXmlTag(initText, "faultstring") || "SOAP request failed";
-    throw new Error(`Metadata retrieve initialization failed: ${fault}`);
-  }
-
-  const asyncId = extractXmlTag(initText, "id");
-  if (!asyncId) {
-    throw new Error(`No async process ID received in retrieve response: ${initText}`);
-  }
-
-  const checkEnvelope = `<?xml version="1.0" encoding="utf-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">
-  <soapenv:Header>
-    <met:SessionHeader><met:sessionId>${escapeXml(conn.accessToken)}</met:sessionId></met:SessionHeader>
-  </soapenv:Header>
-  <soapenv:Body>
-    <met:checkRetrieveStatus>
-      <met:asyncProcessId>${escapeXml(asyncId)}</met:asyncProcessId>
-      <met:includeZip>true</met:includeZip>
-    </met:checkRetrieveStatus>
-  </soapenv:Body>
-</soapenv:Envelope>`;
-
-  let zipB64: string | null = null;
-  let attempts = 0;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    await new Promise((r) => setTimeout(r, pollInterval));
-
-    const pollResponse = await fetch(metadataUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/xml; charset=UTF-8",
-        SOAPAction: '""',
-      },
-      body: checkEnvelope,
-    });
-
-    const pollText = await pollResponse.text();
-    if (!pollResponse.ok) {
-      const fault = extractXmlTag(pollText, "faultstring") || "SOAP poll failed";
-      throw new Error(`Metadata checkRetrieveStatus failed: ${fault}`);
-    }
-
-    const done = extractXmlTag(pollText, "done");
-    if (done && done.toLowerCase() === "true") {
-      zipB64 = extractXmlTag(pollText, "zipFile");
-      break;
-    }
-  }
-
-  if (!zipB64) {
-    throw new Error(`Metadata retrieve timed out or did not return zip payload after ${attempts} attempts`);
-  }
-
-  // Decode Base64 to Uint8Array
-  const binaryString = atob(zipB64);
-  const zipBytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    zipBytes[i] = binaryString.charCodeAt(i);
-  }
+  if (outcome.status === "pending") throw new RetrievePendingError(outcome.asyncId, outcome.attempts);
 
   // Decompress ZIP using fflate
-  const unzipped = unzipSync(zipBytes);
+  const unzipped = unzipSync(outcome.zipBytes);
 
   function getOrCreate(name: string): RetrievedAgentPayload {
     let entry = results.get(name);
@@ -475,8 +393,7 @@ ${botXmlMembers}
 
       for (const key of new Set([bundleName, canonicalName])) {
         const entry = getOrCreate(key);
-        entry.rawFiles = entry.rawFiles || {};
-        entry.rawFiles[relativePath] = text;
+        putRawFile(entry, relativePath, `aiAuthoringBundles/${bundleName}/${relativePath}`, text);
 
         if (relativePath.endsWith(".agent")) {
           entry.script = text;
@@ -498,12 +415,12 @@ ${botXmlMembers}
 
       for (const key of new Set([bundleName, canonicalName])) {
         const entry = getOrCreate(key);
-        entry.rawFiles = entry.rawFiles || {};
+        const fullPath = `genAiPlannerBundles/${bundleName}/${relativePath}`;
 
         // 2a. GenAiPlannerBundle XML metadata: <PlannerName>.genAiPlannerBundle
         if (relativePath.endsWith(".genAiPlannerBundle")) {
           entry.bundleMetaXml = text;
-          entry.rawFiles[relativePath] = text;
+          putRawFile(entry, relativePath, fullPath, text);
           // If modern script or decoded agentScript has not already been set, use XML as fallback script
           if (entry.format !== "agent_script" && !entry.script) {
             entry.script = text;
@@ -515,7 +432,7 @@ ${botXmlMembers}
           const decodedScript = decodeBase64Utf8(text);
           entry.script = decodedScript;
           entry.format = "agent_script";
-          entry.rawFiles[relativePath] = decodedScript;
+          putRawFile(entry, relativePath, fullPath, decodedScript);
         }
         // 2c. Agent Graph state machine: agentGraph/<PlannerName>_graph.json
         else if (relativePath.match(/^agentGraph\/[^/]+\.json$/i)) {
@@ -525,7 +442,7 @@ ${botXmlMembers}
           } catch {
             // Keep unparsed if not valid JSON
           }
-          entry.rawFiles[relativePath] = decodedGraph;
+          putRawFile(entry, relativePath, fullPath, decodedGraph);
         }
         // 2d. Local Actions schemas: localActions/<TopicId>/<ActionId>/(input|output)/schema.json
         else {
@@ -551,7 +468,7 @@ ${botXmlMembers}
               }
             } catch {}
           }
-          entry.rawFiles[relativePath] = text;
+          putRawFile(entry, relativePath, fullPath, text);
         }
       }
       continue;
@@ -567,8 +484,7 @@ ${botXmlMembers}
       for (const key of new Set([botName, canonicalName])) {
         const entry = getOrCreate(key);
         entry.botXml = text;
-        entry.rawFiles = entry.rawFiles || {};
-        entry.rawFiles[`${botName}.bot`] = text;
+        putRawFile(entry, `${botName}.bot`, `bots/${botName}.bot`, text);
 
         // If neither modern agent script nor genAiPlanner script was set
         if (!entry.script) {
@@ -613,8 +529,8 @@ ${botXmlMembers}
         if (isReferenced) {
           entry.promptTemplates = entry.promptTemplates || {};
           entry.promptTemplates[templateName] = templateXml;
-          entry.rawFiles = entry.rawFiles || {};
-          entry.rawFiles[`genAiPromptTemplates/${templateName}.genAiPromptTemplate`] = templateXml;
+          const promptPath = `genAiPromptTemplates/${templateName}.genAiPromptTemplate`;
+          putRawFile(entry, promptPath, promptPath, templateXml);
         }
       }
     }
@@ -690,6 +606,7 @@ export async function getAgentScripts(
     apiVersion: options.apiVersion,
     maxPollAttempts: options.maxPollAttempts,
     pollIntervalMs: options.pollIntervalMs,
+    resumeAsyncId: options.resumeAsyncId,
   });
 
   const scripts: Record<string, AgentScriptResult> = {};
@@ -705,6 +622,7 @@ export async function getAgentScripts(
       agentGraph: data.agentGraph,
       localActions: data.localActions,
       rawFiles: data.rawFiles,
+      rawPaths: data.rawPaths,
     };
   }
 
@@ -722,6 +640,7 @@ export async function getAgentScripts(
         agentGraph: scripts[agent].agentGraph,
         localActions: scripts[agent].localActions,
         rawFiles: scripts[agent].rawFiles,
+        rawPaths: scripts[agent].rawPaths,
       };
     }
   }
@@ -744,13 +663,14 @@ export async function getAgentScripts(
 export async function retrieveAgentScriptForChannel(
   conn: SalesforceConnection,
   channelName: string,
-  options?: { apiVersion?: string; maxPollAttempts?: number; pollIntervalMs?: number }
+  options?: { apiVersion?: string; maxPollAttempts?: number; pollIntervalMs?: number; resumeAsyncId?: string }
 ): Promise<AgentScriptResult | null> {
   const result = await getAgentScripts(conn, {
     channelNames: [channelName],
     apiVersion: options?.apiVersion,
     maxPollAttempts: options?.maxPollAttempts,
     pollIntervalMs: options?.pollIntervalMs,
+    resumeAsyncId: options?.resumeAsyncId,
   });
 
   return result.scripts[channelName] || null;
@@ -778,8 +698,8 @@ export async function getCallableToolUrlsForChannel(
     throw new Error("A verified Salesforce connection and explicit tenant scope are required.");
   }
 
-  // Retrieve Agent Script and prompt templates
-  const agentResult = await retrieveAgentScriptForChannel(conn, channelId, {
+  // Retrieve Agent Script and prompt templates (skipped when prefetched).
+  const agentResult = opts.prefetched ?? await retrieveAgentScriptForChannel(conn, channelId, {
     apiVersion: opts.apiVersion,
     maxPollAttempts: opts.maxPollAttempts,
     pollIntervalMs: opts.pollIntervalMs,
@@ -819,21 +739,30 @@ export async function getCallableToolUrlsForChannel(
 
   // 2. If only binding.fetch is available
   if (binding && typeof binding.fetch === "function") {
-    const response = await binding.fetch("https://retrieve64.internal/definitions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-salesforce-access-token": conn.accessToken,
-        "x-salesforce-instance-url": conn.instanceUrl,
-      },
-      body: JSON.stringify(payload),
-    });
+    let response: Response;
+    try {
+      response = await binding.fetch("https://retrieve64.internal/definitions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-salesforce-access-token": conn.accessToken,
+          "x-salesforce-instance-url": conn.instanceUrl,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      if ((error as Error)?.name === "TimeoutError") throw new Error("retrieve64 service binding request timed out");
+      throw error;
+    }
 
     if (!response.ok) {
       let errText = `HTTP ${response.status}`;
       try {
         errText = await response.text();
-      } catch {}
+      } catch {
+        // Fall through with the HTTP status; the failure itself is never swallowed.
+      }
       throw new Error(`retrieve64 service binding request failed: ${errText}`);
     }
 
@@ -846,21 +775,30 @@ export async function getCallableToolUrlsForChannel(
 
   // 3. If no binding -> HTTP fetch
   const url = opts.retrieve64Url || "https://retrieve64.emalteaproductions.workers.dev/definitions";
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-salesforce-access-token": conn.accessToken,
-      "x-salesforce-instance-url": conn.instanceUrl,
-    },
-    body: JSON.stringify(payload),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-salesforce-access-token": conn.accessToken,
+        "x-salesforce-instance-url": conn.instanceUrl,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    if ((error as Error)?.name === "TimeoutError") throw new Error("retrieve64 HTTP request timed out");
+    throw error;
+  }
 
   if (!response.ok) {
     let errText = `HTTP ${response.status}`;
     try {
       errText = await response.text();
-    } catch {}
+    } catch {
+      // Fall through with the HTTP status; the failure itself is never swallowed.
+    }
     throw new Error(`retrieve64 HTTP request failed: ${errText}`);
   }
 

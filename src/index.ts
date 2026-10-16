@@ -1,5 +1,6 @@
-import { validScope, validConfig, type TenantScope, type ProxyConfig, type EchoAction } from '../../tubot-sf-proxy/src/contracts';
+import { validScope, validConfig, turnScopeMatches, type TenantScope, type ProxyConfig, type EchoAction } from '../../tubot-sf-proxy/src/contracts';
 import {browserConfig,verifyBrowserTurn,transcriptText} from './browser-echo';
+import {echoParameters,validGuestId} from './echo-params';
 import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
 import { provisionCommerceFixtureAccess } from "./commerce-fixture-access";
 import { deleteOwnedOrderSummary } from "./delete-owned-order-summary";
@@ -83,8 +84,10 @@ import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
 import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
 import { readBodyBounded, readJsonBounded, requireScope, scopedTags, SecurityError } from "./request-security";
 import { equalHash, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
-import { getAgentScripts, getCallableToolUrlsForChannel, type Credential } from "./agent-script";
+import { getCallableToolUrlsForChannel, type Credential } from "./agent-script";
 import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, type AgentScope } from "./agent-snapshot";
+import { Data360AgentClient } from "./data360-client";
+import { hydrateAgentFromData360, listCachedAgents } from "./agent-blob";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
 import {
   UserDataCacheStore,
@@ -132,6 +135,10 @@ export interface AuthEnv {
     registerDefinition?(params: any): Promise<any>;
     fetch?(input: any, init?: any): Promise<Response>;
   };
+  /** tubot-sf-data360 service binding for cached agent blob reads (optional; D1-only when absent). */
+  DATA360?: { fetch(input: any, init?: any): Promise<Response> };
+  /** Shared HMAC mesh key for data360 service routes (same value as data360's DATA360_INTERNAL_KEY). */
+  DATA360_INTERNAL_KEY?: string;
 }
 
 type Key = { teamId: string; orgId: string; channelId: string };
@@ -2583,7 +2590,7 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     const t0=Date.now();
     const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
     const fields=(Array.isArray(config.visitorFields)&&config.visitorFields.length?config.visitorFields:[config.visitorField]).filter((f):f is string=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9_]*$/.test(f));
-    if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^[a-f0-9]{64}$/.test(turn.requestKey||'')||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length)
+    if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^[a-f0-9]{64}$/.test(turn.requestKey||'')||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length||!turnScopeMatches(scope,turn))
       return {status:'rejected',code:'invalid_turn',spans:{verifyMs:0}};
     const env=this.env as AuthEnv;
     let row:Credential;
@@ -2602,7 +2609,7 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     const sessions:any=await responseJson(session);
     if(sessions.records?.length!==1)return {status:'rejected',code:'binding_absent',spans:{verifyMs:Date.now()-t0}};
     const recipient=sessions.records[0]?.MessagingEndUserId;
-    if(typeof recipient!=='string'||!/^0PA[A-Za-z0-9]{12,15}$/.test(recipient))return {status:'retryable',code:'proxy_session_pending',spans:{verifyMs:Date.now()-t0}};
+    if(!validGuestId(recipient))return {status:'retryable',code:'proxy_session_pending',spans:{verifyMs:Date.now()-t0}};
     if(!entries.ok)return {status:'retryable',code:'browser_entries_unavailable',spans:{verifyMs:Date.now()-t0}};
     const transcript:any=await responseJson(entries);
     const entry=transcript.conversationEntries?.find((e:any)=>e.identifier===turn.messageId&&e.sender?.role==='EndUser');
@@ -2612,7 +2619,7 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
       const resolved=await this.#actionCached(row,action);
       const m=action.inputMapping;
       const response=await sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
-        [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:[{name:"text",textValue:turn.text}]
+        [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
       }]}),crypto.randomUUID(),true);
       const result:any=await responseJson(response);
       const output=result?.[0]?.outputValues;
@@ -2623,10 +2630,11 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
       return {status:'retryable',code:'proxy_echo_rejected',spans:{verifyMs}};
     }
   }
-  async echo(scope: TenantScope, action: EchoAction, turn: {conversationId:string;text:string;requestKey:string}, signed?: SignedRpcEnvelope): Promise<{requestId:string}> {
+  async echo(scope: TenantScope, action: EchoAction, turn: import('../../tubot-sf-proxy/src/contracts').EchoTurn, signed?: SignedRpcEnvelope): Promise<{requestId:string}> {
     await verifySignedRpcCall(this.env as AuthEnv, "echo", [scope, action, turn], signed);
     if (!validConfig({deploymentName:"Validation",action}) || !turn || !/^[a-f0-9-]{36}$/i.test(turn.conversationId) ||
-        typeof turn.text !== "string" || !turn.text.length || turn.text.length > 4096 || !/^[a-f0-9]{64}$/.test(turn.requestKey)) {
+        typeof turn.text !== "string" || !turn.text.length || turn.text.length > 4096 || !/^[a-f0-9]{64}$/.test(turn.requestKey) ||
+        !turnScopeMatches(scope, turn)) {
       throw authFailure(400, "invalid_proxy_turn", "The messaging turn is invalid.");
     }
     const env = this.env as AuthEnv;
@@ -2636,11 +2644,11 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     const lookup = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`, crypto.randomUUID());
     const sessions: any = lookup.ok ? await responseJson(lookup) : null;
     const recipient = sessions?.records?.[0]?.MessagingEndUserId;
-    if (typeof recipient !== "string" || !/^0PA[A-Za-z0-9]{12,15}$/.test(recipient)) throw authFailure(404, "proxy_session_pending", "The channel session is not available yet.", true);
+    if (!validGuestId(recipient)) throw authFailure(404, "proxy_session_pending", "The channel session is not available yet.", true);
     const m = action.inputMapping;
     // Typed parameters preserve whitespace; Flow string assignments trim it.
     const response = await sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
-      [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:[{name:"text",textValue:turn.text}]
+      [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
     }]}),crypto.randomUUID(),true);
     const result: any = await responseJson(response);
     const output = result?.[0]?.outputValues;
@@ -2676,6 +2684,13 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
   }
 }
 
+/** Data360 blob client for snapshot read-through. Module-level (not a method)
+ * so the entrypoint keeps exposing exactly the guarded RPC surface. */
+function data360AgentClientFor(env: AuthEnv): Data360AgentClient | null {
+  if (!env.DATA360 || typeof env.DATA360_INTERNAL_KEY !== "string" || env.DATA360_INTERNAL_KEY.length < 32) return null;
+  return new Data360AgentClient(env.DATA360, env.DATA360_INTERNAL_KEY);
+}
+
 export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   /** Service-binding-only inventory for autonomous, tenant-scoped discovery. */
   async listConnectedOrgs(signed?: SignedRpcEnvelope): Promise<Key[]> {
@@ -2691,7 +2706,16 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   async listAgentSnapshots(scope: AgentScope, signed?: SignedRpcEnvelope): Promise<Array<{ agentName: string; jobId: string; status: string; updatedAt: number }>> {
     await verifySignedRpcCall(this.env as AuthEnv, "listAgentSnapshots", [scope], signed);
     try {
-      return await listAgentSnapshotsForScope((this.env as AuthEnv).DB, scope);
+      const env = this.env as AuthEnv;
+      const d1 = await listAgentSnapshotsForScope(env.DB, scope);
+      const client = data360AgentClientFor(env);
+      if (!client) return d1;
+      try {
+        return await listCachedAgents(env.DB, client, scope, d1);
+      } catch (cause) {
+        console.log(JSON.stringify({ event: "data360_list_fallback", team: (scope as any)?.teamId, org: (scope as any)?.orgId, error: cause instanceof Error ? cause.message : String(cause) }));
+        return d1;
+      }
     } catch (cause) {
       if (cause instanceof SecurityError) throw authFailure(cause.status, cause.code, cause.code);
       throw cause;
@@ -2701,9 +2725,27 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   /** Agentcode session source: reassembled snapshot files for one saved agent. Scope-first (arg 0). */
   async getAgentSnapshot(scope: AgentScope, agentName: string, signed?: SignedRpcEnvelope): Promise<{ agentName: string; jobId: string; sha: string; manifest: unknown; files: Array<{ path: string; sha256: string; byteSize: number; content: string }> }> {
     await verifySignedRpcCall(this.env as AuthEnv, "getAgentSnapshot", [scope, agentName], signed);
+    const env = this.env as AuthEnv;
     try {
-      return await readAgentSnapshotForScope((this.env as AuthEnv).DB, scope, agentName);
+      return await readAgentSnapshotForScope(env.DB, scope, agentName);
     } catch (cause) {
+      // D1 miss: read through the data360 blob cache (ownership-checked, integrity-verified).
+      if (cause instanceof SecurityError && cause.code === "agent_snapshot_not_found") {
+        const client = data360AgentClientFor(env);
+        if (client) {
+          try {
+            const hydrateT0 = Date.now();
+            const hydrated = await hydrateAgentFromData360(env.DB, client, scope, agentName);
+            console.log(JSON.stringify({ event: "sf_hydrate_agent", agent: agentName, outcome: hydrated ? "ok" : "miss", latencyMs: Date.now() - hydrateT0 }));
+            if (hydrated) return hydrated;
+          } catch (nested) {
+            if (!(nested instanceof SecurityError)) throw nested;
+            if (nested.code === "data360_invalid_response" || nested.code === "data360_misconfigured") throw authFailure(nested.status, nested.code, nested.code);
+            // Transport failures on the read-through path surface the original 404 shape.
+            console.log(JSON.stringify({ event: "data360_hydrate_failed", agent: agentName, error: nested.message }));
+          }
+        }
+      }
       if (cause instanceof SecurityError) throw authFailure(cause.status, cause.code, cause.code);
       throw cause;
     }

@@ -134,22 +134,19 @@ function setupMockSalesforceFetch(zipB64: string) {
 
     if (url.includes("/services/Soap/m/")) {
       const body = typeof init?.body === "string" ? init.body : "";
-      if (body.includes("<met:retrieve>")) {
+      if (body.includes("<m:retrieve>")) {
         return new Response(
-          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-             <soapenv:Body><id>async-test-id</id></soapenv:Body>
+          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
+             <soapenv:Body><m:retrieveResponse><m:result><m:id>async-test-id</m:id></m:result></m:retrieveResponse></soapenv:Body>
            </soapenv:Envelope>`,
           { status: 200, headers: { "Content-Type": "text/xml" } }
         );
       }
-      if (body.includes("<met:checkRetrieveStatus>")) {
+      if (body.includes("<m:checkRetrieveStatus>")) {
         soapPollCount++;
         return new Response(
-          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-             <soapenv:Body>
-               <done>true</done>
-               <zipFile>${zipB64}</zipFile>
-             </soapenv:Body>
+          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
+             <soapenv:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${zipB64}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soapenv:Body>
            </soapenv:Envelope>`,
           { status: 200, headers: { "Content-Type": "text/xml" } }
         );
@@ -302,21 +299,18 @@ test("getCallableToolUrlsForChannel with D1 database fixture and HTTP fetch fall
     }
     if (urlStr.includes("/services/Soap/m/")) {
       const body = typeof init?.body === "string" ? init.body : "";
-      if (body.includes("<met:retrieve>")) {
+      if (body.includes("<m:retrieve>")) {
         return new Response(
-          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-             <soapenv:Body><id>async-test-id</id></soapenv:Body>
+          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
+             <soapenv:Body><m:retrieveResponse><m:result><m:id>async-test-id</m:id></m:result></m:retrieveResponse></soapenv:Body>
            </soapenv:Envelope>`,
           { status: 200, headers: { "Content-Type": "text/xml" } }
         );
       }
-      if (body.includes("<met:checkRetrieveStatus>")) {
+      if (body.includes("<m:checkRetrieveStatus>")) {
         return new Response(
-          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-             <soapenv:Body>
-               <done>true</done>
-               <zipFile>${zipB64}</zipFile>
-             </soapenv:Body>
+          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
+             <soapenv:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${zipB64}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soapenv:Body>
            </soapenv:Envelope>`,
           { status: 200, headers: { "Content-Type": "text/xml" } }
         );

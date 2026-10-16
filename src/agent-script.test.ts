@@ -8,6 +8,7 @@ import {
   retrieveAgentScriptsBatch,
   getAgentScripts,
   retrieveAgentScriptForChannel,
+  RetrievePendingError,
   SalesforceConnection,
 } from "./agent-script";
 
@@ -165,9 +166,9 @@ test("retrieveAgentScriptsBatch initiates SOAP retrieve and extracts agent scrip
   let pollCount = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = String(init?.body || "");
-    if (body.includes("<met:retrieve>")) {
-      expect(body).toContain("<met:members>CoolAgent</met:members>");
-      expect(body).toContain("<met:members>DATA360TEST</met:members>");
+    if (body.includes("<m:retrieve>")) {
+      expect(body).toContain("<m:members>CoolAgent</m:members>");
+      expect(body).toContain("<m:members>DATA360TEST</m:members>");
       return new Response(
         `<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">
@@ -175,7 +176,7 @@ test("retrieveAgentScriptsBatch initiates SOAP retrieve and extracts agent scrip
 </soapenv:Envelope>`
       );
     }
-    if (body.includes("<met:checkRetrieveStatus>")) {
+    if (body.includes("<m:checkRetrieveStatus>")) {
       pollCount++;
       const done = pollCount >= 2;
       return new Response(
@@ -183,6 +184,7 @@ test("retrieveAgentScriptsBatch initiates SOAP retrieve and extracts agent scrip
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata">
   <soapenv:Body><met:checkRetrieveStatusResponse><met:result>
     <met:done>${done}</met:done>
+    <met:success>${done}</met:success>
     <met:status>${done ? "Succeeded" : "InProgress"}</met:status>
     ${done ? `<met:zipFile>${mockZip}</met:zipFile>` : ""}
   </met:result></met:checkRetrieveStatusResponse></soapenv:Body>
@@ -233,17 +235,17 @@ test("retrieveAgentScriptForChannel retrieves single script by channel name", as
         records: [{ Id: "0Xx001", DeveloperName: "CoolAgent" }],
       });
     }
-    if (body.includes("<met:retrieve>")) {
+    if (body.includes("<m:retrieve>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:id>09S001</m:id></soap:Body>
+  <soap:Body><m:retrieveResponse><m:result><m:id>09S001</m:id></m:result></m:retrieveResponse></soap:Body>
 </soap:Envelope>`
       );
     }
-    if (body.includes("<met:checkRetrieveStatus>")) {
+    if (body.includes("<m:checkRetrieveStatus>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:done>true</m:done><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></soap:Body>
+  <soap:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soap:Body>
 </soap:Envelope>`
       );
     }
@@ -280,19 +282,19 @@ test("retrieveAgentScriptsBatch supports legacy GenAiPlannerBundle agents", asyn
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = String(init?.body || "");
-    if (body.includes("<met:retrieve>")) {
-      expect(body).toContain("<met:name>GenAiPlannerBundle</met:name>");
-      expect(body).toContain("<met:name>Bot</met:name>");
+    if (body.includes("<m:retrieve>")) {
+      expect(body).toContain("<m:name>GenAiPlannerBundle</m:name>");
+      expect(body).toContain("<m:name>Bot</m:name>");
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:id>async-proc-legacy-123</m:id></soap:Body>
+  <soap:Body><m:retrieveResponse><m:result><m:id>async-proc-legacy-123</m:id></m:result></m:retrieveResponse></soap:Body>
 </soap:Envelope>`
       );
     }
-    if (body.includes("<met:checkRetrieveStatus>")) {
+    if (body.includes("<m:checkRetrieveStatus>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:done>true</m:done><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></soap:Body>
+  <soap:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soap:Body>
 </soap:Envelope>`
       );
     }
@@ -352,18 +354,18 @@ actions:
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = String(init?.body || "");
-    if (body.includes("<met:retrieve>")) {
-      expect(body).toContain("<met:name>GenAiPromptTemplate</met:name>");
+    if (body.includes("<m:retrieve>")) {
+      expect(body).toContain("<m:name>GenAiPromptTemplate</m:name>");
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:id>async-proc-prompt-123</m:id></soap:Body>
+  <soap:Body><m:retrieveResponse><m:result><m:id>async-proc-prompt-123</m:id></m:result></m:retrieveResponse></soap:Body>
 </soap:Envelope>`
       );
     }
-    if (body.includes("<met:checkRetrieveStatus>")) {
+    if (body.includes("<m:checkRetrieveStatus>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:done>true</m:done><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></soap:Body>
+  <soap:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soap:Body>
 </soap:Envelope>`
       );
     }
@@ -453,17 +455,17 @@ test("retrieveAgentScriptsBatch extracts, decodes, and structures complete GenAi
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = String(init?.body || "");
-    if (body.includes("<met:retrieve>")) {
+    if (body.includes("<m:retrieve>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:id>async-proc-planner-complete-123</m:id></soap:Body>
+  <soap:Body><m:retrieveResponse><m:result><m:id>async-proc-planner-complete-123</m:id></m:result></m:retrieveResponse></soap:Body>
 </soap:Envelope>`
       );
     }
-    if (body.includes("<met:checkRetrieveStatus>")) {
+    if (body.includes("<m:checkRetrieveStatus>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:done>true</m:done><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></soap:Body>
+  <soap:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soap:Body>
 </soap:Envelope>`
       );
     }
@@ -546,17 +548,17 @@ test("retrieveAgentScriptsBatch processes real Test_v1 planner bundle from disk 
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = String(init?.body || "");
-    if (body.includes("<met:retrieve>")) {
+    if (body.includes("<m:retrieve>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:id>async-proc-real-test-123</m:id></soap:Body>
+  <soap:Body><m:retrieveResponse><m:result><m:id>async-proc-real-test-123</m:id></m:result></m:retrieveResponse></soap:Body>
 </soap:Envelope>`
       );
     }
-    if (body.includes("<met:checkRetrieveStatus>")) {
+    if (body.includes("<m:checkRetrieveStatus>")) {
       return new Response(
         `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata">
-  <soap:Body><m:done>true</m:done><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></soap:Body>
+  <soap:Body><m:checkRetrieveStatusResponse><m:result><m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile></m:result></m:checkRetrieveStatusResponse></soap:Body>
 </soap:Envelope>`
       );
     }
@@ -579,4 +581,150 @@ test("retrieveAgentScriptsBatch processes real Test_v1 planner bundle from disk 
   expect(agent.agentGraph?.schemaVersion).toBe("2.0");
   expect(agent.localActions).toBeDefined();
   expect(Object.keys(agent.localActions || {}).length).toBeGreaterThan(10);
+});
+
+test("resolveAgentFromChannel throws audibly on query failure instead of returning null", async () => {
+  const conn: SalesforceConnection = {
+    instanceUrl: "https://test.my.salesforce.com",
+    accessToken: "expired-token",
+  };
+  globalThis.fetch = (async () => {
+    return new Response(JSON.stringify([{ message: "Session expired or invalid" }]), { status: 401 });
+  }) as typeof fetch;
+  await expect(resolveAgentFromChannel(conn, "WebChat")).rejects.toThrow("Session expired or invalid");
+});
+
+test("resolveAgentFromChannel falls through to the unnamespaced custom setting only on missing object", async () => {
+  const conn: SalesforceConnection = {
+    instanceUrl: "https://test.my.salesforce.com",
+    accessToken: "mock-token",
+  };
+  const seen: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = decodeURIComponent(String(input));
+    seen.push(url);
+    if (url.includes("FROM MessagingChannel") || url.includes("FROM BotDefinition")) {
+      return Response.json({ records: [] });
+    }
+    if (url.includes("FROM tubot__Agentforce_Agent_Select__c")) {
+      return new Response(
+        JSON.stringify([{ message: "sObject type 'tubot__Agentforce_Agent_Select__c' is not supported." }]),
+        { status: 400 }
+      );
+    }
+    if (url.includes("FROM Agentforce_Agent_Select__c")) {
+      return Response.json({ records: [{ Id: "a02", Name: "API", Agent_Name__c: "CoolAgent" }] });
+    }
+    return Response.json({ records: [] });
+  }) as typeof fetch;
+  expect(await resolveAgentFromChannel(conn, "API")).toBe("CoolAgent");
+  expect(seen.some(u => u.includes("FROM Agentforce_Agent_Select__c"))).toBe(true);
+});
+
+test("resolveAgentFromChannel rethrows non-missing-object custom setting failures", async () => {
+  const conn: SalesforceConnection = {
+    instanceUrl: "https://test.my.salesforce.com",
+    accessToken: "mock-token",
+  };
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = decodeURIComponent(String(input));
+    if (url.includes("FROM MessagingChannel") || url.includes("FROM BotDefinition")) {
+      return Response.json({ records: [] });
+    }
+    return new Response(JSON.stringify([{ message: "REQUEST_LIMIT_EXCEEDED: TotalRequests Limit exceeded." }]), {
+      status: 403,
+    });
+  }) as typeof fetch;
+  await expect(resolveAgentFromChannel(conn, "API")).rejects.toThrow("REQUEST_LIMIT_EXCEEDED");
+});
+
+test("retrieveAgentScriptsBatch throws resumable pending error on poll budget exhaustion", async () => {
+  const conn: SalesforceConnection = {
+    instanceUrl: "https://test.my.salesforce.com",
+    accessToken: "mock-token",
+  };
+  const mockZip = createMockZipPayload({ CoolAgent: { script: "system:\n  instructions: x" } });
+  let polls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const body = String(init?.body || "");
+    if (body.includes("<m:retrieve>")) {
+      return new Response(
+        `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata"><s:Body><m:retrieveResponse><m:result><m:id>async-pending-1</m:id></m:result></m:retrieveResponse></s:Body></s:Envelope>`
+      );
+    }
+    polls++;
+    const done = polls > 1;
+    return new Response(
+      `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata"><s:Body><m:checkRetrieveStatusResponse><m:result><m:done>${done}</m:done><m:success>${done}</m:success><m:status>${done ? "Succeeded" : "InProgress"}</m:status>${done ? `<m:zipFile>${mockZip}</m:zipFile>` : ""}</m:result></m:checkRetrieveStatusResponse></s:Body></s:Envelope>`
+    );
+  }) as typeof fetch;
+
+  const pending = await retrieveAgentScriptsBatch(conn, ["CoolAgent"], {
+    maxPollAttempts: 1,
+    pollIntervalMs: 1,
+  }).then(
+    () => null,
+    (e: unknown) => e
+  );
+  expect(pending).toBeInstanceOf(RetrievePendingError);
+  expect((pending as RetrievePendingError).asyncId).toBe("async-pending-1");
+
+  // Resume with the carried async id: no new retrieve begins, the poll completes.
+  const resumed = await retrieveAgentScriptsBatch(conn, ["CoolAgent"], {
+    maxPollAttempts: 5,
+    pollIntervalMs: 1,
+    resumeAsyncId: (pending as RetrievePendingError).asyncId,
+  });
+  expect(resumed.get("CoolAgent")?.script).toContain("instructions: x");
+});
+
+test("retrieveAgentScriptsBatch records full snapshot-style rawPaths", async () => {
+  const conn: SalesforceConnection = {
+    instanceUrl: "https://test.my.salesforce.com",
+    accessToken: "mock-token",
+  };
+  const zipU8 = zipSync({
+    "unpackaged/genAiPlannerBundles/CoolAgent/CoolAgent.genAiPlannerBundle": strToU8("<GenAiPlannerBundle>uses T1</GenAiPlannerBundle>"),
+    "unpackaged/bots/CoolAgent.bot": strToU8("<Bot/>"),
+    "unpackaged/genAiPromptTemplates/T1.genAiPromptTemplate": strToU8("<GenAiPromptTemplate/>"),
+  });
+  let binary = "";
+  for (let i = 0; i < zipU8.length; i++) binary += String.fromCharCode(zipU8[i]);
+  const mockZip = btoa(binary);
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const body = String(init?.body || "");
+    const wrap = (op: string, inner: string) =>
+      `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata"><s:Body><m:${op}Response><m:result>${inner}</m:result></m:${op}Response></s:Body></s:Envelope>`;
+    if (body.includes("<m:retrieve>")) {
+      return new Response(wrap("retrieve", "<m:id>async-paths-1</m:id>"));
+    }
+    return new Response(wrap("checkRetrieveStatus", `<m:done>true</m:done><m:success>true</m:success><m:status>Succeeded</m:status><m:zipFile>${mockZip}</m:zipFile>`));
+  }) as typeof fetch;
+  const result = await retrieveAgentScriptsBatch(conn, ["CoolAgent"], { pollIntervalMs: 1 });
+  const entry = result.get("CoolAgent");
+  expect(entry?.rawPaths?.["CoolAgent.genAiPlannerBundle"]).toBe(
+    "genAiPlannerBundles/CoolAgent/CoolAgent.genAiPlannerBundle"
+  );
+  expect(entry?.rawPaths?.["CoolAgent.bot"]).toBe("bots/CoolAgent.bot");
+  expect(entry?.rawPaths?.["genAiPromptTemplates/T1.genAiPromptTemplate"]).toBe(
+    "genAiPromptTemplates/T1.genAiPromptTemplate"
+  );
+  // Legacy relative keys unchanged.
+  expect(entry?.rawFiles?.["CoolAgent.genAiPlannerBundle"]).toContain("GenAiPlannerBundle");
+});
+
+test("retrieveAgentScriptsBatch maps SOAP session faults to typed errors", async () => {
+  const conn: SalesforceConnection = {
+    instanceUrl: "https://test.my.salesforce.com",
+    accessToken: "expired-token",
+  };
+  globalThis.fetch = (async () => {
+    return new Response(
+      `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultcode>sf:INVALID_SESSION_ID</faultcode><faultstring>Invalid Session ID</faultstring></s:Fault></s:Body></s:Envelope>`,
+      { status: 500 }
+    );
+  }) as typeof fetch;
+  await expect(retrieveAgentScriptsBatch(conn, ["CoolAgent"], { pollIntervalMs: 1 })).rejects.toThrow(
+    "salesforce_metadata_session_expired"
+  );
 });
