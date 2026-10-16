@@ -75,3 +75,24 @@ Verified against the registered production connections on 2026-10-10:
 The standard-template omission is explicit in the Data360Agent manifest. All returned files, including both legacy and modern agent representations, match the independent CLI retrieval. Each primary integration user's SOQL smoke check also passed after dedicated-user provisioning.
 
 Bidirectional live isolation checks passed for status and download: each org can read its own snapshot and receives HTTP 404 for the other org's job ID. Supplying a different tenant ID in the request body does not change the authenticated scope.
+
+## Local development data flow
+
+No manual seeding. Agent definitions reach a local stack through the same
+automated pipeline as production:
+
+1. `bun run web` (agentcode) starts the composite stack, now including
+   tubot-sf-data360. sf-auth migrations (including `sf_agent_blob_index`)
+   apply automatically.
+2. Registering a proxy triggers a data360 refresh, which retrieves the agent
+   definition from Salesforce (single SOAP retrieve, resumable across
+   refreshes) and writes a content-addressed blob plus pointer to B2.
+3. The first agentcode list/get for an agent with no D1 rows reads through to
+   the data360 blob cache: sf-auth verifies the team owns the org, verifies
+   the blob sha, serves the files, and records a team-scoped index row.
+   Subsequent reads resolve from D1 and the index.
+
+Local prerequisites: B2 credentials in `tubot-sf-data360/.dev.vars` and a
+shared `DATA360_INTERNAL_KEY` (40+ hex chars) in both
+`tubot-sf-data360/.dev.vars` and `tubot-sf-auth/.dev.vars`. Without the
+binding or key, sf-auth degrades to D1-only behavior exactly as before.

@@ -1,6 +1,7 @@
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { unzipSync, zipSync, strToU8 } from "fflate";
 import { requireScope, readBodyBounded, SecurityError, type TenantScope } from "./request-security";
+import { soapRequest as soap, beginRetrieve, pollRetrieve, throwRetrieveFailure } from "./soap-retrieve";
 import type { SalesforceConnection } from "./agent-script";
 
 // Metadata only. Flow/Apex references are recorded, never retrieved.
@@ -22,28 +23,7 @@ function parseXml(text: string): any {
   if (/<!DOCTYPE|<!ENTITY/i.test(text) || XMLValidator.validate(text) !== true) throw new SecurityError(502, "invalid_metadata_xml");
   return parser.parse(text);
 }
-async function soap(conn: SalesforceConnection, version: string, operation: string, body: string): Promise<any> {
-  const response = await fetch(`${conn.instanceUrl}/services/Soap/m/${version}`, {
-    method: "POST", headers: { "Content-Type": "text/xml; charset=UTF-8", SOAPAction: operation },
-    body: `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata"><s:Header><m:SessionHeader><m:sessionId>${xml(conn.accessToken)}</m:sessionId></m:SessionHeader></s:Header><s:Body><m:${operation}>${body}</m:${operation}></s:Body></s:Envelope>`,
-    signal: AbortSignal.timeout(60_000),
-  });
-  const text = new TextDecoder().decode(await readBodyBounded(response, MAX_ARCHIVE * 1.4));
-  if (response.status === 429) throw new SecurityError(429, "salesforce_metadata_rate_limited");
-  if ([503,504].includes(response.status)) throw new SecurityError(503, "salesforce_metadata_temporarily_unavailable");
-  const envelope = parseXml(text)?.Envelope?.Body;
-  if (!response.ok || envelope?.Fault) {
-    const fault = String(envelope?.Fault?.faultcode ?? "").replace(/[^A-Za-z0-9_:.-]/g, "").slice(0, 100);
-    if (/REQUEST_LIMIT_EXCEEDED/.test(fault)) throw new SecurityError(429, "salesforce_metadata_rate_limited");
-    if (/INVALID_SESSION_ID/.test(fault)) throw new SecurityError(401, "salesforce_metadata_session_expired");
-    if (/INSUFFICIENT_ACCESS/.test(fault)) throw new SecurityError(403, "agent_metadata_permission_required");
-    throw new SecurityError(response.status === 401 ? 401 : 502, `salesforce_metadata_request_failed:${operation}:${fault || response.status}`);
-  }
-  const result = envelope?.[`${operation}Response`]?.result;
-  if (result === undefined && operation === "listMetadata" && envelope?.listMetadataResponse !== undefined) return [];
-  if (result === undefined) throw new SecurityError(502, "invalid_metadata_response");
-  return result;
-}
+
 export async function discoverAgents(conn: SalesforceConnection): Promise<Inventory & { agents: Array<{ name: string; type: string; versions: string[] }> }> {
   const response = await fetch(`${conn.instanceUrl}/services/data/`, { headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new SecurityError(response.status === 401 ? 401 : 502, "salesforce_versions_failed");
@@ -90,12 +70,7 @@ export async function discoverAgents(conn: SalesforceConnection): Promise<Invent
   return { apiVersion, legacyApiVersion, typesByVersion, supportedTypes, members, warnings, agents: members.filter(m => ["Bot", "AiAgent", "AiAgentDefinition"].includes(m.type)).map(m => ({ name: m.fullName, type: m.type, versions: members.filter(v => ["AiAuthoringBundle", "AiAgentDefinitionVersion"].includes(v.type) && v.fullName.startsWith(m.fullName + "_")).map(v => v.fullName) })) };
 
 }
-async function beginRetrieve(conn: SalesforceConnection, version: string, members: Member[]): Promise<string> {
-  const types = [...new Set(members.map(m => m.type))];
-  const result = await soap(conn, version, "retrieve", `<m:retrieveRequest><m:apiVersion>${version}</m:apiVersion><m:singlePackage>true</m:singlePackage><m:unpackaged>${types.map(type => `<m:types>${members.filter(m => m.type === type).map(m => `<m:members>${xml(m.fullName)}</m:members>`).join("")}<m:name>${type}</m:name></m:types>`).join("")}<m:version>${version}</m:version></m:unpackaged></m:retrieveRequest>`);
-  if (typeof result.id !== "string") throw new SecurityError(502, "metadata_retrieve_not_started");
-  return result.id;
-}
+
 
 type MetadataRetrieveProbe = "ready" | "pending" | "denied" | "failed" | "not_available";
 
@@ -231,15 +206,11 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
     if (state.executionUserId !== conn.integrationUserId) throw new SecurityError(409, "agent_extraction_user_changed");
     if (now - job.created_at > 3600_000) throw new SecurityError(408, "agent_extraction_expired");
     const currentVersion = state.pending[0].apiVersion ?? state.inventory.apiVersion;
-    const retrieved = await soap(conn, currentVersion, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.retrieveId!)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
-    if (retrieved.done !== "true") return resultForJob(job);
-    for (const warning of arr<any>(retrieved.messages)) state.warnings.push(`${warning.fileName ?? "metadata"}: ${warning.problem ?? "Salesforce retrieval warning"}`);
-    if (retrieved.success !== "true" || typeof retrieved.zipFile !== "string") {
-      const deniedEntity = String(retrieved.errorMessage ?? "").match(/INSUFFICIENT_ACCESS:.*entity:\s*([A-Za-z][A-Za-z0-9_]*)/);
-      if (deniedEntity) throw new SecurityError(403, `agent_metadata_access_required:${deniedEntity[1]}`);
-      throw new SecurityError(502, "agent_metadata_retrieve_failed");
-    }
-    const zip = Uint8Array.from(atob(retrieved.zipFile), c => c.charCodeAt(0));
+    const retrieved = await pollRetrieve(conn, currentVersion, state.retrieveId!);
+    if (!retrieved.done) return resultForJob(job);
+    for (const warning of retrieved.messages) state.warnings.push(`${warning.fileName ?? "metadata"}: ${warning.problem ?? "Salesforce retrieval warning"}`);
+    if (!retrieved.success || retrieved.zipB64 === null) throwRetrieveFailure(retrieved);
+    const zip = Uint8Array.from(atob(retrieved.zipB64), c => c.charCodeAt(0));
     if (zip.length > MAX_ARCHIVE) throw new SecurityError(413, "agent_archive_too_large");
     let expandedBytes = 0, expandedFiles = 0;
     const archive = unzipSync(zip, { filter: file => {
@@ -249,7 +220,7 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
     } });
     const next = new Map<string, Member>();
     // FileProperties is the authoritative inventory of components returned.
-    const returned = new Set(arr<any>(retrieved.fileProperties).map(p => `${p.type}:${p.fullName}`));
+    const returned = new Set(retrieved.fileProperties.map((p: any) => `${p.type}:${p.fullName}`));
     for (const member of state.pending) if (!returned.has(memberKey(member))) state.warnings.push(`Requested component not returned: ${memberKey(member)}`);
     for (const [rawPath, bytes] of Object.entries(archive)) {
       const path = validatePath(rawPath);
@@ -291,7 +262,10 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
     return resultForJob(await getJob(db, scope, id));
   } catch (cause) {
     // Auth/network failures remain resumable. Invalid content and upstream retrieval failures terminate explicitly.
-    if (cause instanceof SecurityError && cause.status !== 401 && !cause.code.startsWith("salesforce_metadata_request_failed")) {
+    const resumable = cause instanceof SecurityError &&
+      (cause.status === 401 || cause.code.startsWith("salesforce_metadata_request_failed") ||
+        cause.code === "salesforce_metadata_timeout" || cause.code === "salesforce_metadata_unreachable");
+    if (cause instanceof SecurityError && !resumable) {
       await db.prepare("UPDATE sf_agent_snapshot_job SET status='failed',manifest_json=?,updated_at=? WHERE team_id=? AND org_id=? AND channel_id=? AND id=? AND lease_until=?").bind(JSON.stringify({ error: cause.code, agentName: job.agent_name, warnings: state.warnings }), Date.now(), ...scopeArgs(scope), id, lease).run();
     }
     throw cause;
@@ -320,7 +294,7 @@ export async function downloadAgentSnapshot(db: D1Database, scope: TenantScope, 
  * job's own channel; nothing is guessed. */
 export type AgentScope = { teamId: string; orgId: string };
 const ORG_ID_RE = /^[A-Za-z0-9]{15,18}$/;
-function requireAgentScope(value: any): AgentScope {
+export function requireAgentScope(value: any): AgentScope {
   if (!value || typeof value.teamId !== "string" || value.teamId.length === 0 || value.teamId.length > 128 ||
       typeof value.orgId !== "string" || !ORG_ID_RE.test(value.orgId)) {
     throw new SecurityError(401, "tenant_scope_required");
@@ -421,9 +395,9 @@ export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn
     return { ready: false, pending: true };
   }
   if (!state.baseVerified) {
-    const retrieved = await soap(conn, state.version, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.retrieveId!)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
-    if (retrieved.done !== "true") return { ready: false, pending: true };
-    if (retrieved.success !== "true" || typeof retrieved.zipFile !== "string" || (state.rootKey && !arr<any>(retrieved.fileProperties).some(p => `${p.type}:${p.fullName}` === state.rootKey))) {
+    const retrieved = await pollRetrieve(conn, state.version, state.retrieveId!);
+    if (!retrieved.done) return { ready: false, pending: true };
+    if (!retrieved.success || retrieved.zipB64 === null || (state.rootKey && !retrieved.fileProperties.some((p: any) => `${p.type}:${p.fullName}` === state.rootKey))) {
       await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=NULL WHERE team_id=? AND org_id=? AND channel_id=?").bind(...args).run();
       throw new SecurityError(403, "agent_metadata_retrieval_check_failed");
     }
@@ -431,9 +405,9 @@ export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn
   }
   if (state.promptRetrieveId) {
     try {
-      const prompt = await soap(conn, state.promptVersion!, "checkRetrieveStatus", `<m:asyncProcessId>${xml(state.promptRetrieveId)}</m:asyncProcessId><m:includeZip>true</m:includeZip>`);
-      if (prompt.done !== "true") return { ready: false, pending: true };
-      state.promptReady = prompt.success === "true" && typeof prompt.zipFile === "string" && arr<any>(prompt.fileProperties).some(p => `${p.type}:${p.fullName}` === state.promptKey);
+      const prompt = await pollRetrieve(conn, state.promptVersion!, state.promptRetrieveId);
+      if (!prompt.done) return { ready: false, pending: true };
+      state.promptReady = prompt.success && prompt.zipB64 !== null && prompt.fileProperties.some((p: any) => `${p.type}:${p.fullName}` === state.promptKey);
     } catch (error) {
       if (!(error instanceof SecurityError) || error.status !== 403) throw error;
       state.promptReady = false;

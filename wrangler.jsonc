@@ -14,6 +14,10 @@
       "binding": "PANEL_JWT_SIGNER",
       "service": "tubot-new-panel",
       "entrypoint": "PanelJwtSigner"
+    },
+    {
+      "binding": "DATA360",
+      "service": "tubot-sf-data360"
     }
   ],
   "d1_databases": [{
@@ -39,6 +43,10 @@
           "binding": "PANEL_JWT_SIGNER",
           "service": "tubot-new-panel-staging",
           "entrypoint": "PanelJwtSigner"
+        },
+        {
+          "binding": "DATA360",
+          "service": "tubot-sf-data360"
         }
       ],
       "d1_databases": [{
@@ -64,6 +72,10 @@
           "binding": "PANEL_JWT_SIGNER",
           "service": "tubot-new-panel",
           "entrypoint": "PanelJwtSigner"
+        },
+        {
+          "binding": "DATA360",
+          "service": "tubot-sf-data360-production"
         }
       ],
       "d1_databases": [{
