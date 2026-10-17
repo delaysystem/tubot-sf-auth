@@ -85,7 +85,7 @@ import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifec
 import { readBodyBounded, readJsonBounded, requireScope, scopedTags, SecurityError } from "./request-security";
 import { equalHash, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
 import { getCallableToolUrlsForChannel, type Credential } from "./agent-script";
-import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, agentSnapshotStatus, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, type AgentScope } from "./agent-snapshot";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, planAgentSnapshotPoll, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, type AgentScope } from "./agent-snapshot";
 import { Data360AgentClient } from "./data360-client";
 import { hydrateAgentFromData360, listCachedAgents } from "./agent-blob";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
@@ -2364,14 +2364,23 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
       clearChannelTokens(scope);
       return json({ connected: true, metadataUserId: body.metadataUserId }, requestId);
     }
-    if (path === "/internal/agents/status") return json(await agentSnapshotStatus(env.DB, scope, body.jobId as string), requestId);
     if (path === "/internal/agents/download") return downloadAgentSnapshot(env.DB, scope, body.jobId as string);
     const metadataUser = await env.DB.prepare("SELECT integration_user_id,integration_username,verified_at FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
       .bind(scope.teamId, scope.orgId, scope.channelId).first<{ integration_user_id: string; integration_username: string; verified_at: number }>();
     if (metadataUser) row = { ...row, ...metadataUser, agent_registration_version: metadataUser.verified_at };
     const execute = async () => {
+      // Poll-to-advance: the agent-save flow polls extract+status only, so a
+      // status poll on a retrieving job advances it one round inline.
+      // Terminal/failed jobs pass through without a Salesforce session; the
+      // poll plan additionally goes status-only while another poll holds the
+      // lease, the last round is fresh, or Salesforce failed recently (F11).
+      if (path === "/internal/agents/status") {
+        const poll = await planAgentSnapshotPoll(env.DB, scope, body.jobId as string);
+        if (!poll.advance) return json(poll.status, requestId);
+      }
       const auth = await token(env, row);
       const conn = { instanceUrl: auth.instanceUrl, accessToken: auth.accessToken, integrationUserId: row.integration_user_id };
+      if (path === "/internal/agents/status") return json(await advanceAgentSnapshot(env.DB, scope, conn, body.jobId as string), requestId);
       if (path === "/internal/agents/verify") {
         const result = await verifyAgentAccess(env.DB, scope, conn);
         return json(result, requestId, result.ready ? 200 : 202);
@@ -2696,8 +2705,15 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   async listConnectedOrgs(signed?: SignedRpcEnvelope): Promise<Key[]> {
     const org = await verifySignedRpcCall(this.env as AuthEnv, "listConnectedOrgs", [], signed);
     const env = this.env as AuthEnv;
-    const rows = await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId,
-      MIN(channel_id) AS channelId FROM panel_salesforce_channels GROUP BY team_id, org_id`).all<Key>();
+    // F6: push the bound org into SQL (covering SEARCH on
+    // panel_salesforce_channels_org_teams_idx) instead of GROUP-BY-scanning
+    // every channel and filtering in JS. The legacy scopeless path (empty org)
+    // keeps the full inventory scan; the residual filter is a no-op safety net.
+    const rows = org
+      ? await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId,
+        MIN(channel_id) AS channelId FROM panel_salesforce_channels WHERE org_id=? GROUP BY team_id, org_id`).bind(org).all<Key>()
+      : await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId,
+        MIN(channel_id) AS channelId FROM panel_salesforce_channels GROUP BY team_id, org_id`).all<Key>();
     const all = rows.results ?? [];
     return org ? all.filter(k => k.orgId === org) : all;
   }

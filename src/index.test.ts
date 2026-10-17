@@ -2666,3 +2666,96 @@ test("echoed turn scope must be absent or match the RPC scope", () => {
   expect(turnScopeMatches(scope, { channelId: "0Mjxx0000000002AAA" })).toBe(false);
   expect(turnScopeMatches(scope, { orgId: "00Dxx0000000002AAA" })).toBe(false);
 });
+
+// resolve-channel semantics: getTokenForChannel without tenant scope resolves via
+// `channel_id = ? OR substr(channel_id, 1, 15) = ?` (Salesforce 15/18-char ids).
+// These tests lock the resolution outcome; index effectiveness is proven by replay.
+type ResolveChannel = { teamId: string; orgId: string; channelId: string };
+
+function resolveFixture(channels: ResolveChannel[]) {
+  const creds = new Map(channels.map(c => [`${c.teamId}\u0000${c.orgId}\u0000${c.channelId}`, {
+    team_id: c.teamId, org_id: c.orgId, channel_id: c.channelId,
+    instance_url: "https://test.my.salesforce.com",
+    integration_user_id: userId, integration_username: "integration@example.com",
+    is_sandbox: 1, client_id: null,
+  }]));
+  const db = {
+    prepare(sql: string) {
+      return {
+        bind(...args: unknown[]) {
+          return {
+            async run() { return { success: true }; },
+            async first() {
+              const [teamId, orgId, channelId] = args as string[];
+              return creds.get(`${teamId}\u0000${orgId}\u0000${channelId}`) ?? null;
+            },
+            async all() {
+              if (sql.includes("OR substr(channel_id, 1, 15)")) {
+                const [full, prefix] = args as string[];
+                const results = channels
+                  .filter(c => c.channelId === full || c.channelId.slice(0, 15) === prefix)
+                  .slice(0, 3)
+                  .map(c => ({ teamId: c.teamId, orgId: c.orgId, channelId: c.channelId }));
+                return { results };
+              }
+              return { results: [] };
+            },
+          };
+        },
+      };
+    },
+  };
+  const PANEL_JWT_SIGNER = {
+    async signAssertion(_input: unknown) { return "test-assertion"; },
+  };
+  return { DB: db, SF_CREDENTIAL_ENCRYPTION_KEY: encryptionKey, PANEL_JWT_SIGNER, AUTH_RPC_WARN_MODE: "1" };
+}
+
+const CH18 = "0Mjxx0000000001AAA";
+const CH15 = CH18.slice(0, 15);
+
+test("resolve-channel matches an exact 18-char channel id", async () => {
+  mockSalesforce({});
+  const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([{ teamId: "team", orgId, channelId: CH18 }]));
+  const result = await entrypoint.getTokenForChannel(CH18);
+  expect(result.teamId).toBe("team");
+  expect(result.orgId).toBe(orgId);
+  expect(result.accessToken).toBe("secret-access-token");
+});
+
+test("resolve-channel matches a 15-char input to a stored 18-char channel", async () => {
+  mockSalesforce({});
+  const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([{ teamId: "team", orgId, channelId: CH18 }]));
+  const result = await entrypoint.getTokenForChannel(CH15);
+  expect(result.teamId).toBe("team");
+  expect(result.orgId).toBe(orgId);
+});
+
+test("resolve-channel matches an 18-char input to a stored 15-char channel", async () => {
+  mockSalesforce({});
+  const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([{ teamId: "team", orgId, channelId: CH15 }]));
+  const result = await entrypoint.getTokenForChannel(CH18);
+  expect(result.teamId).toBe("team");
+  expect(result.orgId).toBe(orgId);
+});
+
+test("resolve-channel returns 404 for an unknown channel", async () => {
+  mockSalesforce({});
+  const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([{ teamId: "team", orgId, channelId: CH18 }]));
+  await expect(entrypoint.getTokenForChannel("0Mjxx0000000002AAA")).rejects.toThrow("channel_not_found");
+});
+
+test("resolve-channel returns 409 when a prefix matches two orgs", async () => {
+  mockSalesforce({});
+  const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([
+    { teamId: "team", orgId, channelId: CH18 },
+    { teamId: "team", orgId: "00D000000000002AAA", channelId: CH18 },
+  ]));
+  await expect(entrypoint.getTokenForChannel(CH15)).rejects.toThrow("channel_org_ambiguous");
+});
+
+test("resolve-channel rejects an invalid channel id", async () => {
+  mockSalesforce({});
+  const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([]));
+  await expect(entrypoint.getTokenForChannel("bogus")).rejects.toThrow("invalid_request");
+});

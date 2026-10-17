@@ -12,7 +12,16 @@ const MAX_BYTES = 24_000_000;
 const parser = new XMLParser({ removeNSPrefix: true, ignoreAttributes: false, parseTagValue: false, processEntities: true });
 type Member = { type: string; fullName: string; apiVersion?: string };
 type Inventory = { apiVersion: string; legacyApiVersion?: string; typesByVersion: Record<string, string[]>; supportedTypes: string[]; members: Member[]; warnings: string[] };
-type State = { executionUserId: string; inventory: Inventory; requested: Member[]; pending: Member[]; queued: Member[]; retrieveId: string | null; edges: Array<{ from: string; to: string }>; warnings: string[]; excluded: string[]; versions: string[]; rounds: number };
+type State = { executionUserId: string; inventory: Inventory; requested: Member[]; pending: Member[]; queued: Member[]; retrieveId: string | null; edges: Array<{ from: string; to: string }>; warnings: string[]; excluded: string[]; excludedStandard: string[]; versions: string[]; rounds: number; lastSfFailureAt?: number };
+// F11: fixed-2s polling burned a full advance (~7r+6w+F reads) every round,
+// even during outages. After N retrieving rounds the hint backs off
+// exponentially; status polls go status-only while another poll holds the
+// lease, the last completed round is fresh, or Salesforce failed recently.
+// Every deferral expires on its own, so poll-to-advance convergence holds.
+export const SNAPSHOT_BACKOFF_AFTER_ROUNDS = 3;
+export const SNAPSHOT_POLL_FRESH_MS = 3000;
+export const SNAPSHOT_SF_FAIL_COOLDOWN_MS = 30_000;
+export const SNAPSHOT_MAX_RETRY_AFTER_S = 60;
 type Job = { id: string; agent_name: string; status: string; state_json: string; manifest_json: string | null; created_at: number; updated_at: number; lease_until: number };
 const arr = <T>(value: T | T[] | undefined): T[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const xml = (value: string) => value.replace(/[<>&"']/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" })[c]!);
@@ -172,13 +181,69 @@ async function saveFile(db: D1Database, scope: TenantScope, jobId: string, path:
 async function filesForJob(db: D1Database, scope: TenantScope, id: string) {
   return (await db.prepare("SELECT path,sha256,byte_size FROM sf_agent_snapshot_file WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=? ORDER BY path").bind(...scopeArgs(scope), id).all<{ path: string; sha256: string; byte_size: number }>()).results;
 }
+// F8: one chunk fetch per job (PK-prefix SEARCH, no per-file N+1), grouped in
+// JS. At 2000 files the old per-file loop exceeds the 1000-subrequest budget
+// and THROWS; this stays at a constant subrequest count. Ordering is identical
+// to the old per-file ORDER BY chunk_index selects.
+async function chunksForJob(db: D1Database, teamId: string, orgId: string, channelId: string, id: string): Promise<Map<string, Uint8Array[]>> {
+  const rows = (await db.prepare("SELECT path,content FROM sf_agent_snapshot_chunk WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=? ORDER BY path,chunk_index").bind(teamId, orgId, channelId, id).all<{ path: string; content: number[] }>()).results;
+  const grouped = new Map<string, Uint8Array[]>();
+  for (const row of rows) {
+    const parts = grouped.get(row.path);
+    const bytes = new Uint8Array(row.content);
+    if (parts) parts.push(bytes);
+    else grouped.set(row.path, [bytes]);
+  }
+  return grouped;
+}
+async function reassembleFile(chunks: Map<string, Uint8Array[]>, file: { path: string; sha256: string; byte_size: number }): Promise<Uint8Array> {
+  const bytes = new Uint8Array(file.byte_size); let offset = 0;
+  for (const part of chunks.get(file.path) ?? []) { bytes.set(part, offset); offset += part.length; }
+  if (offset !== file.byte_size || await sha256(bytes) !== file.sha256) throw new SecurityError(500, "agent_snapshot_integrity_failed");
+  return bytes;
+}
 async function getJob(db: D1Database, scope: TenantScope, id: string): Promise<Job> {
   if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) throw new SecurityError(400, "invalid_job_id");
   const job = await db.prepare("SELECT id,agent_name,status,state_json,manifest_json,created_at,updated_at,lease_until FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=? AND channel_id=? AND id=?").bind(...scopeArgs(scope), id).first<Job>();
   if (!job) throw new SecurityError(404, "agent_snapshot_not_found");
   return job;
 }
-const resultForJob = (job: Job) => ({ jobId: job.id, agentName: job.agent_name, status: job.status, manifest: job.manifest_json ? JSON.parse(job.manifest_json) : null, retryAfterSeconds: job.status === "retrieving" ? 2 : undefined });
+function jobRounds(job: Job): number {
+  try {
+    const rounds = (JSON.parse(job.state_json) as Partial<State>).rounds;
+    return typeof rounds === "number" && rounds >= 0 ? Math.floor(rounds) : 0;
+  } catch { return 0; }
+}
+function jobLastSfFailureAt(job: Job): number {
+  try {
+    const at = (JSON.parse(job.state_json) as Partial<State>).lastSfFailureAt;
+    return typeof at === "number" && at > 0 ? at : 0;
+  } catch { return 0; }
+}
+const resultForJob = (job: Job, now: number = Date.now()) => {
+  const base = { jobId: job.id, agentName: job.agent_name, status: job.status, manifest: job.manifest_json ? JSON.parse(job.manifest_json) : null };
+  if (job.status !== "retrieving") return { ...base, retryAfterSeconds: undefined as number | undefined };
+  const rounds = jobRounds(job);
+  let retry = rounds < SNAPSHOT_BACKOFF_AFTER_ROUNDS ? 2
+    : Math.min(2 * 2 ** (rounds - SNAPSHOT_BACKOFF_AFTER_ROUNDS + 1), SNAPSHOT_MAX_RETRY_AFTER_S);
+  const failedAt = jobLastSfFailureAt(job);
+  if (failedAt > 0 && now - failedAt < SNAPSHOT_SF_FAIL_COOLDOWN_MS) {
+    retry = Math.max(retry, Math.ceil((SNAPSHOT_SF_FAIL_COOLDOWN_MS - (now - failedAt)) / 1000));
+  }
+  return { ...base, retryAfterSeconds: retry };
+};
+/** Single-read poll plan for the status route: terminal jobs pass through,
+ * retrieving jobs advance unless a deferral (below) says status-only. */
+export async function planAgentSnapshotPoll(db: D1Database, scope: TenantScope, id: string, now: number = Date.now()) {
+  const job = await getJob(db, scope, id);
+  const result = resultForJob(job, now);
+  if (job.status !== "retrieving") return { status: result, advance: false };
+  const leased = job.lease_until > now;
+  const fresh = jobRounds(job) > 0 && now - job.updated_at < SNAPSHOT_POLL_FRESH_MS;
+  const failedAt = jobLastSfFailureAt(job);
+  const cooling = failedAt > 0 && now - failedAt < SNAPSHOT_SF_FAIL_COOLDOWN_MS;
+  return { status: result, advance: !(leased || fresh || cooling) };
+}
 export async function startAgentSnapshot(db: D1Database, scope: TenantScope, conn: SalesforceConnection & { integrationUserId: string }, agentName: string, agentType = "Bot") {
   if (typeof agentName !== "string" || agentName.length > 255 || !/^[A-Za-z0-9_.-]+$/.test(agentName)) throw new SecurityError(400, "invalid_agent_name");
   const inventory = await discoverAgents(conn);
@@ -189,7 +254,7 @@ export async function startAgentSnapshot(db: D1Database, scope: TenantScope, con
   const roots = inventory.members.filter(m => (["Bot", "AiAgent", "AiAgentDefinition"].includes(m.type) && m.fullName === agentName) || (["AiAuthoringBundle", "AiAgentDefinitionVersion"].includes(m.type) && root.versions.includes(m.fullName)));
   const pending = roots.filter(m => m.apiVersion === inventory.apiVersion), queued = roots.filter(m => m.apiVersion !== inventory.apiVersion);
   if (!pending.length) throw new SecurityError(502, "agent_metadata_root_unavailable");
-  const state: State = { executionUserId: conn.integrationUserId, inventory, requested: roots, pending, queued, retrieveId: null, edges: [], warnings: [...inventory.warnings], excluded: [], versions: root.versions, rounds: 0 };
+  const state: State = { executionUserId: conn.integrationUserId, inventory, requested: roots, pending, queued, retrieveId: null, edges: [], warnings: [...inventory.warnings], excluded: [], excludedStandard: [], versions: root.versions, rounds: 0 };
   state.retrieveId = await beginRetrieve(conn, inventory.apiVersion, pending);
   const id = crypto.randomUUID(), now = Date.now();
   await db.prepare("INSERT INTO sf_agent_snapshot_job(id,team_id,org_id,channel_id,agent_name,status,state_json,created_at,updated_at) VALUES(?,?,?,?,?,'retrieving',?,?,?)").bind(id, ...scopeArgs(scope), agentName, JSON.stringify(state), now, now).run();
@@ -202,6 +267,8 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
   const lock = await db.prepare("UPDATE sf_agent_snapshot_job SET lease_until=? WHERE team_id=? AND org_id=? AND channel_id=? AND id=? AND lease_until<? AND status='retrieving'").bind(lease, ...scopeArgs(scope), id, now).run();
   if (!lock.meta.changes) return resultForJob(job);
   const state: State = JSON.parse(job.state_json);
+  // Jobs started before excludedStandard existed carry no such field.
+  state.excludedStandard ??= [];
   try {
     if (state.executionUserId !== conn.integrationUserId) throw new SecurityError(409, "agent_extraction_user_changed");
     if (now - job.created_at > 3600_000) throw new SecurityError(408, "agent_extraction_expired");
@@ -235,6 +302,12 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
       state.edges.push(...refs.edges); state.excluded.push(...refs.excluded);
       for (const m of refs.members) {
         const known = state.inventory.members.find(known => memberKey(known) === memberKey(m));
+        // Namespaced references the org never advertised (e.g. standard
+        // EmployeeCopilot__* actions absent from this org) are
+        // environment-provided: recorded like Flow/Apex targets, never
+        // retrieved. Requesting them only yields "cannot be found" warnings
+        // that wrongly downgrade a complete snapshot to incomplete.
+        if (!known && m.fullName.includes("__")) { state.excludedStandard.push(memberKey(m)); continue; }
         const member = known ?? { ...m, apiVersion: currentVersion };
         if (!state.inventory.typesByVersion[member.apiVersion ?? currentVersion]?.includes(member.type)) { state.warnings.push(`Referenced metadata type unavailable: ${memberKey(m)}`); continue; }
         if (!state.requested.some(r => memberKey(r) === memberKey(member))) next.set(memberKey(member), member);
@@ -256,7 +329,7 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
       if (state.queued.length) state.warnings.push("Dependency traversal limit reached.");
       if (!files.length) throw new SecurityError(502, "empty_agent_snapshot");
       status = state.warnings.length ? "incomplete" : "complete";
-      manifest = JSON.stringify({ schemaVersion: 1, integrationUserId: state.executionUserId, agentName: job.agent_name, orgId: scope.orgId, apiVersion: state.inventory.apiVersion, apiVersions: [...new Set(state.requested.map(m => m.apiVersion))], extractedAt: new Date().toISOString(), status, versions: [...new Set(state.versions)], components: state.requested, dependencies: [...new Map(state.edges.map(e => [JSON.stringify(e), e])).values()], excludedFlowApexReferences: [...new Set(state.excluded)], warnings: [...new Set(state.warnings)], files });
+      manifest = JSON.stringify({ schemaVersion: 1, integrationUserId: state.executionUserId, agentName: job.agent_name, orgId: scope.orgId, apiVersion: state.inventory.apiVersion, apiVersions: [...new Set(state.requested.map(m => m.apiVersion))], extractedAt: new Date().toISOString(), status, versions: [...new Set(state.versions)], components: state.requested, dependencies: [...new Map(state.edges.map(e => [JSON.stringify(e), e])).values()], excludedFlowApexReferences: [...new Set(state.excluded)], excludedStandardReferences: [...new Set(state.excludedStandard ?? [])], warnings: [...new Set(state.warnings)], files });
     }
     await db.prepare("UPDATE sf_agent_snapshot_job SET state_json=?,status=?,manifest_json=?,updated_at=? WHERE team_id=? AND org_id=? AND channel_id=? AND id=? AND lease_until=?").bind(JSON.stringify(state), status, manifest, Date.now(), ...scopeArgs(scope), id, lease).run();
     return resultForJob(await getJob(db, scope, id));
@@ -267,6 +340,12 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
         cause.code === "salesforce_metadata_timeout" || cause.code === "salesforce_metadata_unreachable");
     if (cause instanceof SecurityError && !resumable) {
       await db.prepare("UPDATE sf_agent_snapshot_job SET status='failed',manifest_json=?,updated_at=? WHERE team_id=? AND org_id=? AND channel_id=? AND id=? AND lease_until=?").bind(JSON.stringify({ error: cause.code, agentName: job.agent_name, warnings: state.warnings }), Date.now(), ...scopeArgs(scope), id, lease).run();
+    } else if (resumable) {
+      // F11: resumable SF failures stay resumable but arm the poll cooldown so
+      // status polls go status-only instead of re-burning a full advance.
+      const failedAt = Date.now();
+      state.lastSfFailureAt = failedAt;
+      await db.prepare("UPDATE sf_agent_snapshot_job SET state_json=?,updated_at=? WHERE team_id=? AND org_id=? AND channel_id=? AND id=? AND lease_until=?").bind(JSON.stringify(state), failedAt, ...scopeArgs(scope), id, lease).run();
     }
     throw cause;
   } finally {
@@ -278,12 +357,9 @@ export async function downloadAgentSnapshot(db: D1Database, scope: TenantScope, 
   const job = await getJob(db, scope, id);
   if (!["complete", "incomplete"].includes(job.status)) throw new SecurityError(409, "agent_snapshot_not_ready");
   const archive: Record<string, Uint8Array> = { "manifest.json": strToU8(job.manifest_json!) };
+  const chunks = await chunksForJob(db, scope.teamId, scope.orgId, scope.channelId, id);
   for (const file of await filesForJob(db, scope, id)) {
-    const chunks = (await db.prepare("SELECT content FROM sf_agent_snapshot_chunk WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=? AND path=? ORDER BY chunk_index").bind(...scopeArgs(scope), id, file.path).all<{ content: number[] }>()).results;
-    const bytes = new Uint8Array(file.byte_size); let offset = 0;
-    for (const chunk of chunks) { const part = new Uint8Array(chunk.content); bytes.set(part, offset); offset += part.length; }
-    if (offset !== file.byte_size || await sha256(bytes) !== file.sha256) throw new SecurityError(500, "agent_snapshot_integrity_failed");
-    archive[file.path] = bytes;
+    archive[file.path] = await reassembleFile(chunks, file);
   }
   return new Response(zipSync(archive) as BodyInit, { headers: { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="${job.agent_name}-${id}.zip"`, "Cache-Control": "no-store" } });
 }
@@ -334,13 +410,9 @@ export async function readAgentSnapshotForScope(db: D1Database, scope: AgentScop
   if (total > 512_000) throw new SecurityError(413, "agent_snapshot_too_large");
   const out: AgentSnapshotFile[] = [];
   const decoder = new TextDecoder();
+  const chunks = await chunksForJob(db, teamId, orgId, job.channel_id, job.id);
   for (const file of files) {
-    const chunks = (await db.prepare(`SELECT content FROM sf_agent_snapshot_chunk
-      WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=? AND path=? ORDER BY chunk_index`)
-      .bind(teamId, orgId, job.channel_id, job.id, file.path).all<{ content: number[] }>()).results;
-    const bytes = new Uint8Array(file.byte_size); let offset = 0;
-    for (const chunk of chunks) { const part = new Uint8Array(chunk.content); bytes.set(part, offset); offset += part.length; }
-    if (offset !== file.byte_size || await sha256(bytes) !== file.sha256) throw new SecurityError(500, "agent_snapshot_integrity_failed");
+    const bytes = await reassembleFile(chunks, file);
     out.push({ path: file.path, sha256: file.sha256, byteSize: file.byte_size, content: decoder.decode(bytes) });
   }
   const sha = await sha256(new TextEncoder().encode(out.map(f => f.path + ":" + f.sha256).join("\n")));
