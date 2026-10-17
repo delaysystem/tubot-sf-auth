@@ -9,7 +9,7 @@
 		"start": "wrangler dev",
 		"jwt-api-smoke": "bun scripts/jwt-api-smoke.ts",
 		"cf-typegen": "wrangler types",
-		"test": "bun test src/index.test.ts",
+		"test": "bun test src/index.test.ts src/retention.test.ts",
 		"setup:context-permissions": "bun scripts/setup-context-permissions.ts",
 		"typecheck": "bun x tsc --noEmit",
 		"release:check": "bun run test && bun run typecheck && bun x wrangler deploy --dry-run",

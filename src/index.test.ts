@@ -2759,3 +2759,190 @@ test("resolve-channel rejects an invalid channel id", async () => {
   const entrypoint = new TubotSfAuthEntrypoint(null, resolveFixture([]));
   await expect(entrypoint.getTokenForChannel("bogus")).rejects.toThrow("invalid_request");
 });
+
+// sessionState RPC: live handoff state for the proxy guard, resolved from live
+// MessagingSession escalation fields plus PendingServiceRouting queue truth.
+// Auth failures throw explicitly (401); only unknown sessions return null.
+const handoffScope = { teamId: "team", orgId, channelId: "0Mj000000000001AAA" };
+const handoffConversation = "c7052169-d5cd-4369-8514-ef7cf1bc1234";
+const handoffSessionId = "0Mw000000000001AAA";
+const handoffQueueId = "00G000000000001AAA";
+
+function mockHandoffSalesforce(opts: {
+  fields?: string[];
+  flagged?: Record<string, unknown> | null;
+  flaggedStatus?: number;
+  recent?: Record<string, unknown>[];
+  recentStatus?: number;
+  psrs?: Record<string, unknown>[];
+  psrStatus?: number;
+  group?: Record<string, unknown> | null;
+  groupStatus?: number;
+} = {}) {
+  const fields = opts.fields ?? ["Id", "tubot__Escalate_To_Human__c", "Escalate_To_Human__c"];
+  return mockSalesforce({
+    "/services/data/v65.0/sobjects/MessagingSession/describe": { fields: fields.map((name) => ({ name })) },
+    "/services/data/v65.0/query": (_init: RequestInit | undefined, url: URL) => {
+      const q = url.searchParams.get("q") ?? "";
+      if (q.includes("FROM MessagingSession") && q.includes("=true")) {
+        if (opts.flaggedStatus) return Response.json([{ message: "boom" }], { status: opts.flaggedStatus });
+        return Response.json({ records: opts.flagged ? [opts.flagged] : [] });
+      }
+      if (q.includes("FROM MessagingSession")) {
+        if (opts.recentStatus) return Response.json([{ message: "boom" }], { status: opts.recentStatus });
+        return Response.json({ records: opts.recent ?? [] });
+      }
+      if (q.includes("FROM PendingServiceRouting")) {
+        if (opts.psrStatus) return Response.json([{ message: "boom" }], { status: opts.psrStatus });
+        return Response.json({ records: opts.psrs ?? [] });
+      }
+      if (q.includes("FROM Group")) {
+        if (opts.groupStatus) return Response.json([{ message: "boom" }], { status: opts.groupStatus });
+        return Response.json({ records: opts.group ? [opts.group] : [] });
+      }
+      return Response.json([{ message: "unexpected query" }], { status: 400 });
+    },
+  });
+}
+
+test("broker sessionState flags an older escalated row among duplicate conversation rows", async () => {
+  const seen = mockHandoffSalesforce({
+    flagged: { Id: handoffSessionId },
+    recent: [{ Id: "0Mw000000000003AAA" }, { Id: "0Mw000000000002AAA" }, { Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    group: { DeveloperName: "Chat_Queue" },
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: true, queueName: "Chat_Queue", queueId: handoffQueueId,
+  });
+  const sessionQueries = seen.filter((s) => (s.url.searchParams.get("q") ?? "").includes("FROM MessagingSession"));
+  expect(sessionQueries.length).toBe(2);
+  for (const s of sessionQueries) {
+    expect(s.url.searchParams.get("q")).toContain(`MessagingChannelId='${handoffScope.channelId}'`);
+    expect(s.url.searchParams.get("q")).toContain(`ConversationIdentifier='${handoffConversation}'`);
+  }
+  expect(sessionQueries[0].url.searchParams.get("q")).toContain("tubot__Escalate_To_Human__c=true");
+});
+
+test("broker sessionState returns a negative live state for a non-escalated session", async () => {
+  mockHandoffSalesforce({
+    recent: [{ Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    group: { DeveloperName: "AI_Bot_Holding_Queue_100" },
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: false, queueName: "AI_Bot_Holding_Queue_100", queueId: handoffQueueId,
+  });
+});
+
+test("broker sessionState reads the newest routed row when the newest row is unrouted", async () => {
+  mockHandoffSalesforce({
+    recent: [{ Id: "0Mw000000000003AAA" }, { Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    group: { DeveloperName: "Chat_Queue" },
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: false, queueName: "Chat_Queue", queueId: handoffQueueId,
+  });
+});
+
+test("broker sessionState returns null only for an unknown session", async () => {
+  mockHandoffSalesforce({});
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toBeNull();
+});
+
+test("broker sessionState keeps the flag when routing carries no queue (skills-based)", async () => {
+  mockHandoffSalesforce({
+    flagged: { Id: handoffSessionId },
+    recent: [{ Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: null }],
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: true, queueName: null, queueId: null,
+  });
+});
+
+test("broker sessionState reads the unnamespaced flag on orgs without packaged fields", async () => {
+  const seen = mockHandoffSalesforce({
+    fields: ["Id", "Escalate_To_Human__c"],
+    flagged: { Id: handoffSessionId },
+    recent: [{ Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    group: { DeveloperName: "Chat_Queue" },
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: true, queueName: "Chat_Queue", queueId: handoffQueueId,
+  });
+  const flaggedQuery = seen.find((s) => (s.url.searchParams.get("q") ?? "").includes("=true"));
+  expect(flaggedQuery?.url.searchParams.get("q")).toContain("Escalate_To_Human__c=true");
+  expect(flaggedQuery?.url.searchParams.get("q")).not.toContain("tubot__");
+});
+
+test("broker sessionState reports un-escalated when no org field carries the flag", async () => {
+  mockHandoffSalesforce({
+    fields: ["Id", "Status"],
+    recent: [{ Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    group: { DeveloperName: "Chat_Queue" },
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: false, queueName: "Chat_Queue", queueId: handoffQueueId,
+  });
+});
+
+test("broker sessionState throws explicitly when a session read fails, never null", async () => {
+  mockHandoffSalesforce({ flaggedStatus: 500, recent: [{ Id: handoffSessionId }] });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).rejects.toThrow("session_state_unavailable");
+  mockHandoffSalesforce({ recentStatus: 500 });
+  const retry = new MessagingProxyBroker(null, await fixture());
+  await expect(retry.sessionState(handoffScope, handoffConversation)).rejects.toThrow("session_state_unavailable");
+});
+
+test("broker sessionState degrades routing names but keeps the flag and queue id", async () => {
+  mockHandoffSalesforce({
+    flagged: { Id: handoffSessionId },
+    recent: [{ Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    groupStatus: 403,
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: true, queueName: null, queueId: handoffQueueId,
+  });
+  mockHandoffSalesforce({
+    flagged: { Id: handoffSessionId },
+    recent: [{ Id: handoffSessionId }],
+    psrStatus: 500,
+  });
+  const retry = new MessagingProxyBroker(null, await fixture());
+  await expect(retry.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
+    escalated: true, queueName: null, queueId: null,
+  });
+});
+
+test("broker sessionState rejects an unsigned call explicitly in enforce mode", async () => {
+  mockHandoffSalesforce({
+    flagged: { Id: handoffSessionId },
+    recent: [{ Id: handoffSessionId }],
+    psrs: [{ WorkItemId: handoffSessionId, QueueId: handoffQueueId }],
+    group: { DeveloperName: "Chat_Queue" },
+  });
+  const env = await fixture();
+  delete (env as Record<string, unknown>).AUTH_RPC_WARN_MODE;
+  const broker = new MessagingProxyBroker(null, env);
+  await expect(broker.sessionState(handoffScope, handoffConversation)).rejects.toThrow("rpc_unauthorized");
+});
+
+test("broker sessionState rejects a malformed conversation id", async () => {
+  mockHandoffSalesforce({});
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.sessionState(handoffScope, "not-a-uuid")).rejects.toThrow("invalid_proxy_entry");
+});

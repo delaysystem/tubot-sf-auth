@@ -87,8 +87,10 @@ type Build = (name: string, marker: string, values: Value) => Promise<{ values: 
  * mint with Type so summary lines satisfy the missing_type gate.
  * 140: owned summaries delete automation-attached fulfillment children
  * first (all four legs); fulfillment creates gate on typed lines with
- * available quantity; cancel setups direct-insert an owned order+line. */
-export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 160;
+ * available quantity; cancel setups direct-insert an owned order+line.
+ * 161: track above shared contract 160 (PK probe fetch, skip-recorded,
+ * verified-guess + namespace dispatch, describe cache); no family change. */
+export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 161;
 
 export type CommerceLifecycleKind =
   | 'payment-auth' | 'cart' | 'cart-read' | 'order' | 'order-submit' | 'fulfillment' | 'return' | 'rebate' | 'loyalty' | 'batch';

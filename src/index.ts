@@ -1,6 +1,7 @@
 import { validScope, validConfig, turnScopeMatches, type TenantScope, type ProxyConfig, type EchoAction } from '../../tubot-sf-proxy/src/contracts';
 import {browserConfig,verifyBrowserTurn,transcriptText} from './browser-echo';
 import {echoParameters,validGuestId} from './echo-params';
+import {resolveSessionState} from './session-state';
 import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
 import { provisionCommerceFixtureAccess } from "./commerce-fixture-access";
 import { deleteOwnedOrderSummary } from "./delete-owned-order-summary";
@@ -97,6 +98,7 @@ import {
   computeETag,
   isNotModified,
 } from "./cache-helper";
+import { maybeRunRetention, purgeRetention } from "./retention";
 // NOTE: no `export *` here — workerd rejects non-function module exports at
 // boot (e.g. cache-helper's DEFAULT_CACHE_CONTROL string). Import helpers
 // from their source modules directly.
@@ -2679,6 +2681,12 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     if (!entries.ok) throw authFailure(502,"proxy_entries_unavailable","Conversation entries are unavailable.",true);
     const body:any = await responseJson(entries);
     return Array.isArray(body?.conversationEntries) && body.conversationEntries.some((entry:any)=>entry.identifier === messageId&&entry.sender?.role==='EndUser'&&(text===undefined||entry.messageText===transcriptText(text)));
+  }
+  async sessionState(scope: TenantScope, conversationId:string, signed?: SignedRpcEnvelope): Promise<import('../../tubot-sf-proxy/src/contracts').SessionHandoffState|null> {
+    await verifySignedRpcCall(this.env as AuthEnv, "sessionState", [scope, conversationId], signed);
+    if (typeof conversationId !== "string" || !/^[a-f0-9-]{36}$/i.test(conversationId)) throw authFailure(400,"invalid_proxy_entry","Invalid conversation entry.");
+    const row = await this.#connection(scope);
+    return resolveSessionState(path=>sfGet(this.env as AuthEnv,row,path,crypto.randomUUID()),API_VERSION,scope,conversationId);
   }
   async status(scope: TenantScope, requestId:string, signed?: SignedRpcEnvelope): Promise<{state:"pending"|"delivered"|"failed";errors?:string[]}> {
     await verifySignedRpcCall(this.env as AuthEnv, "status", [scope, requestId], signed);
@@ -6002,6 +6010,8 @@ export default {
     const requestId = incomingRequestId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(incomingRequestId)
       ? incomingRequestId.toLowerCase()
       : crypto.randomUUID();
+    // F15 piggyback: daily retention claim + waitUntil purge, never blocking.
+    void maybeRunRetention(env.DB, ctx);
     try { return await handle(request, env, requestId, ctx); }
     catch (cause) {
       const safe = cause instanceof SecurityError ? {status:cause.status,code:cause.code,message:cause.code,retryable:false} : cause instanceof AuthFailure ? cause.failure : {
@@ -6013,5 +6023,12 @@ export default {
       console.error(JSON.stringify({ requestId, error: safe.code, status: safe.status }));
       return failure(requestId, safe);
     }
+  },
+  // F15 dormant-ready cron entry: the account is at the Workers Free cron
+  // limit, so the live trigger is the fetch piggyback above; if cron capacity
+  // ever frees up, re-adding triggers.crons activates this unchanged.
+  async scheduled(controller: ScheduledController, env: AuthEnv): Promise<void> {
+    const summary = await purgeRetention(env.DB);
+    console.log(JSON.stringify({ msg: "f15_retention_purge", cron: controller.cron, ...summary }));
   },
 } satisfies ExportedHandler<AuthEnv>;

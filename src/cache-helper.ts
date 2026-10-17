@@ -290,6 +290,9 @@ export class UserDataCacheStore {
       user_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, org_id TEXT NOT NULL, team_id TEXT NOT NULL,
       data TEXT NOT NULL, etag TEXT, updated_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
     )`).run();
+    // F15: the retention purge predicate (expires_at range) must SEEK.
+    await this.db.prepare(`CREATE INDEX IF NOT EXISTS sf_user_data_cache_v2_expires_idx
+      ON sf_user_data_cache_v2(expires_at)`).run();
     UserDataCacheStore.ensured.add(this.db);
   }
 
