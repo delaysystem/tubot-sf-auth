@@ -2878,7 +2878,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         /^\/services\/data\/(?:v\d+(?:\.\d+)?\/)?tooling\/query\?/.test(item.path);
       const isVersionRoot = item?.method === "GET" && item.path === "/services/data/";
       const isSObjectMetadata = typeof item?.path === "string" && item.method === "GET" &&
-        /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/(?:[A-Za-z][A-Za-z0-9_]{0,127}\/describe)?$/.test(item.path);
+        /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/(?:[A-Za-z][A-Za-z0-9_]{0,127}\/describe\/?)?$/.test(item.path);
       const isQuickActionDefinition = typeof item?.path === "string" && item.method === "GET" &&
         /^\/services\/data\/v\d+(?:\.\d+)?\/(?:sobjects\/[A-Za-z][A-Za-z0-9_]{0,127}\/)?quickActions\/[A-Za-z][A-Za-z0-9_]{0,127}\/describe$/.test(item.path);
       const isCustomFieldMetadata = typeof item?.path === 'string' && item.method === 'GET' &&
@@ -2893,6 +2893,27 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         /^\/services\/data\/v\d+(?:\.\d+)?\/ssot\/machine-learning\/retrievers$/.test(item.path);
       const isPromptMetadata = typeof item?.path === "string" && item.method === "GET" &&
         /^\/services\/data\/v\d+(?:\.\d+)?\/einstein\/prompt-templates\/[A-Za-z][A-Za-z0-9_]{0,127}$/.test(item.path);
+      // Read-only single-row fetch by record ID (native standard actions:
+      // getDataForGrounding / queryRecords verification / summarize).
+      const isSObjectRow = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/[A-Za-z][A-Za-z0-9_]{0,127}\/[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(item.path);
+      // Read-only child relationship records of one parent row.
+      const isChildRelationship = typeof item?.path === "string" && item.method === "GET" &&
+        /^\/services\/data\/v\d+(?:\.\d+)?\/sobjects\/[A-Za-z][A-Za-z0-9_]{0,127}\/[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?\/[A-Za-z][A-Za-z0-9_]{0,127}$/.test(item.path);
+      // Tightly-shaped SOSL: one FIND literal (no operators/quotes/braces
+      // possible), single RETURNING object, Id-first field list.
+      let isSoslSearch = false;
+      if (typeof item?.path === "string" && item.method === "GET") {
+        const sosl = item.path.match(/^\/services\/data\/v\d+(?:\.\d+)?\/search\?q=(.*)$/);
+        if (sosl) {
+          try {
+            const soslQuery = decodeURIComponent(sosl[1]);
+            isSoslSearch =
+              /^FIND \{[A-Za-z0-9@._\- ]{1,100}\} IN ALL FIELDS RETURNING [A-Za-z][A-Za-z0-9_]{0,127}(\(Id(,\s*[A-Za-z][A-Za-z0-9_]*){0,20}\))?$/.test(soslQuery) &&
+              !/\b(AND|OR|NOT)\b/i.test(soslQuery);
+          } catch { isSoslSearch = false; }
+        }
+      }
       const isIdentityRoute = typeof item?.path === "string" && item.method === "GET" &&
         /^\/services\/data\/v\d+(?:\.\d+)?\/chatter\/users\/me$/.test(item.path);
       const isPromptGeneration = typeof item?.path === "string" && item.method === "POST" &&
@@ -2905,10 +2926,25 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       const objectQuery = typeof item?.path === "string" &&
         item.method === "GET" && item.path.match(/^\/services\/data\/v\d+(?:\.\d+)?\/query\?q=(.*)$/);
       let isTestRecordQuery = false;
+      let isNativeSelect = false;
       if (objectQuery) {
         try {
           const soql = decodeURIComponent(objectQuery[1]);
-          isTestRecordQuery = /^SELECT Id(?:, [A-Za-z][A-Za-z0-9_]{0,127}){1,59} FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 3$/i.test(soql) ||
+          // Native standard-action executor (searcher standard-native):
+          // record-ID prefix resolution. Exact emitted shape, tight.
+          const isPrefixLookup =
+            /^SELECT QualifiedApiName FROM EntityDefinition WHERE KeyPrefix='[A-Za-z0-9]{3}' LIMIT 5$/i.test(soql);
+          // Native QueryRecords: single read-only SELECT the executor
+          // already gated (no DML, FROM = resolved catalog object, LIMIT
+          // <= 50). The broker mirrors that gate structurally: strict
+          // charset, no second SELECT (no subqueries), no FOR UPDATE.
+          const nativeShape =
+            /^SELECT ([A-Za-z][A-Za-z0-9_., '()]{0,500}) FROM ([A-Za-z][A-Za-z0-9_]{0,127})( WHERE ([A-Za-z0-9_., =<>'%!()\-:@+]+))?( ORDER BY [A-Za-z][A-Za-z0-9_]{0,127}( (ASC|DESC))?)? LIMIT ([1-9]|[1-4][0-9]|50)$/i.test(soql);
+          isNativeSelect = nativeShape &&
+            !/\b(delete|update|insert|upsert|merge|undelete|for\s+update)\b/i.test(soql) &&
+            (soql.match(/\bselect\b/gi) ?? []).length <= 1;
+          isTestRecordQuery = isPrefixLookup || isNativeSelect ||
+            /^SELECT Id(?:, [A-Za-z][A-Za-z0-9_]{0,127}){1,59} FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 3$/i.test(soql) ||
             /^SELECT Id, Quantity FROM OrderItemSummary WHERE OrderSummaryId = '[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?' LIMIT 5$/i.test(soql) ||
             /^SELECT Reason FROM OrderItemSummaryChangeReason LIMIT 5$/i.test(soql) ||
             /^SELECT Id FROM [A-Za-z][A-Za-z0-9_]{0,127} LIMIT 1$/i.test(soql) ||
@@ -2937,7 +2973,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
           (item.jsonBody !== undefined && !promptBody && (!Array.isArray(item.jsonBody.inputs) || item.jsonBody.inputs.length < 1 ||
             item.jsonBody.inputs.length > 10 || !item.jsonBody.inputs.every(object))) ||
           (item.jsonBody !== undefined && item.method !== "POST") ||
-          !(isVersionRoot || isActionRoute || isToolingQuery || isTestRecordQuery || isSObjectMetadata || isCustomFieldMetadata || isQuickActionDefinition ||
+          !(isVersionRoot || isActionRoute || isToolingQuery || isTestRecordQuery || isSObjectMetadata || isSObjectRow || isChildRelationship || isSoslSearch || isCustomFieldMetadata || isQuickActionDefinition ||
             isRelatedListMetadata || isReportTypeCatalog || isDataSpaceCatalog || isRetrieverCatalog || isPromptMetadata || isIdentityRoute || (isPromptGeneration && promptBody)) ||
           ((isToolingQuery || isTestRecordQuery) && item.method !== "GET") ||
           /[\\#\u0000-\u001f\u007f]/.test(item.path) || item.path.includes("//") ||

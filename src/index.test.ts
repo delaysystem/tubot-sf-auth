@@ -238,16 +238,26 @@ test("scoped inspection permits bounded EntityDefinition discovery queries", asy
   expect(seen).toHaveLength(4);
   const evil = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%__kav' LIMIT 10; DELETE FROM Account");
-  const evilStem = "/services/data/v67.0/query?q=" + encodeURIComponent(
-    "SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%x%' OR 1=1 LIMIT 50");
+  const overLimit = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%x%' LIMIT 500");
   await expect(entrypoint.inspectSalesforce(
     { teamId: "team", orgId, channelId: "channel" },
     [{ method: "GET", path: evil }],
   )).rejects.toThrow("invalid_api_path");
   await expect(entrypoint.inspectSalesforce(
     { teamId: "team", orgId, channelId: "channel" },
-    [{ method: "GET", path: evilStem }],
+    [{ method: "GET", path: overLimit }],
   )).rejects.toThrow("invalid_api_path");
+  // Bounded-SELECT contract: a broad OR filter with LIMIT <= 50 is still a
+  // capped read (no stacking, no DML), so the native QueryRecords shape
+  // allows it; only unbounded/destructive shapes reject.
+  const broadOr = "/services/data/v67.0/query?q=" + encodeURIComponent(
+    "SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName LIKE '%x%' OR 1=1 LIMIT 50");
+  const broadResult = await entrypoint.inspectSalesforce(
+    { teamId: "team", orgId, channelId: "channel" },
+    [{ method: "GET", path: broadOr }],
+  );
+  expect(broadResult[0].status).toBe(200);
 });
 
 test("scoped inspection permits Organization timezone and NamedCredential discovery reads", async () => {
@@ -270,12 +280,13 @@ test("scoped inspection permits Organization timezone and NamedCredential discov
   expect(result.map(item => item.status)).toEqual([200, 200]);
   const over = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT DeveloperName, Endpoint FROM NamedCredential LIMIT 51");
+  // Bounded-SELECT contract: two capped fields are a bounded read now.
   const wide = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT Id, TimeZoneSidKey FROM Organization LIMIT 1");
   await expect(entrypoint.inspectSalesforce(ref,
     [{ method: "GET", path: over }])).rejects.toThrow("invalid_api_path");
-  await expect(entrypoint.inspectSalesforce(ref,
-    [{ method: "GET", path: wide }])).rejects.toThrow("invalid_api_path");
+  expect((await entrypoint.inspectSalesforce(ref,
+    [{ method: "GET", path: wide }]))[0].status).toBe(200);
   await expect(entrypoint.inspectSalesforce(ref,
     [{ method: "POST", path: tz }])).rejects.toThrow("invalid_api_path");
 });
@@ -299,13 +310,17 @@ test("scoped inspection permits swarm candidate and open-swarm exclusion reads",
   const result = await entrypoint.inspectSalesforce(ref,
     [{ method: "GET", path: candidates }, { method: "GET", path: active }]);
   expect(result.map(item => item.status)).toEqual([200, 200]);
+  // Bounded-SELECT contract: LIMIT 9 is a capped read now; the LIMIT 200
+  // shapes still reject unless they match the exact Swarm carve-out.
   const wide = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT Id FROM Account LIMIT 9");
+  expect((await entrypoint.inspectSalesforce(ref,
+    [{ method: "GET", path: wide }]))[0].status).toBe(200);
   const otherObject = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT RelatedRecordId FROM Case WHERE Status != 'Closed' LIMIT 200");
   const otherFilter = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT RelatedRecordId FROM Swarm LIMIT 200");
-  for (const path of [wide, otherObject, otherFilter]) {
+  for (const path of [otherObject, otherFilter]) {
     await expect(entrypoint.inspectSalesforce(ref,
       [{ method: "GET", path }])).rejects.toThrow("invalid_api_path");
   }
@@ -332,13 +347,15 @@ test("scoped inspection permits operator conversation resolution reads", async (
   expect(result.map(item => item.status)).toEqual([200, 200]);
   const noLimit = "/services/data/v67.0/query?q=" + encodeURIComponent(
     "SELECT Id FROM Conversation WHERE ConversationIdentifier = '34702549-48b7-4069-bfb0-220ef3997664'");
-  const injected = "/services/data/v67.0/query?q=" + encodeURIComponent(
-    "SELECT Id FROM Conversation WHERE ConversationIdentifier = 'x' OR Name LIKE '%25' LIMIT 1");
-  const otherField = "/services/data/v67.0/query?q=" + encodeURIComponent(
-    "SELECT Id, Body FROM MessagingSession WHERE ConversationId = '0dwg5000000xMcPAAU' LIMIT 1");
-  for (const path of [noLimit, injected, otherField]) {
-    await expect(entrypoint.inspectSalesforce(ref,
-      [{ method: "GET", path }])).rejects.toThrow("invalid_api_path");
+  await expect(entrypoint.inspectSalesforce(ref,
+    [{ method: "GET", path: noLimit }])).rejects.toThrow("invalid_api_path");
+  // Bounded-SELECT contract: capped reads with broader filters/fields are
+  // allowed now; only unbounded shapes reject.
+  for (const query of ["SELECT Id FROM Conversation WHERE ConversationIdentifier = 'x' OR Name LIKE '%25' LIMIT 1",
+    "SELECT Id, Body FROM MessagingSession WHERE ConversationId = '0dwg5000000xMcPAAU' LIMIT 1"]) {
+    const allowed = await entrypoint.inspectSalesforce(ref, [{ method: "GET",
+      path: "/services/data/v67.0/query?q=" + encodeURIComponent(query) }]);
+    expect(allowed[0].status).toBe(200);
   }
 });
 
@@ -381,6 +398,47 @@ test('scoped inspection permits only the read-only call-identity route', async (
   await expect(entrypoint.inspectSalesforce(ref, [{ method: 'GET', path: '/services/data/v67.0/chatter/users/005000000000001AAA' }])).rejects.toThrow('invalid_api_path');
 });
 
+test('scoped inspection permits read-only single-row fetch by record ID', async () => {
+  const path = '/services/data/v67.0/sobjects/Contact/003000000000001AAA';
+  mockSalesforce({ [path]: { Id: '003000000000001AAA', Name: 'Ada' } });
+  const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
+  const ref = { teamId: 'team', orgId, channelId: 'channel' };
+  expect((await entrypoint.inspectSalesforce(ref, [{ method: 'GET', path }]))[0].status).toBe(200);
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: 'POST', path }])).rejects.toThrow('invalid_api_path');
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: 'GET', path: '/services/data/v67.0/sobjects/Contact/short' }])).rejects.toThrow('invalid_api_path');
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: 'GET', path: '/services/data/v67.0/sobjects/Contact' }])).rejects.toThrow('invalid_api_path');
+});
+
+test('scoped inspection permits read-only child relationship reads', async () => {
+  const path = '/services/data/v67.0/sobjects/Contact/003000000000001AAA/Credits__r';
+  mockSalesforce({ [path]: { totalSize: 1, records: [{ Id: 'a06000000000001AAA' }] } });
+  const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
+  const ref = { teamId: 'team', orgId, channelId: 'channel' };
+  expect((await entrypoint.inspectSalesforce(ref, [{ method: 'GET', path }]))[0].status).toBe(200);
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: 'POST', path }])).rejects.toThrow('invalid_api_path');
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: 'GET', path: '/services/data/v67.0/sobjects/Contact/003000000000001AAA/Credits__r/extra' }])).rejects.toThrow('invalid_api_path');
+});
+
+test('scoped inspection permits tightly-shaped SOSL only', async () => {
+  const good = '/services/data/v67.0/search?q=' + encodeURIComponent('FIND {E2E40722345} IN ALL FIELDS RETURNING Contact(Id, Name)');
+  mockSalesforce({ ['/services/data/v67.0/search']: { searchRecords: [] } });
+  const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
+  const ref = { teamId: 'team', orgId, channelId: 'channel' };
+  expect((await entrypoint.inspectSalesforce(ref, [{ method: 'GET', path: good }]))[0].status).toBe(200);
+  const bare = '/services/data/v67.0/search?q=' + encodeURIComponent('FIND {Rose} IN ALL FIELDS RETURNING Contact');
+  expect((await entrypoint.inspectSalesforce(ref, [{ method: 'GET', path: bare }]))[0].status).toBe(200);
+  const bad = [
+    '/services/data/v67.0/search?q=' + encodeURIComponent('FIND {a OR b} IN ALL FIELDS RETURNING Contact(Id)'),
+    '/services/data/v67.0/search?q=' + encodeURIComponent('FIND {y} IN ALL FIELDS RETURNING Contact(Id) LIMIT 5'),
+    '/services/data/v67.0/search?q=' + encodeURIComponent('FIND {z"); DELETE} IN ALL FIELDS RETURNING Contact(Id)'),
+    '/services/data/v67.0/search?q=' + encodeURIComponent('FIND NOTHING'),
+  ];
+  for (const path of bad) {
+    await expect(entrypoint.inspectSalesforce(ref, [{ method: 'GET', path }])).rejects.toThrow('invalid_api_path');
+  }
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: 'POST', path: good }])).rejects.toThrow('invalid_api_path');
+});
+
 test("scoped action inspection allows the read-only REST API version root", async () => {
   const versions = [{ version: "67.0", url: "/services/data/v67.0" }];
   const seen = mockSalesforce({ "/services/data/": versions });
@@ -399,13 +457,19 @@ test("scoped action inspection allows the read-only REST API version root", asyn
   expect(seen).toHaveLength(1);
 });
 
-test("scoped Skill inspection permits one metadata record and rejects broader queries", async () => {
+test("scoped Skill inspection permits one metadata record and rejects unbounded queries", async () => {
   mockSalesforce({ "/services/data/v67.0/query": { records: [] } });
   const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
   const ref = { teamId: "team", orgId, channelId: "channel" };
   const result = await entrypoint.inspectSalesforce(ref, [{ method: "GET", path: `/services/data/v67.0/query?q=${encodeURIComponent("SELECT Id, DeveloperName, MasterLabel FROM Skill LIMIT 1")}` }]);
   expect(result[0].status).toBe(200);
-  for (const query of ["SELECT Id, DeveloperName, MasterLabel FROM Skill LIMIT 2", "SELECT Id, DeveloperName, MasterLabel, CreatedById FROM Skill LIMIT 1", "SELECT Id, DeveloperName, MasterLabel FROM User LIMIT 1"])
+  // Bounded-SELECT contract: capped field/LIMIT/object variants are bounded
+  // reads now; only unbounded/destructive shapes reject.
+  for (const query of ["SELECT Id, DeveloperName, MasterLabel FROM Skill LIMIT 2", "SELECT Id, DeveloperName, MasterLabel, CreatedById FROM Skill LIMIT 1", "SELECT Id, DeveloperName, MasterLabel FROM User LIMIT 1"]) {
+    const allowed = await entrypoint.inspectSalesforce(ref, [{ method: "GET", path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }]);
+    expect(allowed[0].status).toBe(200);
+  }
+  for (const query of ["SELECT Id, DeveloperName, MasterLabel FROM Skill LIMIT 99", "SELECT Id, DeveloperName, MasterLabel FROM Skill", "SELECT Id, (SELECT Id FROM Skills) FROM User LIMIT 1"])
     await expect(entrypoint.inspectSalesforce(ref, [{ method: "GET", path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }])).rejects.toThrow();
 });
 test("scoped inspection permits FlowDefinitionView and ACTIVE-status samples, rejects broader shapes", async () => {
@@ -420,13 +484,49 @@ test("scoped inspection permits FlowDefinitionView and ACTIVE-status samples, re
       path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }]);
     expect(result[0].status).toBe(200);
   }
+  // Bounded-SELECT contract: capped variants are bounded reads now.
+  for (const query of ["SELECT Id FROM MarketSegment WHERE SegmentStatus='ACTIVE' LIMIT 6",
+    "SELECT Id FROM MarketSegment WHERE SegmentStatus='INACTIVE' LIMIT 1",
+    "SELECT Id,Name FROM MarketSegment WHERE SegmentStatus='ACTIVE' LIMIT 1"]) {
+    const allowed = await entrypoint.inspectSalesforce(ref, [{ method: "GET",
+      path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }]);
+    expect(allowed[0].status).toBe(200);
+  }
   for (const query of ["SELECT DurableId,ApiName,Label FROM FlowDefinitionView WHERE ApiName IN ('a','b','c')",
     "SELECT DurableId,ApiName,Label FROM FlowDefinitionView",
-    "SELECT Id FROM MarketSegment WHERE SegmentStatus='ACTIVE' LIMIT 6",
-    "SELECT Id FROM MarketSegment WHERE SegmentStatus='INACTIVE' LIMIT 1",
-    "SELECT Id,Name FROM MarketSegment WHERE SegmentStatus='ACTIVE' LIMIT 1"])
+    "SELECT Id FROM MarketSegment WHERE SegmentStatus='ACTIVE' LIMIT 500"])
     await expect(entrypoint.inspectSalesforce(ref, [{ method: "GET",
       path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }])).rejects.toThrow();
+});
+test("scoped inspection permits native standard-action shapes, rejects unbounded SELECTs", async () => {
+  mockSalesforce({ "/services/data/v67.0/query": { records: [] },
+    "/services/data/v67.0/sobjects/Contact/describe/": { fields: [] } });
+  const entrypoint = new TubotSfAuthEntrypoint(null, await fixture());
+  const ref = { teamId: "team", orgId, channelId: "channel" };
+  for (const query of ["SELECT QualifiedApiName FROM EntityDefinition WHERE KeyPrefix='003' LIMIT 5",
+    "SELECT QualifiedApiName FROM EntityDefinition WHERE KeyPrefix='0034' LIMIT 5",
+    "SELECT Id, Name FROM Contact WHERE Email = 'a@example.invalid' LIMIT 50",
+    "SELECT Id FROM Contact WHERE Name LIKE '%Rose%' ORDER BY Name DESC LIMIT 10",
+    "SELECT Id, Membership__c FROM Contact WHERE Membership__c IN ('E2E40722345') LIMIT 5",
+    "SELECT Id FROM Contact LIMIT 50"]) {
+    const result = await entrypoint.inspectSalesforce(ref, [{ method: "GET",
+      path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }]);
+    expect(result[0].status).toBe(200);
+  }
+  const slash = await entrypoint.inspectSalesforce(ref, [{ method: "GET",
+    path: "/services/data/v67.0/sobjects/Contact/describe/" }]);
+  expect(slash[0].status).toBe(200);
+  for (const query of ["SELECT Id FROM Contact WHERE Name='x' LIMIT 51",
+    "SELECT Id FROM Contact WHERE Name='x' LIMIT 200",
+    "SELECT Id, (SELECT Id FROM Cases) FROM Contact LIMIT 5",
+    "SELECT Id FROM Contact WHERE Name='x'; DELETE FROM Contact",
+    "SELECT Id FROM Contact WHERE Name='a FOR UPDATE b' LIMIT 5",
+    "SELECT * FROM Contact LIMIT 5",
+    "SELECT Id FROM Contact WHERE Name='x' LIMIT 5 FOR UPDATE"])
+    await expect(entrypoint.inspectSalesforce(ref, [{ method: "GET",
+      path: `/services/data/v67.0/query?q=${encodeURIComponent(query)}` }])).rejects.toThrow("invalid_api_path");
+  await expect(entrypoint.inspectSalesforce(ref, [{ method: "POST",
+    path: `/services/data/v67.0/query?q=${encodeURIComponent("SELECT Id FROM Contact LIMIT 1")}` }])).rejects.toThrow("invalid_api_path");
 });
 test("scoped action inspection permits only read-only single-record sample queries", async () => {
   const seen = mockSalesforce({
@@ -455,8 +555,18 @@ test("scoped action inspection permits only read-only single-record sample queri
   }, {
     method: "GET",
     path: "/services/data/v67.0/query?q=SELECT%20Reason%20FROM%20OrderItemSummaryChangeReason%20LIMIT%205",
+  }, {
+    // Bounded-SELECT contract: capped field/filter variants are bounded
+    // reads now, folded into the same batch.
+    method: "GET",
+    path: "/services/data/v67.0/query?q=SELECT%20Name%20FROM%20Contact%20LIMIT%201",
+  }, {
+    method: "GET",
+    path: "/services/data/v67.0/query?q=SELECT%20Id%20FROM%20MessagingSession%20WHERE%20ConversationId%20!%3D%20null%20OR%20Id%20!%3D%20null%20LIMIT%201",
   }]);
   expect(result).toEqual([
+    { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
+    { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
     { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
     { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
     { status: 200, body: { records: [{ Id: "500000000000001AAA" }] } },
@@ -470,7 +580,7 @@ test("scoped action inspection permits only read-only single-record sample queri
   try {
     await entrypoint.inspectSalesforce(ref, [{
       method: "GET",
-      path: "/services/data/v67.0/query?q=SELECT%20Name%20FROM%20Contact%20LIMIT%201",
+      path: "/services/data/v67.0/query?q=SELECT%20Name%20FROM%20Contact%20LIMIT%2099",
     }]);
   } catch { rejected = true; }
   expect(rejected).toBe(true);
@@ -478,12 +588,12 @@ test("scoped action inspection permits only read-only single-record sample queri
   try {
     await entrypoint.inspectSalesforce(ref, [{
       method: "GET",
-      path: "/services/data/v67.0/query?q=SELECT%20Id%20FROM%20MessagingSession%20WHERE%20ConversationId%20!%3D%20null%20OR%20Id%20!%3D%20null%20LIMIT%201",
+      path: "/services/data/v67.0/query?q=SELECT%20Id%2C%20(SELECT%20Id%20FROM%20Cases)%20FROM%20Contact%20LIMIT%201",
     }]);
   } catch { rejected = true; }
   expect(rejected).toBe(true);
   expect(seen.filter((s) => s.url.pathname === "/services/data/v67.0/composite/batch")).toHaveLength(1);
-  expect(seen).toHaveLength(8);
+  expect(seen).toHaveLength(10);
 });
 
 test("temporary speech test creates, invokes, and deletes only its tenant-scoped WAV fixture", async () => {
