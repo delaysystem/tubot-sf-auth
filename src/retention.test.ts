@@ -20,10 +20,11 @@ import { UserDataCacheStore } from "./cache-helper";
 const MIGRATION_0005_URL = new URL("../migrations/0005_agent_snapshots.sql", import.meta.url);
 const MIGRATION_0012_URL = new URL("../migrations/0012_retention_purge_index.sql", import.meta.url);
 const MIGRATION_0013_URL = new URL("../migrations/0013_retention_guard.sql", import.meta.url);
+const MIGRATION_0014_URL = new URL("../migrations/0014_echo_submit_claims.sql", import.meta.url);
 
 const NOW = Date.now();
 const DAY_MS = 24 * 3600 * 1000;
-const { jobCutoffMs, cacheCutoffSec } = retentionCutoffs(NOW);
+const { jobCutoffMs, cacheCutoffSec, claimCutoffMs } = retentionCutoffs(NOW);
 
 function shim(sqlite: Database): RetentionDb {
   const wrap = (sql: string, args: unknown[]) => {
@@ -59,6 +60,7 @@ async function seedDb(): Promise<{ sqlite: Database; db: RetentionDb }> {
   const sqlite = new Database(":memory:");
   sqlite.exec(await Bun.file(MIGRATION_0005_URL).text());
   sqlite.exec(await Bun.file(MIGRATION_0012_URL).text());
+  sqlite.exec(await Bun.file(MIGRATION_0014_URL).text());
   const db = shim(sqlite);
   // Real ensureTable path (dummy tenant scope): creates the cache table AND
   // the F15 expires_at index.
@@ -121,18 +123,25 @@ async function seedDb(): Promise<{ sqlite: Database; db: RetentionDb }> {
   put("u4-edge", cacheCutoffSec); // boundary: expires_at == cutoff is purged
   put("u5-never", 0); // sentinel: kept
 
+  const claim = sqlite.prepare(
+    "INSERT INTO echo_submit_claims(request_key, claimant, request_id, created_at, updated_at) VALUES(?,?,?,?,?)",
+  );
+  claim.run("old-claim", "c1", "1sr000000000001AAA", NOW - 8 * DAY_MS, NOW - 8 * DAY_MS); // purged
+  claim.run("fresh-claim", "c2", "1sr000000000002AAA", NOW - 1 * DAY_MS, NOW - 1 * DAY_MS); // kept
+  claim.run("edge-claim", "c3", null, claimCutoffMs, claimCutoffMs); // boundary: == cutoff kept
+
   return { sqlite, db };
 }
 
 test("F15: dry-run reports the exact purge backlog", async () => {
   const { db } = await seedDb();
-  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 4, files: 4, chunks: 6, userCache: 2 });
+  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 4, files: 4, chunks: 6, userCache: 2, claims: 1 });
 });
 
 test("F15: purge deletes terminal-old jobs with files+chunks and stale cache, keeps the rest", async () => {
   const { sqlite, db } = await seedDb();
   const summary = await purgeRetention(db, NOW);
-  expect(summary).toEqual({ jobs: 4, files: 4, chunks: 6, userCache: 2, batches: 2, capped: false });
+  expect(summary).toEqual({ jobs: 4, files: 4, chunks: 6, userCache: 2, claims: 1, batches: 2, capped: false });
 
   const jobs = (sqlite.query("SELECT id,status FROM sf_agent_snapshot_job ORDER BY id").all() as Array<{ id: string; status: string }>).map((r) => r.id);
   expect(jobs).toEqual([
@@ -160,8 +169,8 @@ test("F15: purge deletes terminal-old jobs with files+chunks and stale cache, ke
 test("F15: purge is idempotent — re-run deletes zero rows", async () => {
   const { db } = await seedDb();
   await purgeRetention(db, NOW);
-  expect(await purgeRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, batches: 1, capped: false });
-  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0 });
+  expect(await purgeRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, claims: 0, batches: 1, capped: false });
+  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, claims: 0 });
 });
 
 test("F15: no orphan files/chunks before or after the purge", async () => {
@@ -206,8 +215,8 @@ test("F15: ensureTable creates the cache expires index and the cache purge seeks
 
 test("F15: dry-run and purge on a fresh DB (no tables) report zeros without throwing", async () => {
   const db = shim(new Database(":memory:"));
-  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0 });
-  expect(await purgeRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, batches: 1, capped: false });
+  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, claims: 0 });
+  expect(await purgeRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, claims: 0, batches: 1, capped: false });
 });
 
 test("F15: guard skips without DB/ctx/waitUntil and never throws", async () => {
@@ -227,7 +236,7 @@ test("F15: guard runs the purge in waitUntil on a stale claim and updates the gu
   expect(await maybeRunRetention(db, ctx, NOW)).toBe(true);
   expect(seen).toHaveLength(1);
   await seen[0];
-  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0 });
+  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 0, files: 0, chunks: 0, userCache: 0, claims: 0 });
   expect((sqlite.query("SELECT last_run_at FROM f15_retention_guard WHERE key='sf_auth_daily_v1'").get() as { last_run_at: number }).last_run_at).toBe(NOW);
 });
 
@@ -240,7 +249,7 @@ test("F15: guard skips when the daily run is fresh (claim race lost)", async () 
   expect(await maybeRunRetention(db, { waitUntil(p: Promise<unknown>) { seen.push(p); } }, NOW)).toBe(false);
   expect(seen).toHaveLength(0);
   // Nothing purged.
-  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 4, files: 4, chunks: 6, userCache: 2 });
+  expect(await dryRunRetention(db, NOW)).toEqual({ jobs: 4, files: 4, chunks: 6, userCache: 2, claims: 1 });
 });
 
 test("F15: guard throttles D1 checks per isolate (second call is zero-I/O)", async () => {

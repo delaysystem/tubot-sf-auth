@@ -100,6 +100,7 @@ import {
   isNotModified,
 } from "./cache-helper";
 import { maybeRunRetention, purgeRetention } from "./retention";
+import { claimEchoSubmit, completeEchoSubmit, releaseEchoSubmit } from "./echo-submit-claim";
 // NOTE: no `export *` here — workerd rejects non-function module exports at
 // boot (e.g. cache-helper's DEFAULT_CACHE_CONTROL string). Import helpers
 // from their source modules directly.
@@ -2678,6 +2679,13 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     const sessions: any = lookup?.ok ? await responseJson(lookup) : null;
     const recipient = passthrough ?? sessions?.records?.[0]?.MessagingEndUserId;
     if (!validGuestId(recipient)) throw authFailure(404, "proxy_session_pending", "The channel session is not available yet.", true);
+    // Submit idempotency: the proxy's 25s inline race orphan + alarm (or an
+    // adopted echo_inline retry) invoke echo() twice for one visitor message.
+    // Same requestKey returns the first invocation's requestId; only the
+    // claim owner POSTs. Claim-store errors fail open (send anyway).
+    const claim = await claimEchoSubmit(env.DB, turn.requestKey);
+    if (!claim.owned) return { requestId: claim.requestId };
+    const tracked = !('failOpen' in claim);
     const m = action.inputMapping;
     // The send action resolves messageDefinitionName in the FLOW's namespace
     // context: a packaged flow rejects the unpackaged twin (INVALID_INPUT)
@@ -2705,8 +2713,10 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
       console.error(JSON.stringify({error:"salesforce_notify_rejected",route:String(resolved.route).slice(0,160),
         definition:used,status:response.status,isSuccess:result?.[0]?.isSuccess === true,
         errorCode:String(result?.[0]?.errorCode ?? result?.[0]?.errors?.[0]?.errorCode ?? "").slice(0,80)}));
+      if (tracked) await releaseEchoSubmit(env.DB, turn.requestKey, claim.claimant);
       throw authFailure(502, "proxy_echo_rejected", "Salesforce did not confirm the notification request.", true);
     }
+    if (tracked) await completeEchoSubmit(env.DB, turn.requestKey, claim.claimant, output[action.outputMapping.requestId]);
     return {requestId:output[action.outputMapping.requestId]};
   }
   async confirmInbound(scope:TenantScope, conversationId:string, messageId:string,text?:string, signed?: SignedRpcEnvelope): Promise<boolean> {

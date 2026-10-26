@@ -24,14 +24,19 @@
  * - User-data cache rows expired for over 1d grace (expires_at is SECONDS
  *   here). Expired rows are already invisible to every reader (get() returns
  *   null), so deletion reclaims storage only; the grace covers skew/debug.
+ * - Echo submit claims older than 7d by updated_at. Claims dedupe the
+ *   proxy's inline-orphan + alarm double-submit (same requestKey); the alarm
+ *   redelivery deadline is 24h, so 7d is conservative.
  *
  * Boundary semantics (pinned by tests): jobs use strict `updated_at < cutoff`
  * ("older than 30 days"); cache rows use `expires_at <= cutoff` ("expired at
- * least grace ago", matching the readers' own `expires_at <= now` check).
+ * least grace ago", matching the readers' own `expires_at <= now` check);
+ * claims use strict `updated_at < cutoff` like jobs.
  */
 
 export const SNAPSHOT_JOB_RETENTION_MS = 30 * 24 * 3600 * 1000;
 export const USER_CACHE_PURGE_GRACE_SEC = 24 * 3600;
+export const ECHO_CLAIM_RETENTION_MS = 7 * 24 * 3600 * 1000;
 export const RETENTION_BATCH_SIZE = 500;
 export const RETENTION_MAX_BATCHES = 50;
 
@@ -57,6 +62,8 @@ export const SNAPSHOT_RETENTION_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS sf_agent_snapshot_job_retention_idx ON sf_agent_snapshot_job(status, updated_at)";
 export const USER_CACHE_EXPIRES_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS sf_user_data_cache_v2_expires_idx ON sf_user_data_cache_v2(expires_at)";
+export const ECHO_CLAIM_UPDATED_INDEX_SQL =
+  "CREATE INDEX IF NOT EXISTS idx_echo_submit_claims_updated ON echo_submit_claims(updated_at)";
 
 /** Dry-run counts: the exact purge predicates, no LIMIT (full backlog). */
 export const DRY_RUN_JOBS_SQL =
@@ -67,6 +74,8 @@ export const DRY_RUN_CHUNKS_SQL =
   `SELECT COUNT(*) AS n FROM sf_agent_snapshot_chunk WHERE (team_id,org_id,channel_id,job_id) IN (${TERMINAL_JOB_KEY_SELECT})`;
 export const DRY_RUN_USER_CACHE_SQL =
   "SELECT COUNT(*) AS n FROM sf_user_data_cache_v2 WHERE expires_at > 0 AND expires_at <= ?";
+export const DRY_RUN_ECHO_CLAIMS_SQL =
+  "SELECT COUNT(*) AS n FROM echo_submit_claims WHERE updated_at < ?";
 
 /** Batched deletes. Children (chunks, files) select the same terminal-old job
  * batch as the job delete, so one iteration removes whole jobs; D1 has no
@@ -80,12 +89,15 @@ export const PURGE_JOBS_SQL =
   `DELETE FROM sf_agent_snapshot_job WHERE rowid IN (SELECT rowid FROM sf_agent_snapshot_job WHERE ${TERMINAL_JOB_PREDICATE} LIMIT ${RETENTION_BATCH_SIZE})`;
 export const PURGE_USER_CACHE_SQL =
   `DELETE FROM sf_user_data_cache_v2 WHERE rowid IN (SELECT rowid FROM sf_user_data_cache_v2 WHERE expires_at > 0 AND expires_at <= ? LIMIT ${RETENTION_BATCH_SIZE})`;
+export const PURGE_ECHO_CLAIMS_SQL =
+  `DELETE FROM echo_submit_claims WHERE rowid IN (SELECT rowid FROM echo_submit_claims WHERE updated_at < ? LIMIT ${RETENTION_BATCH_SIZE})`;
 
 export interface RetentionCounts {
   jobs: number;
   files: number;
   chunks: number;
   userCache: number;
+  claims: number;
 }
 
 export interface PurgeSummary extends RetentionCounts {
@@ -116,37 +128,39 @@ async function changes(promise: Promise<{ meta?: { changes?: number } }>): Promi
   }
 }
 
-export function retentionCutoffs(nowMs: number = Date.now()): { jobCutoffMs: number; cacheCutoffSec: number } {
+export function retentionCutoffs(nowMs: number = Date.now()): { jobCutoffMs: number; cacheCutoffSec: number; claimCutoffMs: number } {
   return {
     jobCutoffMs: nowMs - SNAPSHOT_JOB_RETENTION_MS,
     cacheCutoffSec: Math.floor(nowMs / 1000) - USER_CACHE_PURGE_GRACE_SEC,
+    claimCutoffMs: nowMs - ECHO_CLAIM_RETENTION_MS,
   };
 }
 
 export async function dryRunRetention(db: RetentionDb, nowMs: number = Date.now()): Promise<RetentionCounts> {
-  const { jobCutoffMs, cacheCutoffSec } = retentionCutoffs(nowMs);
-  const [jobs, files, chunks, userCache] = await Promise.all([
+  const { jobCutoffMs, cacheCutoffSec, claimCutoffMs } = retentionCutoffs(nowMs);
+  const [jobs, files, chunks, userCache, claims] = await Promise.all([
     count(db, DRY_RUN_JOBS_SQL, jobCutoffMs),
     count(db, DRY_RUN_FILES_SQL, jobCutoffMs),
     count(db, DRY_RUN_CHUNKS_SQL, jobCutoffMs),
     count(db, DRY_RUN_USER_CACHE_SQL, cacheCutoffSec),
+    count(db, DRY_RUN_ECHO_CLAIMS_SQL, claimCutoffMs),
   ]);
-  return { jobs, files, chunks, userCache };
+  return { jobs, files, chunks, userCache, claims };
 }
 
 /** Batched purge: one atomic (chunks, files, jobs) batch plus one user-cache
  * delete per iteration until an iteration deletes nothing or the batch cap is
  * hit. Idempotent: a re-run deletes zero rows. */
 export async function purgeRetention(db: RetentionDb, nowMs: number = Date.now()): Promise<PurgeSummary> {
-  const { jobCutoffMs, cacheCutoffSec } = retentionCutoffs(nowMs);
-  for (const ddl of [SNAPSHOT_RETENTION_INDEX_SQL, USER_CACHE_EXPIRES_INDEX_SQL]) {
+  const { jobCutoffMs, cacheCutoffSec, claimCutoffMs } = retentionCutoffs(nowMs);
+  for (const ddl of [SNAPSHOT_RETENTION_INDEX_SQL, USER_CACHE_EXPIRES_INDEX_SQL, ECHO_CLAIM_UPDATED_INDEX_SQL]) {
     try {
       await db.prepare(ddl).run();
     } catch (error) {
       if (!isMissingTable(error)) throw error;
     }
   }
-  const total: RetentionCounts = { jobs: 0, files: 0, chunks: 0, userCache: 0 };
+  const total: RetentionCounts = { jobs: 0, files: 0, chunks: 0, userCache: 0, claims: 0 };
   let batches = 0;
   let capped = false;
   for (;;) {
@@ -165,11 +179,13 @@ export async function purgeRetention(db: RetentionDb, nowMs: number = Date.now()
       if (!isMissingTable(error)) throw error;
     }
     const cache = await changes(db.prepare(PURGE_USER_CACHE_SQL).bind(cacheCutoffSec).run());
+    const claims = await changes(db.prepare(PURGE_ECHO_CLAIMS_SQL).bind(claimCutoffMs).run());
     total.jobs += jobs;
     total.files += files;
     total.chunks += chunks;
     total.userCache += cache;
-    if (jobs + files + chunks + cache === 0) break;
+    total.claims += claims;
+    if (jobs + files + chunks + cache + claims === 0) break;
     if (batches >= RETENTION_MAX_BATCHES) {
       capped = true;
       break;

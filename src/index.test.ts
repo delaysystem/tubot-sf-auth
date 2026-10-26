@@ -2943,6 +2943,69 @@ test("broker echo falls back to the session query without a passthrough recipien
   expect(JSON.parse(submit?.body ?? "{}").inputs[0].recipients).toEqual(["0PAxx0000000001AAA"]);
 });
 
+// Duplicate-submit guard: the 25s inline race orphan + alarm redelivery (or
+// an adopted echo_inline retry) invoke echo() twice for one visitor message.
+// Same requestKey must POST to Salesforce exactly once; the second call
+// returns the first call's requestId without posting.
+test("broker echo submits once per requestKey across duplicate invocations", async () => {
+  const seen = mockSalesforce(echoSubmitRoutes());
+  const env: any = await fixture();
+  // Stateful echo_submit_claims over the fixture stub: same SQL contract as D1
+  // (INSERT OR IGNORE + SELECT read-back + conditional UPDATE/DELETE).
+  const claims = new Map<string, { claimant: string; request_id: string | null }>();
+  const basePrepare = env.DB.prepare.bind(env.DB);
+  env.DB = {
+    prepare(sql: string) {
+      if (!sql.includes("echo_submit_claims")) return basePrepare(sql);
+      return { bind(...args: unknown[]) { return {
+        async run() {
+          if (sql.startsWith("INSERT")) {
+            const [key, claimant] = args as string[];
+            if (claims.has(key)) return { success: true, meta: { changes: 0 } };
+            claims.set(key, { claimant, request_id: null });
+            return { success: true, meta: { changes: 1 } };
+          }
+          if (sql.startsWith("DELETE")) {
+            const [key, claimant] = args as string[];
+            if (claims.get(key)?.claimant === claimant) claims.delete(key);
+            return { success: true };
+          }
+          if (sql.includes("SET request_id")) {
+            const [rid, , key, claimant] = args as string[];
+            const row = claims.get(key);
+            if (row && row.claimant === claimant) row.request_id = rid;
+            return { success: true };
+          }
+          if (sql.includes("SET claimant")) {
+            const [me, , key, other] = args as string[];
+            const row = claims.get(key);
+            if (row && row.request_id === null && row.claimant === other) {
+              row.claimant = me;
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true, meta: { changes: 0 } };
+          }
+          return { success: true };
+        },
+        async first() {
+          const key = args[0] as string;
+          const row = claims.get(key);
+          return row ? { claimant: row.claimant, request_id: row.request_id } : null;
+        },
+      }; } };
+    },
+  };
+  const broker = new MessagingProxyBroker(null, env);
+  const turn = {
+    conversationId: "55555555-5555-4555-8555-555555555555", text: "hi", requestKey: "d".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId, recipient: "0PAxx0000000001AAA",
+  };
+  await expect(broker.echo(mobileScope, echoFlowAction, turn)).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  await expect(broker.echo(mobileScope, echoFlowAction, turn)).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  const posts = seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
+  expect(posts).toHaveLength(1);
+});
+
 // resolve-channel semantics: getTokenForChannel without tenant scope resolves via
 // `channel_id = ? OR substr(channel_id, 1, 15) = ?` (Salesforce 15/18-char ids).
 // These tests lock the resolution outcome; index effectiveness is proven by replay.
