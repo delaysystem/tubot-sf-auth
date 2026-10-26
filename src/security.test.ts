@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import worker, { TubotSfAuthEntrypoint } from './index';
+import worker, { TubotSfAuthEntrypoint, __resetPanelCredentialCacheForTests } from './index';
 import { UserDataCacheStore } from './cache-helper';
 import { tenantKey, scopedTags, readJsonBounded, type TenantScope } from './request-security';
 import { repairPromptContext } from './prompt-context';
@@ -10,6 +10,7 @@ import { retrieveAgentScriptsBatch } from './agent-script';
 const databases: Database[] = [];
 afterEach(() => {
 	for (const db of databases.splice(0)) db.close();
+	__resetPanelCredentialCacheForTests();
 });
 const secret = 'audit-channel-secret-'.repeat(3);
 const a = { teamId: 'tenant-A', orgId: '00D000000000001AAA', channelId: 'channel-A', channelSecret: secret };

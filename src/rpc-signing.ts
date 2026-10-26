@@ -257,9 +257,24 @@ export async function verifyPerOrgEnvelopeSignature(
   throw new RpcAuthError(401, "rpc_unauthorized");
 }
 
+/** Minimum request-time advance between expired-nonce purges. The purge is
+ * pure garbage collection (single-use is enforced by INSERT OR IGNORE), so
+ * every RPC claim runs it at most once per interval instead of once per
+ * call: 2 D1 writes per RPC become 1 plus an amortized purge. A backwards
+ * clock still purges (monotonic clocks never go backwards in production). */
+const NONCE_PURGE_INTERVAL_SECONDS = 60;
+let lastNoncePurgeSec = Number.NEGATIVE_INFINITY;
+
+/** Purges expired nonces at most once per interval; safe to call per claim. */
+export async function maybePurgeRpcNonces(db: D1Database, nowSec: number): Promise<void> {
+  if (nowSec >= lastNoncePurgeSec && nowSec - lastNoncePurgeSec < NONCE_PURGE_INTERVAL_SECONDS) return;
+  lastNoncePurgeSec = nowSec;
+  await db.prepare("DELETE FROM salesforce_self_oauth_internal_nonce WHERE expires_at <= ?").bind(nowSec).run();
+}
+
 /** D1 single-use nonce claim; throws 401 when the nonce was already used. */
 export async function claimRpcNonce(db: D1Database, nonce: string, nowSec: number): Promise<void> {
-  await db.prepare("DELETE FROM salesforce_self_oauth_internal_nonce WHERE expires_at <= ?").bind(nowSec).run();
+  await maybePurgeRpcNonces(db, nowSec);
   const nonceHash = bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(nonce))));
   const inserted = await db.prepare(`INSERT OR IGNORE INTO salesforce_self_oauth_internal_nonce
     (nonce_hash, expires_at) VALUES (?, ?)`)

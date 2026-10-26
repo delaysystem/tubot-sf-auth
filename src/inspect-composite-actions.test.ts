@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { TubotSfAuthEntrypoint } from "./index";
+import { TubotSfAuthEntrypoint, __resetPanelCredentialCacheForTests } from "./index";
 
 // Equivalence + batching tests for composite folding of POST invocable-action
 // invocations (quotaburn Q2). Transport is fully stubbed: the mock records
@@ -7,7 +7,7 @@ import { TubotSfAuthEntrypoint } from "./index";
 // and the exact round-trip count.
 
 const originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; });
+afterEach(() => { globalThis.fetch = originalFetch; __resetPanelCredentialCacheForTests(); });
 
 const orgId = "00D000000000001AAA";
 const userId = "005000000000001AAA";

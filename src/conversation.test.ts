@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   TubotSfAuthEntrypoint,
+  __resetPanelCredentialCacheForTests,
   type AuthEnv,
   type Credential,
   type UserConversationHistory,
@@ -10,6 +11,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  __resetPanelCredentialCacheForTests();
 });
 
 const orgId = "00D000000000001AAA";

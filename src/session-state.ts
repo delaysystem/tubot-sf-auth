@@ -22,6 +22,56 @@ async function query(read:Read,version:string,soql:string,code:string):Promise<a
  return Array.isArray(body?.records)?body.records:[];
 }
 
+// MessagingSession describe cache: the schema only feeds handoff-field
+// discovery, so one entry per org+version with a short TTL cuts the
+// per-turn describe GET without pinning schema evolution. Keyed by org
+// because namespaced handoff twins differ per org; failures are never
+// cached, so a describe outage still throws the same codes every call.
+// In-flight calls share one GET so a cold burst never stampedes.
+// Partitioned by the active fetch transport: a cached describe is only
+// valid for the backend that served it. The platform transport never
+// changes inside a worker isolate, so in production this behaves as a
+// plain per-org cache; a swapped transport starts cold instead of
+// risking a schema from another backend.
+const DESCRIBE_TTL_MS=5*60*1000;
+const DESCRIBE_CACHE_MAX=200;
+const noTransport={};
+function transportOf():object{
+ try{const f=(globalThis as any)?.fetch;return typeof f==='function'?f:noTransport;}catch{return noTransport;}
+}
+const describeCache=new WeakMap<object,Map<string,{schema:any;expires:number}>>();
+const describeInflight=new WeakMap<object,Map<string,Promise<any>>>();
+function partition<T>(store:WeakMap<object,Map<string,T>>,transport:object):Map<string,T>{
+ let m=store.get(transport);
+ if(!m){m=new Map();store.set(transport,m);}
+ return m;
+}
+async function getSchema(read:Read,version:string,orgId:string):Promise<any>{
+ const transport=transportOf();
+ const cache=partition(describeCache,transport);
+ const key=`${version}\n${orgId}`;
+ const hit=cache.get(key);
+ if(hit&&hit.expires>Date.now())return hit.schema;
+ const flying=partition(describeInflight,transport);
+ const inflight=flying.get(key);
+ if(inflight)return inflight;
+ const pending=(async()=>{
+  let meta:Response;try{meta=await read(`/services/data/${version}/sobjects/MessagingSession/describe`);}catch{throw Error('session_state_transport_unavailable');}
+  if(!meta.ok)throw Error('session_state_schema_unavailable');
+  let schema:any;try{schema=await meta.json();}catch{throw Error('session_state_schema_invalid_json');}
+  return schema;
+ })();
+ flying.set(key,pending);
+ try{
+  const schema=await pending;
+  if(cache.size>=DESCRIBE_CACHE_MAX){const oldest=cache.keys().next().value;if(oldest!==undefined)cache.delete(oldest);}
+  cache.set(key,{schema,expires:Date.now()+DESCRIBE_TTL_MS});
+  return schema;
+ }finally{
+  if(flying.get(key)===pending)flying.delete(key);
+ }
+}
+
 // Live session handoff state for the proxy guard. SCRT routinely stores
 // several MessagingSession rows per conversation (only one carries live
 // routing), so the verdict is conversation-level: escalated when ANY row is
@@ -31,19 +81,24 @@ async function query(read:Read,version:string,soql:string,code:string):Promise<a
 // degrades to nulls so a Group-read outage can never silence the escalated
 // flag. Unknown sessions return null (callers fail open by design).
 export async function resolveSessionState(read:Read,version:string,scope:TenantScope,conversationId:string):Promise<SessionHandoffState|null>{
- let meta:Response;try{meta=await read(`/services/data/${version}/sobjects/MessagingSession/describe`);}catch{throw Error('session_state_transport_unavailable');}
- if(!meta.ok)throw Error('session_state_schema_unavailable');
- let schema:any;try{schema=await meta.json();}catch{throw Error('session_state_schema_invalid_json');}
+ const schema=await getSchema(read,version,scope.orgId);
  const escalate=pickHandoffFields(schema,'Escalate_To_Human__c');
  const where=`Conversation.ConversationIdentifier='${conversationId}' AND MessagingChannelId='${scope.channelId}'`;
+ // Flagged-existence and recent-id queries are independent (same SOQL and
+ // same 'session_state_unavailable' code as before) so they run in one
+ // parallel batch (flagged still initiated first, as before); verdict
+ // derivation below is unchanged. Merging them
+ // into a single LIMIT 10 query would NOT be equivalent: flagged
+ // existence spans every row while recent covers only the newest 10.
+ const flaggedPromise=escalate.length
+  ?query(read,version,`SELECT Id FROM MessagingSession WHERE ${where} AND (${escalate.map(f=>`${f}=true`).join(' OR ')}) LIMIT 1`,'session_state_unavailable')
+  :Promise.resolve([] as any[]);
+ const recentPromise=query(read,version,`SELECT Id FROM MessagingSession WHERE ${where} ORDER BY CreatedDate DESC LIMIT 10`,'session_state_unavailable');
+ const [flagged,recentRows]=await Promise.all([flaggedPromise,recentPromise]);
  let flaggedId:string|undefined;
- if(escalate.length){
-  const flagged=await query(read,version,`SELECT Id FROM MessagingSession WHERE ${where} AND (${escalate.map(f=>`${f}=true`).join(' OR ')}) LIMIT 1`,'session_state_unavailable');
-  if(flagged.length&&typeof flagged[0].Id==='string'&&SFID.test(flagged[0].Id))flaggedId=flagged[0].Id;
- }
+ if(flagged.length&&typeof flagged[0].Id==='string'&&SFID.test(flagged[0].Id))flaggedId=flagged[0].Id;
  const escalated=flaggedId!==undefined;
- const recent=(await query(read,version,`SELECT Id FROM MessagingSession WHERE ${where} ORDER BY CreatedDate DESC LIMIT 10`,'session_state_unavailable'))
-  .map(r=>r?.Id).filter((id:any):id is string=>typeof id==='string'&&SFID.test(id));
+ const recent=recentRows.map(r=>r?.Id).filter((id:any):id is string=>typeof id==='string'&&SFID.test(id));
  if(!recent.length)return null;
  const ids=[...new Set([...(flaggedId?[flaggedId]:[]),...recent])];
  let routing:Record<string,string|null>={};

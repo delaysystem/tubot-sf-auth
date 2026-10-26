@@ -16,6 +16,7 @@
     "migrations_dir": "migrations",
     "migrations_table": "tubot_sf_auth_migrations"
   }],
+  // observability-exception: local-only, never deployed (wrangler dev streams locally, nothing persists).
   "observability": { "enabled": true },
   "upload_source_maps": true
 }

@@ -1,7 +1,8 @@
 import { validScope, validConfig, turnScopeMatches, type TenantScope, type ProxyConfig, type EchoAction } from '../../tubot-sf-proxy/src/contracts';
-import {browserConfig,verifyBrowserTurn,transcriptText} from './browser-echo';
-import {echoParameters,validGuestId} from './echo-params';
+import {browserConfig,verifyBrowserTurn,discoverBrowserTurns,transcriptText} from './browser-echo';
+import {echoParameters,validGuestId,qualifyDefinitionName,flipDefinitionTwin,isDefinitionInvalidInput} from './echo-params';
 import {resolveSessionState} from './session-state';
+import { injectSoapSession } from "./soap-session";
 import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
 import { provisionCommerceFixtureAccess } from "./commerce-fixture-access";
 import { deleteOwnedOrderSummary } from "./delete-owned-order-summary";
@@ -84,7 +85,7 @@ import { invokeSkippedStandardWithOwnedContext, skippedStandardFamilySlug, skipp
 import { invokeAgentFlowWithProducerContext } from "./agent-customer-context";
 import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifecycleWithContext } from "./commerce-lifecycle-context";
 import { readBodyBounded, readJsonBounded, requireScope, scopedTags, SecurityError } from "./request-security";
-import { equalHash, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
+import { equalHash, maybePurgeRpcNonces, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
 import { getCallableToolUrlsForChannel, type Credential } from "./agent-script";
 import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, planAgentSnapshotPoll, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, type AgentScope } from "./agent-snapshot";
 import { Data360AgentClient } from "./data360-client";
@@ -199,6 +200,18 @@ class AuthFailure extends Error {
 
 const tokenCache = new Map<string, Token>();
 const tokenInflight = new Map<string, Promise<Token>>();
+/** Channel credential rows per team+org+channel. Rows change only on
+ * (re)connect/disconnect while nearly every RPC reads one, so a short TTL
+ * keeps turns at ~0 D1 reads with bounded staleness. Local disconnects
+ * invalidate; cross-worker reconnects converge within the TTL. */
+const PANEL_CREDENTIAL_TTL_MS = 30_000;
+const PANEL_CREDENTIAL_CACHE_CAP = 2000;
+const panelCredentialCache = new Map<string, { at: number; row: Credential }>();
+
+/** Test isolation for the credential cache (mirrors __resetRetentionGuardForTests). */
+export function __resetPanelCredentialCacheForTests(): void {
+  panelCredentialCache.clear();
+}
 // Resolved Flow routes per org+action. Discovery costs 3-4 Salesforce calls;
 // the echo hot path reuses routes for 5 minutes and re-resolves on mismatch.
 const flowRouteCache = new Map<string, { at: number; resolved: ToolResolution }>();
@@ -337,7 +350,7 @@ function sameSalesforceId(actual: unknown, expected: string): boolean {
     actual.slice(0, 15) === expected.slice(0, 15);
 }
 
-function selfOAuthCacheKey(row: SelfOAuthCredential): string {
+function selfOAuthCacheKey(row: Pick<SelfOAuthCredential, "team_id" | "org_id" | "client_id" | "refresh_token_iv">): string {
   return [row.team_id, row.org_id, row.client_id, row.refresh_token_iv].join("\u0000");
 }
 
@@ -607,18 +620,19 @@ async function selfOAuthApiRequest(
     try {
       const outgoingHeaders = new Headers(headers);
       outgoingHeaders.set("Authorization", `Bearer ${auth.accessToken}`);
+      const outgoingBody = injectSoapSession(body.path, requestBody, auth.accessToken);
       response = await fetch(auth.instanceUrl + body.path, {
         method,
         headers: outgoingHeaders,
-        ...(typeof requestBody === "string" ? { body: requestBody } : {}),
+        ...(typeof outgoingBody === "string" ? { body: outgoingBody } : {}),
       });
     } catch {
       throw authFailure(503, "salesforce_request_unavailable", "Salesforce could not complete the API request. Retry it shortly.", true);
     }
     if (response.status === 401 && attempt === 0) {
-      const current = await env.DB.prepare(`SELECT * FROM salesforce_self_oauth_credential
-        WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
-        .first<SelfOAuthCredential>();
+      const current = await env.DB.prepare(`SELECT team_id, org_id, client_id, refresh_token_iv
+        FROM salesforce_self_oauth_credential WHERE team_id = ? AND org_id = ? LIMIT 1`).bind(grant.teamId, grant.orgId)
+        .first<Pick<SelfOAuthCredential, "team_id" | "org_id" | "client_id" | "refresh_token_iv">>();
       if (current) selfTokenCache.delete(selfOAuthCacheKey(current));
       continue;
     }
@@ -778,6 +792,8 @@ async function cleanupSalesforceOrg(
     .all<{ channel_id: string }>();
   for (const row of channels.results ?? []) {
     clearChannelTokens({ teamId: scope.teamId, orgId: scope.orgId, channelId: row.channel_id });
+    panelCredentialCache.delete(panelCredentialCacheKey(
+      { teamId: scope.teamId, orgId: scope.orgId, channelId: row.channel_id }));
   }
 
   const namedStatements: Array<[string, D1PreparedStatement]> = [
@@ -904,7 +920,7 @@ async function verifySignedSelfOAuthRequest(request: Request, env: AuthEnv, path
 
   const now = Math.floor(Date.now() / 1000);
   const nonceHash = await hash(nonce);
-  await env.DB.prepare("DELETE FROM salesforce_self_oauth_internal_nonce WHERE expires_at <= ?").bind(now).run();
+  await maybePurgeRpcNonces(env.DB, now);
   const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO salesforce_self_oauth_internal_nonce
     (nonce_hash, expires_at) VALUES (?, ?)`)
     .bind(nonceHash, now + 120).run();
@@ -922,14 +938,11 @@ type PanelCredentialDbRow = {
   client_id: string | null;
 };
 
-async function panelCredential(env: AuthEnv, scope: Key): Promise<Credential | null> {
-  const row = await env.DB.prepare(`SELECT team_id, org_id, channel_id, instance_url,
-      integration_user_id, integration_username, is_sandbox, client_id
-    FROM panel_salesforce_channels
-    WHERE team_id = ? AND org_id = ? AND channel_id = ? LIMIT 1`)
-    .bind(scope.teamId, scope.orgId, scope.channelId)
-    .first<PanelCredentialDbRow>();
-  if (!row) return null;
+function panelCredentialCacheKey(scope: Key): string {
+  return [scope.teamId, scope.orgId, scope.channelId].join("\u0000");
+}
+
+function credentialFromRow(row: PanelCredentialDbRow): Credential {
   if (!row.instance_url || !validInstanceUrl(row.instance_url) || !row.integration_user_id ||
       !row.integration_username || (row.is_sandbox !== 0 && row.is_sandbox !== 1)) {
     throw authFailure(500, "credential_misconfigured", "The stored Salesforce channel credential is incomplete.", false);
@@ -944,6 +957,26 @@ async function panelCredential(env: AuthEnv, scope: Key): Promise<Credential | n
     is_sandbox: row.is_sandbox,
     client_id: row.client_id,
   };
+}
+
+function cachePanelCredential(scope: Key, credential: Credential): void {
+  if (panelCredentialCache.size >= PANEL_CREDENTIAL_CACHE_CAP) panelCredentialCache.clear();
+  panelCredentialCache.set(panelCredentialCacheKey(scope), { at: Date.now(), row: credential });
+}
+
+async function panelCredential(env: AuthEnv, scope: Key): Promise<Credential | null> {
+  const hit = panelCredentialCache.get(panelCredentialCacheKey(scope));
+  if (hit && Date.now() - hit.at < PANEL_CREDENTIAL_TTL_MS) return hit.row;
+  const row = await env.DB.prepare(`SELECT team_id, org_id, channel_id, instance_url,
+      integration_user_id, integration_username, is_sandbox, client_id
+    FROM panel_salesforce_channels
+    WHERE team_id = ? AND org_id = ? AND channel_id = ? LIMIT 1`)
+    .bind(scope.teamId, scope.orgId, scope.channelId)
+    .first<PanelCredentialDbRow>();
+  if (!row) return null;
+  const credential = credentialFromRow(row);
+  cachePanelCredential(scope, credential);
+  return credential;
 }
 
 async function panelExecutionUserCredential(
@@ -2063,14 +2096,19 @@ async function resolveCredentialForChannel(
   channelId?: string | null
 ): Promise<Credential | null> {
   if (!channelId || !validSalesforceChannelId(channelId)) return null;
-  const rows = await env.DB.prepare(`SELECT team_id AS teamId, org_id AS orgId, channel_id AS channelId
+  const rows = await env.DB.prepare(`SELECT team_id, org_id, channel_id, instance_url,
+      integration_user_id, integration_username, is_sandbox, client_id
     FROM panel_salesforce_channels WHERE channel_id = ? OR substr(channel_id, 1, 15) = ? LIMIT 3`)
-    .bind(channelId, channelId.slice(0, 15)).all<Key>();
+    .bind(channelId, channelId.slice(0, 15)).all<PanelCredentialDbRow>();
   const matches = rows.results ?? [];
   if (!matches.length) return null;
-  const scopes = new Set(matches.map(row => `${row.teamId}\u0000${row.orgId}\u0000${row.channelId}`));
+  const scopes = new Set(matches.map(row => panelCredentialCacheKey(
+    { teamId: row.team_id, orgId: row.org_id, channelId: row.channel_id })));
   if (scopes.size !== 1) throw authFailure(409, "channel_org_ambiguous", "More than one connected Salesforce org matches this channel.");
-  return panelCredential(env, matches[0]);
+  const first = matches[0];
+  const credential = credentialFromRow(first);
+  cachePanelCredential({ teamId: first.team_id, orgId: first.org_id, channelId: first.channel_id }, credential);
+  return credential;
 }
 
 async function querySalesforceUserData(
@@ -2405,8 +2443,11 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
     }
     await env.DB.prepare("DELETE FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
       .bind(body.teamId, body.orgId, body.channelId).run();
-    await env.DB.prepare("DELETE FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=? AND channel_id=?")
-      .bind(body.teamId, body.orgId, body.channelId).run();
+    // F3: single-channel disconnects keep sf_agent_snapshot_job/file/chunk so
+    // a reconnect reuses the extracted schema instead of re-extracting from
+    // zero. Only channel-bound rows (metadata user, graph context, plus the
+    // panel-side channel/execution-user rows) are purged here; full org
+    // teardown in cleanupSalesforceOrg still purges the snapshot tables.
     clearChannelTokens(body as Key);
     await env.DB.prepare("DELETE FROM action_graph_context WHERE team_id=? AND org_id=? AND channel_id=?")
       .bind(body.teamId, body.orgId, body.channelId).run();
@@ -2591,55 +2632,33 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     return {scrtOrigin,...(browser?{browser}:{})};
     } catch(cause) {if(cause instanceof AuthFailure)throw cause;throw authFailure(502,"proxy_"+stage+"_exception","Proxy validation failed.");}
   }
-  async browserTurn(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string}, signed?: SignedRpcEnvelope):Promise<string>{
+  async browserTurn(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string}, signed?: SignedRpcEnvelope):Promise<import('../../tubot-sf-proxy/src/contracts').BrowserVerifyResult>{
     await verifySignedRpcCall(this.env as AuthEnv, "browserTurn", [scope, config, turn], signed);
     const row=await this.#connection(scope);
-    return (await verifyBrowserTurn(path=>sfGet(this.env as AuthEnv,row,path,crypto.randomUUID()),scope,config,turn)).code;
-  }
-  async browserTurnAndEcho(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,action:EchoAction,turn:import('../../tubot-sf-proxy/src/contracts').BrowserTurn, signed?: SignedRpcEnvelope):Promise<import('../../tubot-sf-proxy/src/contracts').BrowserTurnResult>{
-    await verifySignedRpcCall(this.env as AuthEnv, "browserTurnAndEcho", [scope, config, action, turn], signed);
-    const t0=Date.now();
-    const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-    const fields=(Array.isArray(config.visitorFields)&&config.visitorFields.length?config.visitorFields:[config.visitorField]).filter((f):f is string=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9_]*$/.test(f));
-    if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^[a-f0-9]{64}$/.test(turn.requestKey||'')||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length||!turnScopeMatches(scope,turn))
-      return {status:'rejected',code:'invalid_turn',spans:{verifyMs:0}};
     const env=this.env as AuthEnv;
-    let row:Credential;
-    try{row=await this.#connection(scope);}catch{return {status:'rejected',code:'channel_not_authorized',spans:{verifyMs:Date.now()-t0}};}
-    const read=(path:string)=>sfGet(env,row,path,crypto.randomUUID());
-    // One session query covers binding and recipient (browserTurn and echo each ran their own).
-    // Session and transcript fetch in parallel; verdict order stays session-first.
-    const match=fields.map(f=>`${f}='${turn.reference}'`).join(' OR ');
-    const soql=`SELECT Id,MessagingEndUserId FROM MessagingSession WHERE Conversation.ConversationIdentifier='${turn.conversationId}' AND MessagingChannelId='${scope.channelId}' AND (${match}) LIMIT 1`;
-    let session:Response|null=null,entries:Response|null=null;
-    try{[session,entries]=await Promise.all([
-      read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(soql)}`),
-      read(`/services/data/${config.apiVersion}/connect/conversation/${turn.conversationId}/entries?recordLimit=50`)
-    ]);}catch{return {status:'retryable',code:'verification_unavailable',spans:{verifyMs:Date.now()-t0}};}
-    if(!session.ok)return {status:'retryable',code:'browser_binding_unavailable',spans:{verifyMs:Date.now()-t0}};
-    const sessions:any=await responseJson(session);
-    if(sessions.records?.length!==1)return {status:'rejected',code:'binding_absent',spans:{verifyMs:Date.now()-t0}};
-    const recipient=sessions.records[0]?.MessagingEndUserId;
-    if(!validGuestId(recipient))return {status:'retryable',code:'proxy_session_pending',spans:{verifyMs:Date.now()-t0}};
-    if(!entries.ok)return {status:'retryable',code:'browser_entries_unavailable',spans:{verifyMs:Date.now()-t0}};
-    const transcript:any=await responseJson(entries);
-    const entry=transcript.conversationEntries?.find((e:any)=>e.identifier===turn.messageId&&e.sender?.role==='EndUser');
-    if(typeof entry?.messageText!=='string'||entry.messageText!==transcriptText(turn.text))return {status:'rejected',code:'transcript_mismatch',spans:{verifyMs:Date.now()-t0}};
-    const verifyMs=Date.now()-t0;
-    try{
-      const resolved=await this.#actionCached(row,action);
-      const m=action.inputMapping;
-      const response=await sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
-        [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
-      }]}),crypto.randomUUID(),true);
-      const result:any=await responseJson(response);
-      const output=result?.[0]?.outputValues;
-      if(!response.ok||result?.[0]?.isSuccess!==true||!/^[A-Za-z0-9]{15,18}$/.test(output?.[action.outputMapping.requestId]||""))
-        return {status:'retryable',code:'proxy_echo_rejected',spans:{verifyMs}};
-      return {status:'submitted',requestId:output[action.outputMapping.requestId],spans:{verifyMs,submitMs:Date.now()-t0-verifyMs}};
-    }catch{
-      return {status:'retryable',code:'proxy_echo_rejected',spans:{verifyMs}};
-    }
+    const verdict=await verifyBrowserTurn(path=>sfGet(env,row,path,crypto.randomUUID()),scope,config,turn,(path,body)=>sfRequest(env,row,path,"PATCH",body,crypto.randomUUID()));
+    return {code:verdict.code,...(verdict.recipient?{recipient:verdict.recipient}:{})};
+  }
+  async browserSync(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,input:{reference:string;conversationId?:string;sinceMs?:number}, signed?: SignedRpcEnvelope):Promise<import('../../tubot-sf-proxy/src/contracts').BrowserSyncResult>{
+    await verifySignedRpcCall(this.env as AuthEnv, "browserSync", [scope, config, input], signed);
+    const row=await this.#connection(scope);
+    const env=this.env as AuthEnv;
+    return discoverBrowserTurns(path=>sfGet(env,row,path,crypto.randomUUID()),scope,config,input);
+  }
+  // Retired: the merged verify+submit echo RPC is gone with echo serving.
+  // Agent-only flow is browserTurn (verify) -> agentcode -> echo (submit of
+  // the AGENT REPLY). echo() below remains the submitter; it never receives
+  // visitor text from any caller anymore.
+  // F5: read-only Flow-route pre-resolve. The proxy fires this alongside the
+  // agent turn so submit's echo() usually finds #actionCached warm instead of
+  // paying Salesforce discovery serially after the reply. Warms the same cache
+  // echo() reads (plus connection/token); never submits. Fail-open by design:
+  // any throw leaves the caller to re-resolve serially inside echo().
+  async resolveFlowRoute(scope: TenantScope, action: EchoAction, signed?: SignedRpcEnvelope): Promise<{ok:true}> {
+    await verifySignedRpcCall(this.env as AuthEnv, "resolveFlowRoute", [scope, action], signed);
+    if (!validConfig({deploymentName:"Validation",action})) throw authFailure(400, "invalid_proxy_turn", "The Flow action is invalid.");
+    await this.#actionCached(await this.#connection(scope), action);
+    return {ok:true};
   }
   async echo(scope: TenantScope, action: EchoAction, turn: import('../../tubot-sf-proxy/src/contracts').EchoTurn, signed?: SignedRpcEnvelope): Promise<{requestId:string}> {
     await verifySignedRpcCall(this.env as AuthEnv, "echo", [scope, action, turn], signed);
@@ -2650,21 +2669,42 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     }
     const env = this.env as AuthEnv;
     const row = await this.#connection(scope);
-    const resolved = await this.#action(row, action);
+    const resolved = await this.#actionCached(row, action);
+    // A verify-supplied recipient skips this duplicate session query; an
+    // absent or malformed hint falls back to the query below.
+    const passthrough = validGuestId(turn.recipient) ? turn.recipient : undefined;
     const soql = `SELECT MessagingEndUserId FROM MessagingSession WHERE Conversation.ConversationIdentifier='${turn.conversationId}' AND MessagingChannelId='${scope.channelId}' ORDER BY CreatedDate DESC LIMIT 1`;
-    const lookup = await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`, crypto.randomUUID());
-    const sessions: any = lookup.ok ? await responseJson(lookup) : null;
-    const recipient = sessions?.records?.[0]?.MessagingEndUserId;
+    const lookup = passthrough === undefined ? await sfGet(env, row, `/services/data/${API_VERSION}/query?q=${encodeURIComponent(soql)}`, crypto.randomUUID()) : null;
+    const sessions: any = lookup?.ok ? await responseJson(lookup) : null;
+    const recipient = passthrough ?? sessions?.records?.[0]?.MessagingEndUserId;
     if (!validGuestId(recipient)) throw authFailure(404, "proxy_session_pending", "The channel session is not available yet.", true);
     const m = action.inputMapping;
-    // Typed parameters preserve whitespace; Flow string assignments trim it.
-    const response = await sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
-      [m.definition]:action.definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
-    }]}),crypto.randomUUID(),true);
-    const result: any = await responseJson(response);
+    // The send action resolves messageDefinitionName in the FLOW's namespace
+    // context: a packaged flow rejects the unpackaged twin (INVALID_INPUT)
+    // and vice versa. Qualify to the resolved flow's namespace; on a
+    // definition rejection flip the twin once (rejected pre-send, so the
+    // retry cannot double-send).
+    const flowNs = /\/flow\/([A-Za-z0-9]+)__[^/]+$/.exec(resolved.route)?.[1] ?? null;
+    const qualified = qualifyDefinitionName(action.definitionName, flowNs);
+    const submitWith = (definitionName: string) =>
+      sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
+        [m.definition]:definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
+      }]}),crypto.randomUUID(),true);
+    let used = qualified;
+    let response = await submitWith(qualified);
+    let result: any = await responseJson(response);
+    const fallback = qualified !== action.definitionName ? action.definitionName : flipDefinitionTwin(qualified);
+    if (fallback && isDefinitionInvalidInput(result)) {
+      used = fallback;
+      response = await submitWith(fallback);
+      result = await responseJson(response);
+    }
     const output = result?.[0]?.outputValues;
     if (!response.ok || result?.[0]?.isSuccess !== true ||
         !/^[A-Za-z0-9]{15,18}$/.test(output?.[action.outputMapping.requestId] || "")) {
+      console.error(JSON.stringify({error:"salesforce_notify_rejected",route:String(resolved.route).slice(0,160),
+        definition:used,status:response.status,isSuccess:result?.[0]?.isSuccess === true,
+        errorCode:String(result?.[0]?.errorCode ?? result?.[0]?.errors?.[0]?.errorCode ?? "").slice(0,80)}));
       throw authFailure(502, "proxy_echo_rejected", "Salesforce did not confirm the notification request.", true);
     }
     return {requestId:output[action.outputMapping.requestId]};

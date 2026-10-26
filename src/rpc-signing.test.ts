@@ -295,7 +295,7 @@ test("warn mode logs and proceeds on a read-only method with a bad envelope", as
 });
 
 const EXPECTED_BROKER_METHODS = [
-  "authorize", "browserTurn", "browserTurnAndEcho", "confirmInbound", "echo", "status", "validate",
+  "authorize", "browserSync", "browserTurn", "confirmInbound", "echo", "resolveFlowRoute", "sessionState", "status", "validate",
 ];
 const EXPECTED_AUTH_METHODS = [
   "listConnectedOrgs", "listAgentSnapshots", "getAgentSnapshot", "inspectSalesforce", "invokeSpeechToTextWithSyntheticAudio",

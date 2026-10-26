@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import worker, { TubotSfAuthEntrypoint, MessagingProxyBroker, assertApiDeployment } from "./index";
+import worker, { TubotSfAuthEntrypoint, MessagingProxyBroker, assertApiDeployment, __resetPanelCredentialCacheForTests } from "./index";
+import { injectSoapSession, SOAP_SESSION_PLACEHOLDER } from "./soap-session";
 import { browserConfig, verifyBrowserTurn } from "./browser-echo";
-import { echoParameters, validGuestId } from "./echo-params";
+import { echoParameters, validGuestId, qualifyDefinitionName, flipDefinitionTwin, isDefinitionInvalidInput } from "./echo-params";
 import { turnScopeMatches } from "../../tubot-sf-proxy/src/contracts";
 
 const originalFetch = globalThis.fetch;
@@ -9,6 +10,7 @@ const originalConsoleError = console.error;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   console.error = originalConsoleError;
+  __resetPanelCredentialCacheForTests();
 });
 
 const orgId = "00D000000000001AAA";
@@ -1425,6 +1427,7 @@ test("global Quick Actions verify and clean only the unique created tenant recor
   expect(result.cleanupError).toBeUndefined();
   expect(result.contextSchema).toMatchObject({ targetObject: "Tenant_Record__c", verified: true, verificationRecordIds: [id] });
   expect(seen.at(-1)?.method).toBe("GET");
+  __resetPanelCredentialCacheForTests(); // fresh isolate: revocation visible past the credential TTL
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeQuickActionWithContext(
     { teamId: "team", orgId, channelId: "channel" }, { route })).rejects.toThrow("channel_not_found");
 });
@@ -2171,6 +2174,7 @@ for (const action of ["createRecord", "updateRecord"]) test(`standard ${action} 
   expect(result.status).toBe(200);
   expect(result.contextSchema).toMatchObject({ verified: true, source: "salesforce_live_record_action", verificationRecordIds: [id] });
   expect(result.cleanupError).toBeUndefined(); expect(deleted).toBe(true);
+  __resetPanelCredentialCacheForTests(); // fresh isolate: revocation visible past the credential TTL
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordActionWithContext(
     { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_found");
 });
@@ -2201,6 +2205,7 @@ for (const action of ["updateRecord"]) test(`rejected standard ${action} cleans 
   expect(result.status).toBe(200);
   expect(result.contextSchema).toMatchObject({ verified: false, source: "salesforce_live_record_action", verificationRecordIds: [] });
   expect(result.cleanupError).toBeUndefined(); expect(deleted).toBe(true);
+  __resetPanelCredentialCacheForTests(); // fresh isolate: revocation visible past the credential TTL
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordActionWithContext(
     { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_found");
 });
@@ -2231,6 +2236,7 @@ for (const action of ["createRecord"]) test(`unverified standard ${action} rejec
   expect(result.status).toBe(422);
   expect(result.contextSchema).toMatchObject({ verified: false, source: "salesforce_live_record_action", verificationRecordIds: [] });
   expect(result.cleanupError).toBeUndefined(); expect(deleted).toBe(false);
+  __resetPanelCredentialCacheForTests(); // fresh isolate: revocation visible past the credential TTL
   await expect(new TubotSfAuthEntrypoint(null, await fixture(false)).invokeRecordActionWithContext(
     { teamId: "team", orgId, channelId: "channel" }, { route, objectApiName: target })).rejects.toThrow("channel_not_found");
 });
@@ -2743,12 +2749,71 @@ test("verifyBrowserTurn distinguishes binding, transcript, and verified outcomes
   const session = { records: [{ Id: "0Mw000000000001AAA" }] };
   const transcript = { conversationEntries: [{ identifier: turn.messageId, sender: { role: "EndUser" }, messageText: "hi" }] };
   const empty = async (path: string) => Response.json(path.includes("/query?") ? { records: [] } : { conversationEntries: [] });
-  await expect(verifyBrowserTurn(empty, mobileScope, config, turn)).resolves.toEqual({ ok: false, code: "binding_absent" });
+  await expect(verifyBrowserTurn(empty, mobileScope, config, turn)).resolves.toEqual({ ok: false, code: "session_pending" });
+  const boundElsewhere = async (path: string) => Response.json(!path.includes("/query?") ? { conversationEntries: [] }
+    : !path.includes(turn.reference) ? { records: [{ Id: "0Mw000000000001AAA" }] } : { records: [] });
+  await expect(verifyBrowserTurn(boundElsewhere, mobileScope, config, turn)).resolves.toEqual({ ok: false, code: "binding_absent" });
   const noEntry = async (path: string) => Response.json(path.includes("/query?") ? session : { conversationEntries: [] });
   await expect(verifyBrowserTurn(noEntry, mobileScope, config, turn)).resolves.toEqual({ ok: false, code: "transcript_mismatch" });
   const good = async (path: string) => Response.json(path.includes("/query?") ? session : transcript);
   await expect(verifyBrowserTurn(good, mobileScope, config, turn)).resolves.toEqual({ ok: true, code: "verified" });
   await expect(verifyBrowserTurn(good, mobileScope, config, { ...turn, reference: "short" })).resolves.toEqual({ ok: false, code: "invalid_turn" });
+});
+
+test("verifyBrowserTurn self-binds an unbound session after transcript proof", async () => {
+  const config = { origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c" };
+  const turn = { reference: "a".repeat(64), conversationId: "11111111-1111-4111-8111-111111111111", messageId: "22222222-2222-4222-8222-222222222222", text: "hi" };
+  const transcript = { conversationEntries: [{ identifier: turn.messageId, sender: { role: "EndUser" }, messageText: "hi" }] };
+  const unbound = { Id: "0Mw000000000001AAA", MessagingEndUserId: "0PAxx0000000001AAA", Proxy_Echo_Visitor_Ref__c: null };
+  let bindingCalls = 0;
+  const read = async (path: string) => {
+    if (!path.includes("/query?")) return Response.json(transcript);
+    if (path.includes("LIMIT%2010")) return Response.json({ records: [unbound] });
+    bindingCalls += 1;
+    return Response.json(bindingCalls === 1 ? { records: [] } : { records: [{ ...unbound, Proxy_Echo_Visitor_Ref__c: turn.reference }] });
+  };
+  const writes: Array<{ path: string; body: string }> = [];
+  const write = async (path: string, body: string) => {
+    writes.push({ path, body });
+    return new Response(null, { status: 204 });
+  };
+  await expect(verifyBrowserTurn(read, mobileScope, config, turn, write)).resolves.toEqual(
+    { ok: true, code: "verified", recipient: "0PAxx0000000001AAA" });
+  expect(writes).toEqual([{
+    path: "/services/data/v65.0/sobjects/MessagingSession/0Mw000000000001AAA",
+    body: JSON.stringify({ Proxy_Echo_Visitor_Ref__c: turn.reference }),
+  }]);
+});
+
+test("verifyBrowserTurn self-bind refuses to overwrite, mismatch, or fail loudly", async () => {
+  const config = { origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c" };
+  const turn = { reference: "a".repeat(64), conversationId: "11111111-1111-4111-8111-111111111111", messageId: "22222222-2222-4222-8222-222222222222", text: "hi" };
+  const transcript = { conversationEntries: [{ identifier: turn.messageId, sender: { role: "EndUser" }, messageText: "hi" }] };
+  const readFor = (lookupRecords: unknown[], entries: unknown = transcript) => async (path: string) =>
+    Response.json(!path.includes("/query?") ? entries : path.includes("LIMIT%2010") ? { records: lookupRecords }
+      : !path.includes(turn.reference) ? { records: [{ Id: "0Mw000000000001AAA" }] } : { records: [] });
+  let writes = 0;
+  const write = async () => { writes += 1; return new Response(null, { status: 204 }); };
+  // Existing binding (different ref): never overwrite.
+  await expect(verifyBrowserTurn(
+    readFor([{ Id: "0Mw000000000001AAA", Proxy_Echo_Visitor_Ref__c: "b".repeat(64) }]),
+    mobileScope, config, turn, write)).resolves.toEqual({ ok: false, code: "binding_absent" });
+  expect(writes).toBe(0);
+  // Transcript mismatch: no proof, no write.
+  await expect(verifyBrowserTurn(
+    readFor([{ Id: "0Mw000000000001AAA", Proxy_Echo_Visitor_Ref__c: null }], { conversationEntries: [] }),
+    mobileScope, config, turn, write)).resolves.toEqual({ ok: false, code: "binding_absent" });
+  expect(writes).toBe(0);
+  // Ambiguous sessions: never touch.
+  await expect(verifyBrowserTurn(
+    readFor([{ Id: "0Mw000000000001AAA" }, { Id: "0Mw000000000002AAA" }]),
+    mobileScope, config, turn, write)).resolves.toEqual({ ok: false, code: "binding_absent" });
+  expect(writes).toBe(0);
+  // PATCH rejected: graceful absent.
+  const failingWrite = async () => Response.json({ message: "forbidden" }, { status: 403 });
+  await expect(verifyBrowserTurn(
+    readFor([{ Id: "0Mw000000000001AAA", Proxy_Echo_Visitor_Ref__c: null }]),
+    mobileScope, config, turn, failingWrite)).resolves.toEqual({ ok: false, code: "binding_absent" });
 });
 
 test("echo parameters carry text plus channel, org, and resolved guest ids", () => {
@@ -2759,6 +2824,23 @@ test("echo parameters carry text plus channel, org, and resolved guest ids", () 
     { name: "orgId", textValue: "00Dxx0000000001AAA" },
     { name: "guestId", textValue: "0PAxx0000000001AAA" },
   ]);
+});
+
+test("definition names qualify to the resolved flow namespace", () => {
+  expect(qualifyDefinitionName("Tubot_Proxy_Echo", "tubot")).toBe("tubot__Tubot_Proxy_Echo");
+  expect(qualifyDefinitionName("tubot__Tubot_Proxy_Echo", "tubot")).toBe("tubot__Tubot_Proxy_Echo");
+  expect(qualifyDefinitionName("acme__Tubot_Proxy_Echo", "tubot")).toBe("tubot__Tubot_Proxy_Echo");
+  expect(qualifyDefinitionName("Tubot_Proxy_Echo", null)).toBe("Tubot_Proxy_Echo");
+  expect(qualifyDefinitionName("tubot__Tubot_Proxy_Echo", null)).toBe("Tubot_Proxy_Echo");
+  expect(qualifyDefinitionName("not a name!", "tubot")).toBe("not a name!");
+  expect(flipDefinitionTwin("tubot__Tubot_Proxy_Echo")).toBe("Tubot_Proxy_Echo");
+  expect(flipDefinitionTwin("Tubot_Proxy_Echo")).toBe(null);
+  expect(flipDefinitionTwin("not a name!")).toBe(null);
+  const invalid = [{ isSuccess: false, errors: [{ statusCode: "INVALID_INPUT", message: 'The value "X" for the messageDefinitionName parameter is invalid.' }] }];
+  expect(isDefinitionInvalidInput(invalid)).toBe(true);
+  expect(isDefinitionInvalidInput([{ isSuccess: false, errors: [{ statusCode: "INVALID_INPUT", message: "other param bad" }] }])).toBe(false);
+  expect(isDefinitionInvalidInput([{ isSuccess: true, outputValues: {} }])).toBe(false);
+  expect(isDefinitionInvalidInput(null)).toBe(false);
 });
 
 test("guest ids accept only MessagingEndUser records", () => {
@@ -2775,6 +2857,90 @@ test("echoed turn scope must be absent or match the RPC scope", () => {
   expect(turnScopeMatches(scope, { channelId: scope.channelId, orgId: scope.orgId })).toBe(true);
   expect(turnScopeMatches(scope, { channelId: "0Mjxx0000000002AAA" })).toBe(false);
   expect(turnScopeMatches(scope, { orgId: "00Dxx0000000002AAA" })).toBe(false);
+});
+
+test("verifyBrowserTurn returns the session recipient for echo passthrough", async () => {
+  const config = { origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c" };
+  const turn = { reference: "a".repeat(64), conversationId: "11111111-1111-4111-8111-111111111111", messageId: "22222222-2222-4222-8222-222222222222", text: "hi" };
+  const transcript = { conversationEntries: [{ identifier: turn.messageId, sender: { role: "EndUser" }, messageText: "hi" }] };
+  const seen: string[] = [];
+  const withRecipient = async (path: string) => {
+    seen.push(path);
+    return Response.json(path.includes("/query?")
+      ? { records: [{ Id: "0Mw000000000001AAA", MessagingEndUserId: "0PAxx0000000001AAA" }] }
+      : transcript);
+  };
+  await expect(verifyBrowserTurn(withRecipient, mobileScope, config, turn)).resolves.toEqual(
+    { ok: true, code: "verified", recipient: "0PAxx0000000001AAA" });
+  expect(seen.find((p) => p.includes("/query?"))).toContain("MessagingEndUserId");
+  // A row without a guest id stays verified; echo falls back to its own query.
+  const withoutRecipient = async (path: string) => Response.json(path.includes("/query?")
+    ? { records: [{ Id: "0Mw000000000001AAA" }] }
+    : transcript);
+  await expect(verifyBrowserTurn(withoutRecipient, mobileScope, config, turn)).resolves.toEqual({ ok: true, code: "verified" });
+});
+
+test("broker browserTurn returns the verify code plus the session recipient", async () => {
+  const conversationId = "11111111-1111-4111-8111-111111111111";
+  const messageId = "22222222-2222-4222-8222-222222222222";
+  mockSalesforce({
+    "/services/data/v65.0/query": { records: [{ Id: "0Mw000000000001AAA", MessagingEndUserId: "0PAxx0000000001AAA" }] },
+    [`/services/data/v65.0/connect/conversation/${conversationId}/entries`]: {
+      conversationEntries: [{ identifier: messageId, sender: { role: "EndUser" }, messageText: "hi" }],
+    },
+  });
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.browserTurn(mobileScope,
+    { origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c" },
+    { reference: "a".repeat(64), conversationId, messageId, text: "hi" })).resolves.toEqual(
+    { code: "verified", recipient: "0PAxx0000000001AAA" });
+});
+
+const echoSubmitRoutes = () => ({
+  "/services/data/": [{ version: "65.0", url: "/services/data/v65.0" }],
+  "/services/data/v65.0/actions/custom": { flow: "/services/data/v65.0/actions/custom/flow" },
+  "/services/data/v65.0/actions/custom/flow": {
+    actions: [{ name: "Echo_Flow", url: "/services/data/v65.0/actions/custom/flow/Echo_Flow" }],
+  },
+  "/services/data/v65.0/actions/custom/flow/Echo_Flow": (init: RequestInit | undefined) => init?.method === "POST"
+    ? Response.json([{ isSuccess: true, outputValues: { requestId: "1sr000000000001AAA" } }])
+    : Response.json({
+      name: "Echo_Flow",
+      inputs: [
+        { name: "definition", required: true },
+        { name: "recipients", required: true },
+        { name: "parameters", required: true },
+      ],
+      outputs: [{ name: "requestId" }],
+    }),
+  "/services/data/v65.0/query": { records: [{ Id: "0Mw000000000001AAA", MessagingEndUserId: "0PAxx0000000001AAA" }] },
+});
+
+test("broker echo skips the session query when verify supplies the recipient", async () => {
+  const seen = mockSalesforce(echoSubmitRoutes());
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.echo(mobileScope, echoFlowAction, {
+    conversationId: "33333333-3333-4333-8333-333333333333", text: "hi", requestKey: "b".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId,
+    recipient: "0PAxx0000000001AAA",
+  })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  expect(seen.filter((s) => s.method === "GET" && s.url.pathname.endsWith("/query"))).toHaveLength(0);
+  const submit = seen.find((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
+  expect(JSON.parse(submit?.body ?? "{}").inputs[0].recipients).toEqual(["0PAxx0000000001AAA"]);
+});
+
+test("broker echo falls back to the session query without a passthrough recipient", async () => {
+  const seen = mockSalesforce(echoSubmitRoutes());
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.echo(mobileScope, echoFlowAction, {
+    conversationId: "44444444-4444-4444-8444-444444444444", text: "hi", requestKey: "c".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId,
+  })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  const sessionQueries = seen.filter((s) => s.method === "GET" && s.url.pathname.endsWith("/query")
+    && (s.url.searchParams.get("q") ?? "").includes("FROM MessagingSession"));
+  expect(sessionQueries).toHaveLength(1);
+  const submit = seen.find((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
+  expect(JSON.parse(submit?.body ?? "{}").inputs[0].recipients).toEqual(["0PAxx0000000001AAA"]);
 });
 
 // resolve-channel semantics: getTokenForChannel without tenant scope resolves via
@@ -2805,7 +2971,7 @@ function resolveFixture(channels: ResolveChannel[]) {
                 const results = channels
                   .filter(c => c.channelId === full || c.channelId.slice(0, 15) === prefix)
                   .slice(0, 3)
-                  .map(c => ({ teamId: c.teamId, orgId: c.orgId, channelId: c.channelId }));
+                  .map(c => creds.get(`${c.teamId}\u0000${c.orgId}\u0000${c.channelId}`));
                 return { results };
               }
               return { results: [] };
@@ -3055,4 +3221,14 @@ test("broker sessionState rejects a malformed conversation id", async () => {
   mockHandoffSalesforce({});
   const broker = new MessagingProxyBroker(null, await fixture());
   await expect(broker.sessionState(handoffScope, "not-a-uuid")).rejects.toThrow("invalid_proxy_entry");
+});
+
+test("injectSoapSession substitutes the placeholder only on SOAP paths", () => {
+  const envelope = `<SessionHeader><sessionId>${SOAP_SESSION_PLACEHOLDER}</sessionId></SessionHeader>`;
+  expect(injectSoapSession("/services/Soap/m/68.0", envelope, "tok123")).toBe(
+    "<SessionHeader><sessionId>tok123</sessionId></SessionHeader>",
+  );
+  expect(injectSoapSession("/services/Soap/m/68.0", "<no-marker/>", "tok123")).toBe("<no-marker/>");
+  expect(injectSoapSession("/services/data/v68.0/tooling/query", envelope, "tok123")).toBe(envelope);
+  expect(injectSoapSession("/services/Soap/m/68.0", undefined, "tok123")).toBeUndefined();
 });

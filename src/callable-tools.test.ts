@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { zipSync, strToU8 } from "fflate";
 import worker, {
   TubotSfAuthEntrypoint,
+  __resetPanelCredentialCacheForTests,
   type AuthEnv,
 } from "./index";
 import {
@@ -14,6 +15,7 @@ import {
 const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  __resetPanelCredentialCacheForTests();
 });
 
 const orgId = "00D000000000001AAA";
@@ -62,7 +64,7 @@ async function createFixture(channelId = "0Mjg00000000001AAA") {
             const target = String(bound[0] ?? "");
             const prefix = String(bound[1] ?? target.slice(0, 15));
             const matches = rows.filter((r) => r.channel_id === target || r.channel_id.slice(0, 15) === prefix);
-            return { results: matches.map((r) => ({ teamId: r.team_id, orgId: r.org_id, channelId: r.channel_id })) };
+            return { results: matches.map((r) => ({ ...r })) };
           }
           return { results: [] };
         },
@@ -488,7 +490,7 @@ test("getCallableToolUrlsForChannel uses the scoped tenant on channel_id collisi
         },
         async all() {
           if (sql.includes("FROM panel_salesforce_channels")) {
-            return { results: rows.map((r) => ({ teamId: r.team_id, orgId: r.org_id, channelId: r.channel_id })) };
+            return { results: rows.map((r) => ({ ...r })) };
           }
           return { results: [] };
         },
