@@ -22,8 +22,9 @@ configuration and must not be deployed.
 
 The Panel OAuth redirect allowlist follows the selected Worker environment:
 production accepts the production Panel worker and `panel.tubot.lat`, staging
-accepts only the staging Panel worker, and localhost callbacks are accepted
-only in development. Salesforce org callback domains are validated separately.
+accepts the staging Panel worker and `staging-panel.tubot.lat`, and localhost
+callbacks are accepted only in development. Salesforce org callback domains are
+validated separately.
 Neither Salesforce Auth Worker hostname nor arbitrary `*.tubot.lat` hosts are
 Panel callback destinations.
 
