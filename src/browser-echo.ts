@@ -10,6 +10,44 @@ const SYNC_SESSION_LOOKBACK_SLOP_MS=15000;
 const SYNC_ENTRIES_RECORD_LIMIT=50;
 // Maximum visitor turn text length accepted from Connect transcript entries.
 const MAX_SYNC_TURN_TEXT_LEN=4096;
+const DEPLOYMENT_RE=/^[A-Za-z][A-Za-z0-9_]{0,159}$/;
+const PAGE_NAME_RE=/^[A-Za-z0-9_]+$/;
+// Exact host mirror of tubot-sf-app/e2e/get-test-chat-url.ts buildTestChatUrl:
+// https://<myDomain>[.<pod>].my.salesforce.com
+//   -> https://<myDomain>--<ns>[.<pod>].vf.force.com
+function vfHostFor(instanceUrl:string,namespacePrefix:string|null):string{
+ const ns=(namespacePrefix||'c').toLowerCase();
+ if(!PAGE_NAME_RE.test(ns))throw Error(`invalid namespace: ${namespacePrefix}`);
+ const host=new URL(instanceUrl).hostname.toLowerCase();
+ const suffix='.my.salesforce.com';
+ if(!host.endsWith(suffix))throw Error(`unexpected instance host: ${host}`);
+ const labels=host.slice(0,-suffix.length).split('.');
+ if(!labels[0])throw Error(`empty My Domain in: ${host}`);
+ const pod=labels.slice(1).join('.');
+ return `${labels[0]}--${ns}${pod?`.${pod}`:''}.vf.force.com`;
+}
+// V1 snippet allow-list: the deployment's VF test-page origin joins the site
+// origin. The instance host is the scrt host with .my.salesforce-scrt.com
+// reversed to .my.salesforce.com; the page namespace comes from a Tooling
+// census of the generated ESW<deployment><timestamp> page (newest first,
+// same dual-LIKE shape as e2e/web-deploy-shot.ts testChatUrl — LIKE '_'
+// is a single-char wildcard, hence the escape plus the collapsed variant).
+async function vfTestOrigins(read:Read,version:string,scrtOrigin:string,deployment:string,siteOrigin:string):Promise<string[]>{
+ if(!DEPLOYMENT_RE.test(deployment))throw Error('invalid deployment name');
+ const scrtHost=new URL(scrtOrigin).hostname.toLowerCase();
+ const scrtSuffix='.my.salesforce-scrt.com';
+ if(!scrtHost.endsWith(scrtSuffix))throw Error(`unexpected scrt host: ${scrtHost}`);
+ const instanceUrl=`https://${scrtHost.slice(0,-scrtSuffix.length)}.my.salesforce.com`;
+ const like=`ESW${deployment.replace(/_/g,'\\_')}%`;
+ const collapsed=`ESW${deployment.replace(/_/g,'')}%`;
+ const where=like===collapsed?`Name LIKE '${like}'`:`(Name LIKE '${like}' OR Name LIKE '${collapsed}')`;
+ const res=await read(`/services/data/${version}/tooling/query?q=${encodeURIComponent(`SELECT Name, NamespacePrefix FROM ApexPage WHERE ${where} ORDER BY CreatedDate DESC LIMIT 1`)}`);
+ if(!res.ok)throw Error('tooling query unavailable');
+ const found:any=await res.json().catch(()=>null);
+ const page=found?.records?.[0];
+ if(!page?.Name)throw Error('test page not found');
+ return [...new Set([siteOrigin,`https://${vfHostFor(instanceUrl,typeof page.NamespacePrefix==='string'?page.NamespacePrefix:null)}`])];
+}
 export async function browserConfig(read:Read,version:string,scrtOrigin:string,scope:TenantScope,deployment:string,channelAddress:string):Promise<BrowserConfig>{
  const url=new URL('/embeddedservice/v1/embedded-service-config',scrtOrigin);url.search=new URLSearchParams({orgId:scope.orgId,esConfigName:deployment,language:'en_US'}).toString();
  let response:Response;try{response=await fetch(url.toString(),{redirect:'manual',signal:AbortSignal.timeout(20000)});}catch{throw Error('browser_config_transport_unavailable');}if(!response.ok)throw Error('browser_config_unavailable');
@@ -26,7 +64,13 @@ export async function browserConfig(read:Read,version:string,scrtOrigin:string,s
  // both packaged and unpackaged fields try each in precedence order.
  const visitorFields=[...new Set([...exact,...namespaced])];
  if(!visitorFields.length)throw Error('browser_binding_field_unavailable');
- return {origin:site.origin,apiVersion:version,visitorField:visitorFields[0],visitorFields};
+ // Best-effort VF origin: a missing test page (or any lookup failure) keeps
+ // the site-only allow-list with a log, never a throw — registration must
+ // not fail over the V1 snippet origin.
+ let origins=[site.origin];
+ try{origins=await vfTestOrigins(read,version,scrtOrigin,deployment,site.origin);}
+ catch(cause){console.log(JSON.stringify({event:'browser_vf_origin_fallback',deployment,reason:String((cause as Error)?.message??cause).slice(0,120)}));}
+ return {origin:site.origin,origins,apiVersion:version,visitorField:visitorFields[0],visitorFields};
 }
 export type BrowserVerdict={ok:boolean;code:string;recipient?:string};
 // Self-bind: when the routing flow never stamped the visitor reference

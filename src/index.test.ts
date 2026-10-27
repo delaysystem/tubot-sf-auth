@@ -2699,7 +2699,7 @@ test("browserConfig accepts a matching Web deployment", async () => {
   const read = async (_path: string) => Response.json({ fields: [{ name: "Proxy_Echo_Visitor_Ref__c" }] });
   await expect(browserConfig(read, "v65.0", "https://test.my.salesforce-scrt.com",
     mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toEqual({
-    origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c",
+    origin: "https://example.com", origins: ["https://example.com"], apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c",
     visitorFields: ["Proxy_Echo_Visitor_Ref__c"],
   });
 });
@@ -2715,7 +2715,7 @@ test("browserConfig prefers the unpackaged field when both packaged and unpackag
   const read = async (_path: string) => Response.json({ fields: [{ name: "tubot__Proxy_Echo_Visitor_Ref__c" }, { name: "Proxy_Echo_Visitor_Ref__c" }] });
   await expect(browserConfig(read, "v65.0", "https://test.my.salesforce-scrt.com",
     mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toEqual({
-    origin: "https://example.com", apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c",
+    origin: "https://example.com", origins: ["https://example.com"], apiVersion: "v65.0", visitorField: "Proxy_Echo_Visitor_Ref__c",
     visitorFields: ["Proxy_Echo_Visitor_Ref__c", "tubot__Proxy_Echo_Visitor_Ref__c"],
   });
 });
@@ -2741,6 +2741,87 @@ test("browserConfig accepts lone namespaced fields, orders multiples, rejects mi
   const none = async (_path: string) => Response.json({ fields: [{ name: "Subject" }] });
   await expect(browserConfig(none, "v65.0", "https://test.my.salesforce-scrt.com",
     mobileScope, "Web_Deployment", "chan-addr-1")).rejects.toThrow("browser_binding_field_unavailable");
+});
+
+test("browserConfig derives origins with the VF test-page origin from the ESW page namespace", async () => {
+  globalThis.fetch = (async () => Response.json({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      siteUrl: "https://example.com/chat",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })) as typeof fetch;
+  const seen: string[] = [];
+  const read = async (path: string) => {
+    seen.push(path);
+    if (path.includes("/tooling/query")) return Response.json({ records: [{ Name: "ESWWeb_Deployment1759000000000", NamespacePrefix: "tubot" }] });
+    return Response.json({ fields: [{ name: "Proxy_Echo_Visitor_Ref__c" }] });
+  };
+  const config = await browserConfig(read, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1");
+  expect(config.origin).toBe("https://example.com");
+  expect(config.origins).toEqual(["https://example.com", "https://test--tubot.vf.force.com"]);
+  // Tooling census of ESW<deployment><ts>, newest first — both LIKE variants
+  // for the underscore in the deployment name (LIKE '_' is a wildcard).
+  const tooling = seen.find((p) => p.includes("/tooling/query"))!;
+  expect(tooling).toContain("/services/data/v65.0/tooling/query?q=");
+  const soql = decodeURIComponent(tooling.split("q=")[1]);
+  expect(soql).toContain("Name LIKE 'ESWWeb\\_Deployment%'");
+  expect(soql).toContain("Name LIKE 'ESWWebDeployment%'");
+  expect(soql).toContain("ORDER BY CreatedDate DESC LIMIT 1");
+});
+
+test("browserConfig maps a null page namespace to --c and preserves the pod", async () => {
+  globalThis.fetch = (async () => Response.json({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      siteUrl: "https://example.com/chat",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })) as typeof fetch;
+  const read = async (path: string) => {
+    if (path.includes("/tooling/query")) return Response.json({ records: [{ Name: "ESWWebDeployment1759000000000", NamespacePrefix: null }] });
+    return Response.json({ fields: [{ name: "Proxy_Echo_Visitor_Ref__c" }] });
+  };
+  const config = await browserConfig(read, "v65.0", "https://acme.cs99.my.salesforce-scrt.com",
+    mobileScope, "WebDeployment", "chan-addr-1");
+  expect(config.origins).toEqual(["https://example.com", "https://acme--c.cs99.vf.force.com"]);
+});
+
+test("browserConfig falls back to [site.origin] when the VF page is missing, without throwing", async () => {
+  globalThis.fetch = (async () => Response.json({
+    embeddedServiceConfig: {
+      deploymentType: "Web",
+      siteUrl: "https://example.com/chat",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+    },
+  })) as typeof fetch;
+  const describe = async (path: string) => Response.json({ fields: [{ name: "Proxy_Echo_Visitor_Ref__c" }] });
+  const noPage = async (path: string) => path.includes("/tooling/query")
+    ? Response.json({ records: [] }) : describe(path);
+  await expect(browserConfig(noPage, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toMatchObject({
+    origin: "https://example.com", origins: ["https://example.com"],
+  });
+  const down = async (path: string) => path.includes("/tooling/query")
+    ? new Response("bad gateway", { status: 502 }) : describe(path);
+  await expect(browserConfig(down, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toMatchObject({
+    origins: ["https://example.com"],
+  });
+  const throwing = async (path: string): Promise<Response> => {
+    if (path.includes("/tooling/query")) throw new Error("transport_down");
+    return describe(path);
+  };
+  await expect(browserConfig(throwing, "v65.0", "https://test.my.salesforce-scrt.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toMatchObject({
+    origins: ["https://example.com"],
+  });
+  // An unscrt-shaped origin cannot reverse to an instance host: same fallback.
+  await expect(browserConfig(noPage, "v65.0", "https://odd.example.com",
+    mobileScope, "Web_Deployment", "chan-addr-1")).resolves.toMatchObject({
+    origins: ["https://example.com"],
+  });
 });
 
 test("verifyBrowserTurn distinguishes binding, transcript, and verified outcomes", async () => {
