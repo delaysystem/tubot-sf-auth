@@ -26,12 +26,29 @@ function vfHostFor(instanceUrl:string,namespacePrefix:string|null):string{
  const pod=labels.slice(1).join('.');
  return `${labels[0]}--${ns}${pod?`.${pod}`:''}.vf.force.com`;
 }
+// Deployment name embedded in a VF test page's bootstrap init call
+// (embeddedservice_bootstrap.init('orgId','Deployment','siteUrl',{
+// scrt2URL:'...'})), namespace-stripped. Null when no init call is
+// present. Pure; mirrors tubot-new-panel/worker/setup-activate.ts
+// vfBootstrapDeployment (same regex, same strip rule).
+export function vfBootstrapDeployment(markup:string):string|null{
+ const m=markup.match(/embeddedservice_bootstrap\.init\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*\{\s*scrt2URL:\s*'([^']+)'/);
+ if(!m)return null;
+ const esw=m[2];
+ const ns=esw.match(/^([A-Za-z][A-Za-z0-9]*)__(.+)$/);
+ return ns?ns[2]:esw;
+}
 // V1 snippet allow-list: the deployment's VF test-page origin joins the site
 // origin. The instance host is the scrt host with .my.salesforce-scrt.com
 // reversed to .my.salesforce.com; the page namespace comes from a Tooling
 // census of the generated ESW<deployment><timestamp> page (newest first,
 // same dual-LIKE shape as e2e/web-deploy-shot.ts testChatUrl — LIKE '_'
 // is a single-char wildcard, hence the escape plus the collapsed variant).
+// The platform truncates long collapsed names in generated page names
+// (proven: Nu_Message_Channel_TuBot -> ESWNuMessageCha<ts>), so a LIKE
+// miss falls back to bootstrap-content identity over recent ESW pages —
+// without it the VF origin drops off the allow-list and V1 snippet POSTs
+// 403 origin_forbidden (proven live on a clone deployment).
 async function vfTestOrigins(read:Read,version:string,scrtOrigin:string,deployment:string,siteOrigin:string):Promise<string[]>{
  if(!DEPLOYMENT_RE.test(deployment))throw Error('invalid deployment name');
  const scrtHost=new URL(scrtOrigin).hostname.toLowerCase();
@@ -44,7 +61,14 @@ async function vfTestOrigins(read:Read,version:string,scrtOrigin:string,deployme
  const res=await read(`/services/data/${version}/tooling/query?q=${encodeURIComponent(`SELECT Name, NamespacePrefix FROM ApexPage WHERE ${where} ORDER BY CreatedDate DESC LIMIT 1`)}`);
  if(!res.ok)throw Error('tooling query unavailable');
  const found:any=await res.json().catch(()=>null);
- const page=found?.records?.[0];
+ let page=found?.records?.[0];
+ if(!page?.Name){
+  const scan=await read(`/services/data/${version}/tooling/query?q=${encodeURIComponent(`SELECT Name, NamespacePrefix, Markup FROM ApexPage WHERE Name LIKE 'ESW%' ORDER BY CreatedDate DESC LIMIT 25`)}`);
+  if(!scan.ok)throw Error('tooling query unavailable');
+  const scanned:any=await scan.json().catch(()=>null);
+  const rows:Array<any>=Array.isArray(scanned?.records)?scanned.records:[];
+  page=rows.find(r=>typeof r?.Markup==='string'&&vfBootstrapDeployment(r.Markup)===deployment);
+ }
  if(!page?.Name)throw Error('test page not found');
  return [...new Set([siteOrigin,`https://${vfHostFor(instanceUrl,typeof page.NamespacePrefix==='string'?page.NamespacePrefix:null)}`])];
 }
