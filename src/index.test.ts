@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import worker, { TubotSfAuthEntrypoint, MessagingProxyBroker, assertApiDeployment, __resetPanelCredentialCacheForTests } from "./index";
+import worker, { TubotSfAuthEntrypoint, MessagingProxyBroker, assertProxyDeployment, __resetPanelCredentialCacheForTests } from "./index";
 import { injectSoapSession, SOAP_SESSION_PLACEHOLDER } from "./soap-session";
 import { browserConfig, verifyBrowserTurn } from "./browser-echo";
 import { echoParameters, validGuestId, qualifyDefinitionName, flipDefinitionTwin, isDefinitionInvalidInput } from "./echo-params";
@@ -2607,6 +2607,12 @@ const apiScrtPayload = {
     embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
   },
 };
+const webScrtPayload = {
+  embeddedServiceConfig: {
+    deploymentType: "Web",
+    embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
+  },
+};
 
 function mockBrokerSalesforce(scrt: (url: URL) => unknown) {
   return mockSalesforce({
@@ -2648,6 +2654,13 @@ test("broker validate accepts a matching API deployment", async () => {
     .resolves.toEqual({ scrtOrigin: "https://test.my.salesforce-scrt.com" });
 });
 
+test("broker validate accepts a matching Web deployment (web-only orgs)", async () => {
+  mockBrokerSalesforce(() => webScrtPayload);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.validate(mobileScope, { deploymentName: "Web_Deployment", action: echoFlowAction }))
+    .resolves.toEqual({ scrtOrigin: "https://test.my.salesforce-scrt.com" });
+});
+
 test("broker validate rejects a Mobile browser deployment with an explicit error", async () => {
   mockBrokerSalesforce((url) => url.searchParams.get("esConfigName") === "Mobile_Deployment" ? mobileScrtPayload : apiScrtPayload);
   const broker = new MessagingProxyBroker(null, await fixture());
@@ -2657,10 +2670,11 @@ test("broker validate rejects a Mobile browser deployment with an explicit error
   expect((failure as Error).message).toBe("proxy_broker_browser_deployment_type_unsupported");
 });
 
-test("assertApiDeployment accepts API and rejects Mobile, mismatched, and empty payloads", () => {
-  expect(() => assertApiDeployment(apiScrtPayload, "chan-addr-1")).not.toThrow();
+test("assertProxyDeployment accepts API and Web, rejects Mobile, mismatched, and empty payloads", () => {
+  expect(() => assertProxyDeployment(apiScrtPayload, "chan-addr-1")).not.toThrow();
+  expect(() => assertProxyDeployment(webScrtPayload, "chan-addr-1")).not.toThrow();
   const codes = (payload: unknown) => {
-    try { assertApiDeployment(payload, "chan-addr-1"); } catch (error) {
+    try { assertProxyDeployment(payload, "chan-addr-1"); } catch (error) {
       return (error as { failure?: { code?: string } }).failure?.code;
     }
     return "accepted";
@@ -2675,6 +2689,12 @@ test("assertApiDeployment accepts API and rejects Mobile, mismatched, and empty 
   expect(codes({
     embeddedServiceConfig: {
       deploymentType: "Web",
+      embeddedServiceMessagingChannel: { channelAddressIdentifier: "other-channel" },
+    },
+  })).toBe("proxy_deployment_mismatch");
+  expect(codes({
+    embeddedServiceConfig: {
+      deploymentType: "WhatsApp",
       embeddedServiceMessagingChannel: { channelAddressIdentifier: "chan-addr-1" },
     },
   })).toBe("proxy_deployment_mismatch");

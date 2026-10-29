@@ -2545,18 +2545,24 @@ try {
   // Fallback for non-workerd runtimes
 }
 
-// Live SCRT serves published Mobile deployments, but the iamessage token
-// endpoint rejects them ("Supported deployment types: API"), so Mobile can
-// never ride the API echo path and must fail here with its own code.
-export function assertApiDeployment(payload: unknown, channelAddressIdentifier: string): void {
+// The primary deployment gates registration, not the messaging path:
+// visitor turns ride the v1 widget shape on Web deployments (widget token,
+// esDeveloperName of the Web deployment — accepted live by the v2 message
+// endpoint) or the v2 API shape on API deployments, and agent replies
+// submit through the channel's Flow action. Nothing mints a v2 token with
+// this deployment, so API and Web both proxy; only Mobile cannot (the
+// iamessage token endpoint rejects it: "Supported deployment types: API"),
+// and it keeps its own code. Proven live: web-only sdolite1.
+export function assertProxyDeployment(payload: unknown, channelAddressIdentifier: string): void {
   const root = object(payload) ? payload : null;
   const config = root && object(root.embeddedServiceConfig) ? root.embeddedServiceConfig : null;
   const channel = config && object(config.embeddedServiceMessagingChannel) ? config.embeddedServiceMessagingChannel : null;
   if (config?.deploymentType === "Mobile") {
-    throw authFailure(400, "proxy_deployment_type_unsupported", "The Mobile deployment cannot be proxied through the API messaging path. Register an API deployment instead.");
+    throw authFailure(400, "proxy_deployment_type_unsupported", "The Mobile deployment cannot be proxied through the messaging path. Register an API or Web deployment instead.");
   }
-  if (config?.deploymentType !== "API" || channel?.channelAddressIdentifier !== channelAddressIdentifier) {
-    throw authFailure(400, "proxy_deployment_mismatch", "The published API deployment must belong to this channel.");
+  const type = config?.deploymentType;
+  if ((type !== "API" && type !== "Web") || channel?.channelAddressIdentifier !== channelAddressIdentifier) {
+    throw authFailure(400, "proxy_deployment_mismatch", "The published API or Web deployment must belong to this channel.");
   }
 }
 
@@ -2623,7 +2629,7 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     stage="scrt_configuration";
     const response = await fetch(url.toString(), {redirect:"manual",signal:AbortSignal.timeout(20000)});
     const payload: any = response.ok ? await response.json() : null;
-    assertApiDeployment(payload, channel.ChannelAddressIdentifier);
+    assertProxyDeployment(payload, channel.ChannelAddressIdentifier);
     stage='browser_configuration';
     let browser;
     if(config.browserDeploymentName){
