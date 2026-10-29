@@ -129,16 +129,24 @@ async function selfBind(read:Read,write:Write,scope:TenantScope,config:BrowserCo
   return {ok:true,code:'verified',...(validGuestId(recipient)?{recipient}:{})};
  }catch{return null;}
 }
-export async function verifyBrowserTurn(read:Read,scope:TenantScope,config:BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string},write?:Write):Promise<BrowserVerdict>{
+export async function verifyBrowserTurn(read:Read,scope:TenantScope,config:BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string;knownEntries?:BrowserSyncEntry[]},write?:Write):Promise<BrowserVerdict>{
  const fields=(Array.isArray(config.visitorFields)&&config.visitorFields.length?config.visitorFields:[config.visitorField]).filter((f):f is string=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9_]*$/.test(f));
  if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length)return {ok:false,code:'invalid_turn'};
+ // Same-serve pass-through: the proxy already fetched these entries via
+ // Salesforce during sync discovery, so a (messageId,text) match skips the
+ // duplicate entries fetch below. Server-side only (never client input);
+ // any miss or shape drift falls back to the live fetch. The
+ // session-binding check always stays live regardless.
+ const entriesPath=`/services/data/${config.apiVersion}/connect/conversation/${turn.conversationId}/entries?recordLimit=1000`;
+ const knownHit=Array.isArray(turn.knownEntries)?turn.knownEntries.some(e=>e?.messageId===turn.messageId&&typeof e?.text==='string'&&e.text===turn.text):false;
  const match=fields.map(f=>`${f}='${turn.reference}'`).join(' OR ');
  const query=`SELECT Id,MessagingEndUserId FROM MessagingSession WHERE Conversation.ConversationIdentifier='${turn.conversationId}' AND MessagingChannelId='${scope.channelId}' AND (${match}) LIMIT 1`;
- const [session,entries]=await Promise.all([read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(query)}`),read(`/services/data/${config.apiVersion}/connect/conversation/${turn.conversationId}/entries?recordLimit=1000`)]);if(!session.ok)throw Error('browser_binding_unavailable');
+ const [session,entries]=await Promise.all([read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(query)}`),knownHit?Promise.resolve(null):read(entriesPath)]);if(!session.ok)throw Error('browser_binding_unavailable');
  const sessions:any=await session.json();
  if(sessions.records?.length!==1){
   if(write){
-   const bound=await selfBind(read,write,scope,config,turn,fields,entries,query);
+   const entriesForBind=entries??await read(entriesPath);
+   const bound=await selfBind(read,write,scope,config,turn,fields,entriesForBind,query);
    if(bound)return bound;
   }
   // F5: Salesforce accepts the visitor message before committing the
@@ -156,12 +164,14 @@ export async function verifyBrowserTurn(read:Read,scope:TenantScope,config:Brows
   return {ok:false,code:'binding_absent'};
  }
  const recipient=sessions.records[0]?.MessagingEndUserId;
- if(!entries.ok)throw Error('browser_entries_unavailable');
- const transcript:any=await entries.json();const entry=transcript.conversationEntries?.find((e:any)=>e.identifier===turn.messageId&&e.sender?.role==='EndUser');
- if(typeof entry?.messageText!=='string')return {ok:false,code:'transcript_mismatch'};
- // Compare the canonical Connect transcript representation, preserving literal
- // entities, whitespace and Unicode rather than trusting browser-provided text.
- if(entry.messageText!==transcriptText(turn.text))return {ok:false,code:'transcript_mismatch'};
+ if(!knownHit){
+  if(!entries||!entries.ok)throw Error('browser_entries_unavailable');
+  const transcript:any=await entries.json();const entry=transcript.conversationEntries?.find((e:any)=>e.identifier===turn.messageId&&e.sender?.role==='EndUser');
+  if(typeof entry?.messageText!=='string')return {ok:false,code:'transcript_mismatch'};
+  // Compare the canonical Connect transcript representation, preserving literal
+  // entities, whitespace and Unicode rather than trusting browser-provided text.
+  if(entry.messageText!==transcriptText(turn.text))return {ok:false,code:'transcript_mismatch'};
+ }
  // Pass the verified recipient through so echo skips its duplicate session
  // query; a missing guest id stays verified and echo falls back to the query.
  return {ok:true,code:'verified',...(validGuestId(recipient)?{recipient}:{})};
@@ -192,21 +202,24 @@ export async function discoverBrowserTurns(read:Read,scope:TenantScope,config:Br
   }
  }
  if(!conversationId){
+  // Bound + unbound session lookups are independent: fire together, then
+  // apply precedence (bound reference match wins over unbound recency).
+  // Same queries and outcome as the serial version, one round trip saved.
   const match=fields.map(f=>`${f}='${input.reference}'`).join(' OR ');
   const boundQuery=`SELECT Id,Status,Conversation.ConversationIdentifier FROM MessagingSession WHERE MessagingChannelId='${scope.channelId}' AND Status != 'Ended' AND (${match}) ORDER BY CreatedDate DESC LIMIT 1`;
-  const boundRes=await read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(boundQuery)}`);
+  const unboundFilter=fields.map(f=>`${f} = null`).join(' AND ');
+  const createdClause=sinceFloor>0?` AND CreatedDate >= ${new Date(sinceFloor).toISOString()}`:'';
+  const unboundQuery=`SELECT Id,Status,Conversation.ConversationIdentifier FROM MessagingSession WHERE MessagingChannelId='${scope.channelId}' AND Status != 'Ended' AND (${unboundFilter})${createdClause} ORDER BY CreatedDate DESC LIMIT 1`;
+  const [boundRes,unboundRes]=await Promise.all([
+   read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(boundQuery)}`),
+   read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(unboundQuery)}`),
+  ]);
   if(boundRes.ok){
    const boundData:any=await boundRes.json().catch(()=>null);
    const cand=boundData?.records?.[0]?.Conversation?.ConversationIdentifier;
    if(typeof cand==='string'&&uuid.test(cand))conversationId=cand;
   }
- }
- if(!conversationId){
-  const unboundFilter=fields.map(f=>`${f} = null`).join(' AND ');
-  const createdClause=sinceFloor>0?` AND CreatedDate >= ${new Date(sinceFloor).toISOString()}`:'';
-  const unboundQuery=`SELECT Id,Status,Conversation.ConversationIdentifier FROM MessagingSession WHERE MessagingChannelId='${scope.channelId}' AND Status != 'Ended' AND (${unboundFilter})${createdClause} ORDER BY CreatedDate DESC LIMIT 1`;
-  const unboundRes=await read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(unboundQuery)}`);
-  if(unboundRes.ok){
+  if(!conversationId&&unboundRes.ok){
    const unboundData:any=await unboundRes.json().catch(()=>null);
    const cand=unboundData?.records?.[0]?.Conversation?.ConversationIdentifier;
    if(typeof cand==='string'&&uuid.test(cand)){conversationId=cand;isUnboundCandidate=true;}

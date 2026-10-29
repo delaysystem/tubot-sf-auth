@@ -2633,7 +2633,7 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     return {scrtOrigin,...(browser?{browser}:{})};
     } catch(cause) {if(cause instanceof AuthFailure)throw cause;throw authFailure(502,"proxy_"+stage+"_exception","Proxy validation failed.");}
   }
-  async browserTurn(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string}, signed?: SignedRpcEnvelope):Promise<import('../../tubot-sf-proxy/src/contracts').BrowserVerifyResult>{
+  async browserTurn(scope:TenantScope,config:import('../../tubot-sf-proxy/src/contracts').BrowserConfig,turn:import('../../tubot-sf-proxy/src/contracts').BrowserTurnInput, signed?: SignedRpcEnvelope):Promise<import('../../tubot-sf-proxy/src/contracts').BrowserVerifyResult>{
     await verifySignedRpcCall(this.env as AuthEnv, "browserTurn", [scope, config, turn], signed);
     const row=await this.#connection(scope);
     const env=this.env as AuthEnv;
