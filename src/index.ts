@@ -2693,21 +2693,25 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     if (!claim.owned) return { requestId: claim.requestId };
     const tracked = !('failOpen' in claim);
     const m = action.inputMapping;
-    // The send action resolves messageDefinitionName in the FLOW's namespace
-    // context: a packaged flow rejects the unpackaged twin (INVALID_INPUT)
-    // and vice versa. Qualify to the resolved flow's namespace; on a
-    // definition rejection flip the twin once (rejected pre-send, so the
-    // retry cannot double-send).
+    // Stored-first twin order (sdo2 2026-10-30: the route's stored
+    // definitionName is live-picked from the org's definition listing at
+    // provisioning, so it names a definition that EXISTS; it must go
+    // first. Deriving from the flow namespace first burns one doomed
+    // interview (and a Flow error email per turn) on mixed orgs where the
+    // resolved flow and the stored definition live in different
+    // namespaces (unpackaged twin flow + packaged definition). The flip
+    // stays as the single INVALID_INPUT fallback (rejected pre-send, so
+    // the retry cannot double-send).
     const flowNs = /\/flow\/([A-Za-z0-9]+)__[^/]+$/.exec(resolved.route)?.[1] ?? null;
     const qualified = qualifyDefinitionName(action.definitionName, flowNs);
     const submitWith = (definitionName: string) =>
       sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
         [m.definition]:definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
       }]}),crypto.randomUUID(),true);
-    let used = qualified;
-    let response = await submitWith(qualified);
+    let used = action.definitionName;
+    let response = await submitWith(action.definitionName);
     let result: any = await responseJson(response);
-    const fallback = qualified !== action.definitionName ? action.definitionName : flipDefinitionTwin(qualified);
+    const fallback = qualified !== action.definitionName ? qualified : flipDefinitionTwin(action.definitionName);
     if (fallback && isDefinitionInvalidInput(result)) {
       used = fallback;
       response = await submitWith(fallback);

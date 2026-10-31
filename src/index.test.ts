@@ -3107,6 +3107,77 @@ test("broker echo submits once per requestKey across duplicate invocations", asy
   expect(posts).toHaveLength(1);
 });
 
+// Stored-first definition twin order (sdo2 2026-10-30: every submit burned
+// one doomed bare-twin interview -> Flow error email per turn, then
+// succeeded on the packaged fallback). The route's stored definitionName
+// is live-picked from the org at provisioning, so it MUST go first; the
+// namespace-derived twin is only the INVALID_INPUT fallback.
+test("broker echo submits the stored definition name first", async () => {
+  const routes = echoSubmitRoutes() as Record<string, unknown>;
+  const defs: string[] = [];
+  routes["/services/data/v65.0/actions/custom/flow/Echo_Flow"] = (init: RequestInit | undefined) => {
+    if (init?.method === "POST") {
+      defs.push(JSON.parse(String(init.body)).inputs[0].definition);
+      return Response.json([{ isSuccess: true, outputValues: { requestId: "1sr000000000001AAA" } }]);
+    }
+    return Response.json({
+      name: "Echo_Flow",
+      inputs: [
+        { name: "definition", required: true },
+        { name: "recipients", required: true },
+        { name: "parameters", required: true },
+      ],
+      outputs: [{ name: "requestId" }],
+    });
+  };
+  const seen = mockSalesforce(routes);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  // Route stores the packaged twin; the resolved flow route is unpackaged
+  // (no /flow/<ns>__ segment -> flowNs null), exactly the sdo2 shape.
+  const action = { ...echoFlowAction, definitionName: "tubot__Tubot_Proxy_Echo" };
+  await expect(broker.echo(mobileScope, action, {
+    conversationId: "66666666-6666-4666-8666-666666666666", text: "hi", requestKey: "e".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId, recipient: "0PAxx0000000001AAA",
+  })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  const posts = seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
+  expect(posts).toHaveLength(1);
+  expect(defs).toEqual(["tubot__Tubot_Proxy_Echo"]);
+});
+
+test("broker echo flips to the derived twin once on definition INVALID_INPUT", async () => {
+  const routes = echoSubmitRoutes() as Record<string, unknown>;
+  const defs: string[] = [];
+  routes["/services/data/v65.0/actions/custom/flow/Echo_Flow"] = (init: RequestInit | undefined) => {
+    if (init?.method !== "POST") {
+      return Response.json({
+        name: "Echo_Flow",
+        inputs: [
+          { name: "definition", required: true },
+          { name: "recipients", required: true },
+          { name: "parameters", required: true },
+        ],
+        outputs: [{ name: "requestId" }],
+      });
+    }
+    const def = JSON.parse(String(init.body)).inputs[0].definition;
+    defs.push(def);
+    if (defs.length === 1) {
+      return Response.json([{ isSuccess: false,
+        errors: [{ statusCode: "INVALID_INPUT", message: `The value "${def}" for the messageDefinitionName parameter is invalid.` }] }]);
+    }
+    return Response.json([{ isSuccess: true, outputValues: { requestId: "1sr000000000001AAA" } }]);
+  };
+  mockSalesforce(routes);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  const action = { ...echoFlowAction, definitionName: "tubot__Tubot_Proxy_Echo" };
+  await expect(broker.echo(mobileScope, action, {
+    conversationId: "77777777-7777-4777-8777-777777777777", text: "hi", requestKey: "f".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId, recipient: "0PAxx0000000001AAA",
+  })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  // Stored packaged name first, bare twin only as the single fallback.
+  expect(defs).toEqual(["tubot__Tubot_Proxy_Echo", "Tubot_Proxy_Echo"]);
+});
+
 // resolve-channel semantics: getTokenForChannel without tenant scope resolves via
 // `channel_id = ? OR substr(channel_id, 1, 15) = ?` (Salesforce 15/18-char ids).
 // These tests lock the resolution outcome; index effectiveness is proven by replay.
