@@ -56,7 +56,26 @@ export async function discoverAgents(conn: SalesforceConnection): Promise<Invent
     const baseTypes = listedTypes.filter(type => type !== "GenAiPromptTemplate");
     for (let offset = 0; offset < baseTypes.length; offset += 3) {
       const batch = baseTypes.slice(offset, offset + 3);
-      const results = arr<any>(await soap(conn, version, "listMetadata", batch.map(type => `<m:queries><m:type>${type}</m:type></m:queries>`).join("") + `<m:asOfVersion>${version}</m:asOfVersion>`));
+      const listQuery = (types: string[]) => types.map(type => `<m:queries><m:type>${type}</m:type></m:queries>`).join("") + `<m:asOfVersion>${version}</m:asOfVersion>`;
+      let results: any[];
+      try {
+        results = arr<any>(await soap(conn, version, "listMetadata", listQuery(batch)));
+      } catch (error) {
+        // Describe-advertised but list-rejected types (proven: AiAgent on
+        // sdolite1 faults INVALID_TYPE) poison the whole batch. Redo the
+        // batch per-type, skipping faulting types with a warning — same
+        // tolerance the prompt inventory below already applies.
+        if (!(error instanceof SecurityError) || !/INVALID_TYPE|INVALID_FIELD/.test(error.code)) throw error;
+        results = [];
+        for (const type of batch) {
+          try {
+            results.push(...arr<any>(await soap(conn, version, "listMetadata", listQuery([type]))));
+          } catch (single) {
+            if (!(single instanceof SecurityError) || !/INVALID_TYPE|INVALID_FIELD/.test(single.code)) throw single;
+            warnings.push(`Metadata type ${type} is unavailable to list in this org; related agent downloads can be incomplete.`);
+          }
+        }
+      }
       for (const item of results) if (typeof item.fullName === "string" && typeof item.type === "string") {
         const member = { type: item.type, fullName: item.fullName, apiVersion: version }; membersByKey.set(memberKey(member), member);
       }
@@ -419,6 +438,24 @@ export async function readAgentSnapshotForScope(db: D1Database, scope: AgentScop
   return { agentName: job.agent_name, jobId: job.id, sha, manifest: job.manifest_json ? JSON.parse(job.manifest_json) : null, files: out };
 }
 
+/** Connect-time reconciliation: a retrieving job belongs to the registered
+ * extraction identity. Jobs started under a previous user can never advance
+ * (every poll throws agent_extraction_user_changed), so drop them — and only
+ * them — when the registered user no longer matches. Terminal jobs survive
+ * for F3 reuse; same-user reconnects are untouched. */
+export async function reconcileExtractionJobs(db: D1Database, scope: TenantScope, registeredUserId: string): Promise<number> {
+  const rows = (await db.prepare("SELECT id,state_json FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=? AND channel_id=? AND status='retrieving'")
+    .bind(...scopeArgs(scope)).all<{ id: string; state_json: string }>()).results;
+  const stale = rows.filter(r => { try { return (JSON.parse(r.state_json) as State).executionUserId !== registeredUserId; } catch { return true; } }).map(r => r.id);
+  for (const id of stale) {
+    await db.batch([
+      db.prepare("DELETE FROM sf_agent_snapshot_chunk WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=?").bind(...scopeArgs(scope), id),
+      db.prepare("DELETE FROM sf_agent_snapshot_file WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=?").bind(...scopeArgs(scope), id),
+      db.prepare("DELETE FROM sf_agent_snapshot_job WHERE team_id=? AND org_id=? AND channel_id=? AND id=?").bind(...scopeArgs(scope), id),
+    ]);
+  }
+  return stale.length;
+}
 /** Resumable live retrieval check; its state belongs to the registered extraction identity. */
 export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn: SalesforceConnection & { integrationUserId: string }) {
   const args = scopeArgs(scope);

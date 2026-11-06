@@ -4,9 +4,11 @@ import worker, { type AuthEnv } from "./index";
 import {
   advanceAgentSnapshot,
   agentSnapshotStatus,
+  discoverAgents,
   downloadAgentSnapshot,
   planAgentSnapshotPoll,
   readAgentSnapshotForScope,
+  reconcileExtractionJobs,
   startAgentSnapshot,
   SNAPSHOT_POLL_FRESH_MS,
   SNAPSHOT_SF_FAIL_COOLDOWN_MS,
@@ -114,6 +116,13 @@ function createSnapshotDb(opts: {
           return null;
         },
         async all() {
+          if (q.includes("FROM sf_agent_snapshot_job")) {
+            const rows = [...jobs.values()]
+              .filter((j) => j.team_id === args[0] && j.org_id === args[1] && j.channel_id === args[2] &&
+                (!q.includes("status='retrieving'") || j.status === "retrieving"))
+              .map((j) => ({ id: j.id, state_json: j.state_json }));
+            return { results: rows };
+          }
           if (q.includes("FROM sf_agent_snapshot_chunk")) {
             counts.chunkSelects++;
             const rows = chunks
@@ -204,6 +213,34 @@ function createSnapshotDb(opts: {
             chunks.push({ team_id, org_id, channel_id, job_id, path, chunk_index, content });
             counts.chunkInserts++;
             return { success: true, meta: { changes: 1 } };
+          }
+          if (q.startsWith("DELETE FROM sf_agent_snapshot_chunk")) {
+            const [team_id, org_id, channel_id, job_id] = args;
+            let changes = 0;
+            for (let i = chunks.length - 1; i >= 0; i--) {
+              const c = chunks[i];
+              if (c.team_id === team_id && c.org_id === org_id && c.channel_id === channel_id && c.job_id === job_id) {
+                chunks.splice(i, 1);
+                changes++;
+              }
+            }
+            return { success: true, meta: { changes } };
+          }
+          if (q.startsWith("DELETE FROM sf_agent_snapshot_file")) {
+            const [team_id, org_id, channel_id, job_id] = args;
+            let changes = 0;
+            for (const [k, f] of files) {
+              if (f.team_id === team_id && f.org_id === org_id && f.channel_id === channel_id && f.job_id === job_id) {
+                files.delete(k);
+                changes++;
+              }
+            }
+            return { success: true, meta: { changes } };
+          }
+          if (q.startsWith("DELETE FROM sf_agent_snapshot_job")) {
+            const [team_id, org_id, channel_id, id] = args;
+            const deleted = jobs.delete(jobKey(team_id, org_id, channel_id, id));
+            return { success: true, meta: { changes: deleted ? 1 : 0 } };
           }
           if (q.includes("salesforce_self_oauth_internal_nonce")) {
             if (q.startsWith("DELETE")) return { success: true, meta: { changes: 0 } };
@@ -726,4 +763,76 @@ test("F11: status route serves a fresh retrieving job with zero Salesforce calls
   expect(res.status).toBe(200);
   expect(((await res.json()) as any).status).toBe("retrieving");
   expect(fetchCalls).toBe(0);
+});
+
+test("POST /internal/agents/verify 409s without a registered metadata user (no channel fallback)", async () => {
+  const scope: TenantScope = { teamId: "team-verify-norow", orgId: ORG, channelId: "chan-verify-norow" };
+  const db = createSnapshotDb({ channel: channelRow(scope), metadataUser: null });
+  const res = await worker.fetch(
+    await signedStatusRequest("https://auth.test/internal/agents/verify", HMAC_KEY, { ...scope }),
+    routeEnv(db),
+  );
+  expect(res.status).toBe(409);
+  expect(((await res.json()) as any).error).toBe("agent_metadata_user_not_registered");
+});
+
+// Live sdolite1 shape (2026-11-05): describe@68 advertises AiAgent but
+// listMetadata rejects it (INVALID_TYPE), poisoning the whole batch of 3
+// and 502ing discovery. Discovery must skip the faulting type with a
+// warning and keep the listable members.
+test("discoverAgents skips describe-advertised but list-rejected types", async () => {
+  const faultXml =
+    '<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultcode>sf:INVALID_TYPE</faultcode><faultstring>INVALID_TYPE</faultstring></s:Fault></s:Body></s:Envelope>';
+  globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/services/data/") return Response.json([{ version: "68.0" }, { version: "67.0" }]);
+    const body = String(init?.body ?? "");
+    const version = url.pathname.split("/").pop() ?? "";
+    if (body.includes("<m:describeMetadata>")) {
+      const names =
+        version === "68.0"
+          ? ["Bot", "AiAgent", "AiAgentDefinition", "AiAgentDefinitionVersion"]
+          : ["Bot"];
+      return xmlResponse(
+        soapResult("describeMetadata", `<result>${names.map((n) => `<metadataObjects><xmlName>${n}</xmlName></metadataObjects>`).join("")}</result>`),
+      );
+    }
+    if (body.includes("<m:listMetadata>")) {
+      const types = [...body.matchAll(/<m:type>([^<]+)<\/m:type>/g)].map((m) => m[1]);
+      if (types.includes("AiAgent"))
+        return new Response(faultXml, { status: 500, headers: { "Content-Type": "text/xml" } });
+      const items = types.includes("AiAgentDefinition")
+        ? "<result><fullName>Coral_Cloud_Agent</fullName><type>AiAgentDefinition</type></result>"
+        : "<result><fullName>LegacyBot</fullName><type>Bot</type></result>";
+      return xmlResponse(soapResult("listMetadata", items));
+    }
+    throw new Error(`unexpected fetch ${url.pathname}`);
+  }) as typeof fetch;
+  const inv = await discoverAgents(CONN);
+  expect(inv.members.some((m) => m.type === "AiAgentDefinition" && m.fullName === "Coral_Cloud_Agent")).toBe(true);
+  expect(inv.members.some((m) => m.type === "Bot")).toBe(true);
+  expect(inv.warnings.some((w) => w.includes("AiAgent"))).toBe(true);
+  expect(inv.agents.some((a) => a.name === "Coral_Cloud_Agent")).toBe(true);
+});
+
+test("reconcileExtractionJobs drops retrieving jobs owned by a previous user, keeps the rest", async () => {
+  const db = createSnapshotDb();
+  const scope: TenantScope = { teamId: "team-recon", orgId: ORG, channelId: "chan-recon" };
+  const OLD = "005" + "O".repeat(12);
+  const stateFor = (user: string) => JSON.stringify({ executionUserId: user, inventory: null, requested: [], pending: [], queued: [], retrieveId: null, edges: [], warnings: [], excluded: [], excludedStandard: [], versions: [], rounds: 0 });
+  db.seedJob({ id: "job-stale", team_id: scope.teamId, org_id: ORG, channel_id: scope.channelId, agent_name: "A", status: "retrieving", state_json: stateFor(OLD), manifest_json: null, created_at: 1, updated_at: 1, lease_until: 0 });
+  db.seedJob({ id: "job-mine", team_id: scope.teamId, org_id: ORG, channel_id: scope.channelId, agent_name: "A", status: "retrieving", state_json: stateFor(USER), manifest_json: null, created_at: 1, updated_at: 1, lease_until: 0 });
+  db.seedJob({ id: "job-done", team_id: scope.teamId, org_id: ORG, channel_id: scope.channelId, agent_name: "A", status: "complete", state_json: stateFor(OLD), manifest_json: "{}", created_at: 1, updated_at: 1, lease_until: 0 });
+  db.seedFile({ team_id: scope.teamId, org_id: ORG, channel_id: scope.channelId, job_id: "job-stale", path: "bots/A.bot", sha256: "x", byte_size: 1 });
+  db.seedChunk({ team_id: scope.teamId, org_id: ORG, channel_id: scope.channelId, job_id: "job-stale", path: "bots/A.bot", chunk_index: 0, content: new ArrayBuffer(0) });
+  const dropped = await reconcileExtractionJobs(db as unknown as D1Database, scope, USER);
+  expect(dropped).toBe(1);
+  expect(db.jobs.has(`${scope.teamId}\0${ORG}\0${scope.channelId}\0job-stale`)).toBe(false);
+  expect(db.jobs.has(`${scope.teamId}\0${ORG}\0${scope.channelId}\0job-mine`)).toBe(true);
+  expect(db.jobs.has(`${scope.teamId}\0${ORG}\0${scope.channelId}\0job-done`)).toBe(true);
+  const files = await (db as unknown as D1Database).prepare("SELECT path FROM sf_agent_snapshot_file WHERE team_id=? AND org_id=? AND channel_id=? AND job_id=?").bind(scope.teamId, ORG, scope.channelId, "job-stale").all();
+  expect(files.results).toHaveLength(0);
+  // Same-user reconnect reconciles nothing.
+  expect(await reconcileExtractionJobs(db as unknown as D1Database, scope, USER)).toBe(0);
+  expect(db.jobs.has(`${scope.teamId}\0${ORG}\0${scope.channelId}\0job-mine`)).toBe(true);
 });

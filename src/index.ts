@@ -87,7 +87,7 @@ import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifec
 import { readBodyBounded, readJsonBounded, requireScope, scopedTags, SecurityError } from "./request-security";
 import { equalHash, maybePurgeRpcNonces, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
 import { getCallableToolUrlsForChannel, type Credential } from "./agent-script";
-import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, planAgentSnapshotPoll, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, type AgentScope } from "./agent-snapshot";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, planAgentSnapshotPoll, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, reconcileExtractionJobs, type AgentScope } from "./agent-snapshot";
 import { Data360AgentClient } from "./data360-client";
 import { hydrateAgentFromData360, listCachedAgents } from "./agent-blob";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
@@ -2403,6 +2403,8 @@ async function handle(request: Request, env: AuthEnv, requestId: string, ctx?: a
         .bind(scope.teamId, scope.orgId, scope.channelId, body.metadataUserId, body.metadataUsername, Date.now()).run();
       // Explicit re-registration must discard sessions minted before license/grant changes.
       clearChannelTokens(scope);
+      // ... and in-flight extractions owned by a previous user, which can never advance.
+      await reconcileExtractionJobs(env.DB, scope, body.metadataUserId);
       return json({ connected: true, metadataUserId: body.metadataUserId }, requestId);
     }
     if (path === "/internal/agents/download") return downloadAgentSnapshot(env.DB, scope, body.jobId as string);
