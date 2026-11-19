@@ -298,7 +298,7 @@ const EXPECTED_BROKER_METHODS = [
   "authorize", "browserSync", "browserTurn", "confirmInbound", "echo", "resolveFlowRoute", "sessionState", "status", "validate",
 ];
 const EXPECTED_AUTH_METHODS = [
-  "listConnectedOrgs", "listAgentSnapshots", "getAgentSnapshot", "inspectSalesforce", "invokeSpeechToTextWithSyntheticAudio",
+  "listConnectedOrgs", "listSnapshotTeams", "listAgentSnapshots", "getAgentSnapshot", "inspectSalesforce", "invokeSpeechToTextWithSyntheticAudio",
   "invokeCartReadWithSyntheticWebStore", "invokeDataGraphMetadataWithSyntheticGraph",
   "invokeDataGraphWithContext", "invokeDataGraphByLookupWithContext", "prepareTypedPromptContext",
   "describeFlowCreationContext", "invokeFlowCreationWithContext", "invokeRemainderBookingFlow",

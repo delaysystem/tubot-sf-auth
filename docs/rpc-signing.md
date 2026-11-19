@@ -66,6 +66,8 @@ envelope org returned by the guard):
 - `listConnectedOrgs`: filters rows to the calling org.
 - `listExecutionUsersForChannel`: 401s unless every returned row belongs to
   the calling org.
+- `listSnapshotTeams`: distinct teams holding ready snapshots for the
+  calling org (covers teams with no channel row).
 
 Callers must supply the org explicitly for these (wrapper-level parameter;
 wire arity is unchanged).

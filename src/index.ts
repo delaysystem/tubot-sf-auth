@@ -87,7 +87,7 @@ import { commerceLifecycleKind, commerceLifecycleActionName, invokeCommerceLifec
 import { readBodyBounded, readJsonBounded, requireScope, scopedTags, SecurityError } from "./request-security";
 import { equalHash, maybePurgeRpcNonces, verifySignedRpcCall, type SignedRpcEnvelope } from "./rpc-signing";
 import { getCallableToolUrlsForChannel, type Credential } from "./agent-script";
-import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, planAgentSnapshotPoll, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, readAgentSnapshotForScope, reconcileExtractionJobs, type AgentScope } from "./agent-snapshot";
+import { discoverAgents, startAgentSnapshot, advanceAgentSnapshot, planAgentSnapshotPoll, downloadAgentSnapshot, verifyAgentAccess, probeAgentMetadataPermissions, listAgentSnapshotsForScope, listSnapshotTeamsForOrg, readAgentSnapshotForScope, reconcileExtractionJobs, type AgentScope } from "./agent-snapshot";
 import { Data360AgentClient } from "./data360-client";
 import { hydrateAgentFromData360, listCachedAgents } from "./agent-blob";
 import { repairPromptContext, inferredContextSchema } from "./prompt-context";
@@ -2786,6 +2786,19 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         MIN(channel_id) AS channelId FROM panel_salesforce_channels GROUP BY team_id, org_id`).all<Key>();
     const all = rows.results ?? [];
     return org ? all.filter(k => k.orgId === org) : all;
+  }
+
+  /** Agentcode tenant picker: distinct teams holding ready snapshots for
+   * the calling org. Scopeless (envelope org binds in the body); covers
+   * teams with no channel row, which listConnectedOrgs cannot see. */
+  async listSnapshotTeams(signed?: SignedRpcEnvelope): Promise<string[]> {
+    const org = await verifySignedRpcCall(this.env as AuthEnv, "listSnapshotTeams", [], signed);
+    try {
+      return await listSnapshotTeamsForOrg((this.env as AuthEnv).DB, org);
+    } catch (cause) {
+      if (cause instanceof SecurityError) throw authFailure(cause.status, cause.code, cause.code);
+      throw cause;
+    }
   }
 
   /** Agentcode session source: latest ready snapshot per saved agent. Scope-first (arg 0); envelope org binds to scope.orgId. */

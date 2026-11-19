@@ -68,7 +68,7 @@ const ORG_KDF_SALT = "tubot-rpc-org-v1";
 
 /** Methods whose args carry no tenant scope: envelope.org is verified but
  * cannot be bound to args; the method body binds it instead (filter/lookup). */
-const SCOPELESS_RPC_METHODS = new Set(["listConnectedOrgs", "listExecutionUsersForChannel"]);
+const SCOPELESS_RPC_METHODS = new Set(["listConnectedOrgs", "listExecutionUsersForChannel", "listSnapshotTeams"]);
 
 /** businessArgsArray index holding the tenant scope ({ orgId }) per method.
  * Default 0 covers scope/ref-first methods (broker plus all invoke and inspect methods). */

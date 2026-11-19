@@ -396,6 +396,15 @@ export function requireAgentScope(value: any): AgentScope {
   }
   return { teamId: value.teamId, orgId: value.orgId };
 }
+/** Distinct teams holding ready (complete/incomplete) snapshots for one org.
+ * Tenant-picker discovery: covers teams with no channel row, which
+ * listConnectedOrgs cannot see. */
+export async function listSnapshotTeamsForOrg(db: D1Database, orgId: string): Promise<string[]> {
+  if (typeof orgId !== "string" || !ORG_ID_RE.test(orgId)) throw new SecurityError(401, "tenant_scope_required");
+  const rows = (await db.prepare(`SELECT DISTINCT team_id AS teamId FROM sf_agent_snapshot_job
+    WHERE org_id=? AND status IN ('complete','incomplete')`).bind(orgId).all<{ teamId: string }>()).results;
+  return rows.map((r) => r.teamId).filter((t): t is string => typeof t === "string" && t.length > 0 && t.length <= 128).sort();
+}
 export interface AgentSnapshotSummary { agentName: string; jobId: string; status: string; updatedAt: number }
 export async function listAgentSnapshotsForScope(db: D1Database, scope: AgentScope): Promise<AgentSnapshotSummary[]> {
   const { teamId, orgId } = requireAgentScope(scope);
