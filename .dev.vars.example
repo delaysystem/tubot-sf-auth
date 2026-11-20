@@ -1,0 +1,8 @@
+# Signed RPC caller key for the agentcode caller id (snapshot list/get API).
+# Generate with: bun -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))'
+# Must match SF_AUTH_CALLER_KEY in agentcode/.dev.vars; see docs/rpc-signing.md
+# for the envelope format and _NEXT rotation.
+AUTH_CALLER_KEY_AGENTCODE=
+
+# Local static Salesforce token used by sweep/activation scripts.
+LOCAL_STATIC_SF_TOKEN=
