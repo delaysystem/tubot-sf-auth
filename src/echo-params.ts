@@ -54,6 +54,18 @@ export function flipDefinitionTwin(definitionName: string): string | null {
   return null;
 }
 
+/** True for any INVALID_INPUT rejection (pre-send validation: the send
+ * definitely did not execute, so a retry via another route cannot
+ * double-send). Broader than isDefinitionInvalidInput: used to gate the
+ * direct-submit fast path's fallback to the full Flow. */
+export function isInvalidInput(result: unknown): boolean {
+  const first = Array.isArray(result) ? result[0] : null;
+  const errors = (first && typeof first === 'object' ? (first as {errors?: unknown}).errors : null);
+  if (!Array.isArray(errors)) return false;
+  return errors.some((e) => e && typeof e === 'object' &&
+    (e as {statusCode?: unknown}).statusCode === 'INVALID_INPUT');
+}
+
 /** True only for the precise definition-name INVALID_INPUT rejection. */
 export function isDefinitionInvalidInput(result: unknown): boolean {
   const first = Array.isArray(result) ? result[0] : null;

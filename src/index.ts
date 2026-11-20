@@ -1,6 +1,6 @@
 import { validScope, validConfig, turnScopeMatches, type TenantScope, type ProxyConfig, type EchoAction } from '../../tubot-sf-proxy/src/contracts';
 import {browserConfig,verifyBrowserTurn,discoverBrowserTurns,transcriptText} from './browser-echo';
-import {echoParameters,validGuestId,qualifyDefinitionName,flipDefinitionTwin,isDefinitionInvalidInput} from './echo-params';
+import {echoParameters,validGuestId,qualifyDefinitionName,flipDefinitionTwin,isDefinitionInvalidInput,isInvalidInput} from './echo-params';
 import {resolveSessionState} from './session-state';
 import { injectSoapSession } from "./soap-session";
 import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
@@ -2578,6 +2578,39 @@ function assertActionMapping(action: EchoAction, resolved: Extract<ToolResolutio
     throw authFailure(400, "proxy_action_mapping_invalid", "The mapping does not match live Flow metadata.");
   }
 }
+/**
+ * Fixed sendConversationMessages inputs for the direct-submit fast path,
+ * mirrored from the provisioned echo flow's Send element
+ * (tubot-sf-app/force-app/main/default/flows/Tubot_Proxy_Send_Notification.flow-meta.xml,
+ * confirmed identical on sdo2 active v1 2026-10-31). If an org's flow
+ * diverges, the direct POST fails INVALID_INPUT and echo() falls back to
+ * the full Flow path, so a stale mirror costs one call, never a wrong send.
+ */
+const DIRECT_SEND_FIXED_INPUTS = {
+  requestType: "SendNotificationMessages",
+  allowedSessionStatus: "Any",
+  isEnforceMessagingChannelConsent: true,
+  channelConsentType: "MessagingEndUser",
+  sessionLongevityPreference: "KeepSessionOpenOrAppend",
+} as const;
+
+/**
+ * Direct standard-action route for a resolved flow route, inheriting the
+ * flow's own API version (the flow calls this action, so its version
+ * supports it). Null when the route shape is unrecognized -> echo()
+ * skips direct and goes straight to the Flow.
+ */
+function directSendRoute(flowRoute: string): string | null {
+  const m = /^(.*\/actions)\/custom\/flow\/[^/]+$/.exec(flowRoute);
+  return m ? `${m[1]}/standard/sendConversationMessages` : null;
+}
+
+function isSendSuccess(response: Response | null, result: any, requestIdKey: string): boolean {
+  const output = result?.[0]?.outputValues;
+  return !!response && response.ok && result?.[0]?.isSuccess === true &&
+    /^[A-Za-z0-9]{15,18}$/.test(output?.[requestIdKey] || "");
+}
+
 export class MessagingProxyBroker extends BaseWorkerEntrypoint {
   async #connection(scope: TenantScope) {
     if (!validScope(scope)) throw authFailure(400, "invalid_proxy_scope", "A valid tenant channel is required.");
@@ -2695,35 +2728,60 @@ export class MessagingProxyBroker extends BaseWorkerEntrypoint {
     if (!claim.owned) return { requestId: claim.requestId };
     const tracked = !('failOpen' in claim);
     const m = action.inputMapping;
-    // Stored-first twin order (sdo2 2026-10-30: the route's stored
-    // definitionName is live-picked from the org's definition listing at
-    // provisioning, so it names a definition that EXISTS; it must go
-    // first. Deriving from the flow namespace first burns one doomed
-    // interview (and a Flow error email per turn) on mixed orgs where the
-    // resolved flow and the stored definition live in different
-    // namespaces (unpackaged twin flow + packaged definition). The flip
-    // stays as the single INVALID_INPUT fallback (rejected pre-send, so
-    // the retry cannot double-send).
-    const flowNs = /\/flow\/([A-Za-z0-9]+)__[^/]+$/.exec(resolved.route)?.[1] ?? null;
-    const qualified = qualifyDefinitionName(action.definitionName, flowNs);
-    const submitWith = (definitionName: string) =>
-      sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
-        [m.definition]:definitionName,[m.recipients]:[recipient],[m.parameters]:echoParameters(scope,recipient,turn.text)
-      }]}),crypto.randomUUID(),true);
+    const params = echoParameters(scope,recipient,turn.text);
+    // Direct-submit fast path: the provisioned echo flow is a thin wrapper
+    // over the standard sendConversationMessages action (fixed inputs in
+    // DIRECT_SEND_FIXED_INPUTS, cited to the flow XML). POSTing the action
+    // directly skips Flow-engine overhead (~0.6s measured live sdo2
+    // 2026-10-31: flow 3.3s vs direct 2.7s medians, same CLI baseline).
+    // Fallback rules: INVALID_INPUT (pre-send validation: the send did not
+    // execute) falls back to the full Flow path with its twin flip intact;
+    // any other failure fails closed with NO flow retry (ambiguous send
+    // state could double-send). An unparseable flow route also skips
+    // direct and goes straight to the Flow.
+    const directRoute = directSendRoute(resolved.route);
     let used = action.definitionName;
-    let response = await submitWith(action.definitionName);
-    let result: any = await responseJson(response);
-    const fallback = qualified !== action.definitionName ? qualified : flipDefinitionTwin(action.definitionName);
-    if (fallback && isDefinitionInvalidInput(result)) {
-      used = fallback;
-      response = await submitWith(fallback);
+    let response: Response | null = null;
+    let result: any = null;
+    if (directRoute) {
+      response = await sfRequest(env,row,directRoute,"POST",JSON.stringify({inputs:[{
+        messageDefinitionName:action.definitionName,messagingEndUserIds:[recipient],
+        messagingDefinitionInputParameters:params,...DIRECT_SEND_FIXED_INPUTS,
+      }]}),crypto.randomUUID(),true);
       result = await responseJson(response);
     }
+    if (!isSendSuccess(response, result, action.outputMapping.requestId)
+        && (!directRoute || isInvalidInput(result))) {
+      // Stored-first twin order (sdo2 2026-10-30: the route's stored
+      // definitionName is live-picked from the org's definition listing at
+      // provisioning, so it names a definition that EXISTS; it must go
+      // first. Deriving from the flow namespace first burns one doomed
+      // interview (and a Flow error email per turn) on mixed orgs where the
+      // resolved flow and the stored definition live in different
+      // namespaces (unpackaged twin flow + packaged definition). The flip
+      // stays as the single INVALID_INPUT fallback (rejected pre-send, so
+      // the retry cannot double-send).
+      const flowNs = /\/flow\/([A-Za-z0-9]+)__[^/]+$/.exec(resolved.route)?.[1] ?? null;
+      const qualified = qualifyDefinitionName(action.definitionName, flowNs);
+      const submitWith = (definitionName: string) =>
+        sfRequest(env,row,resolved.route,"POST",JSON.stringify({inputs:[{
+          [m.definition]:definitionName,[m.recipients]:[recipient],[m.parameters]:params
+        }]}),crypto.randomUUID(),true);
+      used = action.definitionName;
+      response = await submitWith(action.definitionName);
+      result = await responseJson(response);
+      const fallback = qualified !== action.definitionName ? qualified : flipDefinitionTwin(action.definitionName);
+      if (fallback && isDefinitionInvalidInput(result)) {
+        used = fallback;
+        response = await submitWith(fallback);
+        result = await responseJson(response);
+      }
+    }
     const output = result?.[0]?.outputValues;
-    if (!response.ok || result?.[0]?.isSuccess !== true ||
+    if (!response || !response.ok || result?.[0]?.isSuccess !== true ||
         !/^[A-Za-z0-9]{15,18}$/.test(output?.[action.outputMapping.requestId] || "")) {
       console.error(JSON.stringify({error:"salesforce_notify_rejected",route:String(resolved.route).slice(0,160),
-        definition:used,status:response.status,isSuccess:result?.[0]?.isSuccess === true,
+        definition:used,status:response?.status ?? 0,isSuccess:result?.[0]?.isSuccess === true,
         errorCode:String(result?.[0]?.errorCode ?? result?.[0]?.errors?.[0]?.errorCode ?? "").slice(0,80)}));
       if (tracked) await releaseEchoSubmit(env.DB, turn.requestKey, claim.claimant);
       throw authFailure(502, "proxy_echo_rejected", "Salesforce did not confirm the notification request.", true);

@@ -3003,6 +3003,9 @@ const echoSubmitRoutes = () => ({
   "/services/data/v65.0/actions/custom/flow": {
     actions: [{ name: "Echo_Flow", url: "/services/data/v65.0/actions/custom/flow/Echo_Flow" }],
   },
+  "/services/data/v65.0/actions/standard/sendConversationMessages": (init: RequestInit | undefined) => init?.method === "POST"
+    ? Response.json([{ isSuccess: true, outputValues: { requestId: "1sr000000000001AAA" } }])
+    : Response.json([{ message: "not found" }], { status: 404 }),
   "/services/data/v65.0/actions/custom/flow/Echo_Flow": (init: RequestInit | undefined) => init?.method === "POST"
     ? Response.json([{ isSuccess: true, outputValues: { requestId: "1sr000000000001AAA" } }])
     : Response.json({
@@ -3026,8 +3029,9 @@ test("broker echo skips the session query when verify supplies the recipient", a
     recipient: "0PAxx0000000001AAA",
   })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
   expect(seen.filter((s) => s.method === "GET" && s.url.pathname.endsWith("/query"))).toHaveLength(0);
-  const submit = seen.find((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
-  expect(JSON.parse(submit?.body ?? "{}").inputs[0].recipients).toEqual(["0PAxx0000000001AAA"]);
+  const submit = seen.find((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/standard/sendConversationMessages"));
+  expect(JSON.parse(submit?.body ?? "{}").inputs[0].messagingEndUserIds).toEqual(["0PAxx0000000001AAA"]);
+  expect(seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"))).toHaveLength(0);
 });
 
 test("broker echo falls back to the session query without a passthrough recipient", async () => {
@@ -3040,8 +3044,8 @@ test("broker echo falls back to the session query without a passthrough recipien
   const sessionQueries = seen.filter((s) => s.method === "GET" && s.url.pathname.endsWith("/query")
     && (s.url.searchParams.get("q") ?? "").includes("FROM MessagingSession"));
   expect(sessionQueries).toHaveLength(1);
-  const submit = seen.find((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
-  expect(JSON.parse(submit?.body ?? "{}").inputs[0].recipients).toEqual(["0PAxx0000000001AAA"]);
+  const submit = seen.find((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/standard/sendConversationMessages"));
+  expect(JSON.parse(submit?.body ?? "{}").inputs[0].messagingEndUserIds).toEqual(["0PAxx0000000001AAA"]);
 });
 
 // Duplicate-submit guard: the 25s inline race orphan + alarm redelivery (or
@@ -3103,7 +3107,7 @@ test("broker echo submits once per requestKey across duplicate invocations", asy
   };
   await expect(broker.echo(mobileScope, echoFlowAction, turn)).resolves.toEqual({ requestId: "1sr000000000001AAA" });
   await expect(broker.echo(mobileScope, echoFlowAction, turn)).resolves.toEqual({ requestId: "1sr000000000001AAA" });
-  const posts = seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"));
+  const posts = seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/standard/sendConversationMessages"));
   expect(posts).toHaveLength(1);
 });
 
@@ -3114,6 +3118,9 @@ test("broker echo submits once per requestKey across duplicate invocations", asy
 // namespace-derived twin is only the INVALID_INPUT fallback.
 test("broker echo submits the stored definition name first", async () => {
   const routes = echoSubmitRoutes() as Record<string, unknown>;
+  // Direct fast path rejects (stale mirror) so the Flow twin order engages.
+  routes["/services/data/v65.0/actions/standard/sendConversationMessages"] = () =>
+    Response.json([{ isSuccess: false, errors: [{ statusCode: "INVALID_INPUT", message: "bad" }] }]);
   const defs: string[] = [];
   routes["/services/data/v65.0/actions/custom/flow/Echo_Flow"] = (init: RequestInit | undefined) => {
     if (init?.method === "POST") {
@@ -3146,6 +3153,8 @@ test("broker echo submits the stored definition name first", async () => {
 
 test("broker echo flips to the derived twin once on definition INVALID_INPUT", async () => {
   const routes = echoSubmitRoutes() as Record<string, unknown>;
+  routes["/services/data/v65.0/actions/standard/sendConversationMessages"] = () =>
+    Response.json([{ isSuccess: false, errors: [{ statusCode: "INVALID_INPUT", message: "bad" }] }]);
   const defs: string[] = [];
   routes["/services/data/v65.0/actions/custom/flow/Echo_Flow"] = (init: RequestInit | undefined) => {
     if (init?.method !== "POST") {
@@ -3176,6 +3185,34 @@ test("broker echo flips to the derived twin once on definition INVALID_INPUT", a
   })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
   // Stored packaged name first, bare twin only as the single fallback.
   expect(defs).toEqual(["tubot__Tubot_Proxy_Echo", "Tubot_Proxy_Echo"]);
+});
+
+test("broker echo falls back to the Flow once on direct INVALID_INPUT", async () => {
+  const routes = echoSubmitRoutes() as Record<string, unknown>;
+  routes["/services/data/v65.0/actions/standard/sendConversationMessages"] = () =>
+    Response.json([{ isSuccess: false, errors: [{ statusCode: "INVALID_INPUT", message: "unknown param" }] }]);
+  const seen = mockSalesforce(routes);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.echo(mobileScope, echoFlowAction, {
+    conversationId: "88888888-8888-4888-8888-888888888888", text: "hi", requestKey: "0".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId, recipient: "0PAxx0000000001AAA",
+  })).resolves.toEqual({ requestId: "1sr000000000001AAA" });
+  expect(seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/standard/sendConversationMessages"))).toHaveLength(1);
+  expect(seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"))).toHaveLength(1);
+});
+
+test("broker echo fails closed without Flow retry on ambiguous direct failure", async () => {
+  const routes = echoSubmitRoutes() as Record<string, unknown>;
+  routes["/services/data/v65.0/actions/standard/sendConversationMessages"] = () =>
+    Response.json([{ message: "boom" }], { status: 500 });
+  const seen = mockSalesforce(routes);
+  const broker = new MessagingProxyBroker(null, await fixture());
+  await expect(broker.echo(mobileScope, echoFlowAction, {
+    conversationId: "99999999-9999-4999-8999-999999999999", text: "hi", requestKey: "1".repeat(64),
+    channelId: mobileScope.channelId, orgId: mobileScope.orgId, recipient: "0PAxx0000000001AAA",
+  })).rejects.toThrow("proxy_echo_rejected");
+  // No Flow retry: an ambiguous direct failure may already have sent.
+  expect(seen.filter((s) => s.method === "POST" && s.url.pathname.endsWith("/actions/custom/flow/Echo_Flow"))).toHaveLength(0);
 });
 
 // resolve-channel semantics: getTokenForChannel without tenant scope resolves via

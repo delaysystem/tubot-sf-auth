@@ -767,6 +767,19 @@ test("F11: status route serves a fresh retrieving job with zero Salesforce calls
 
 test("POST /internal/agents/verify 409s without a registered metadata user (no channel fallback)", async () => {
   const scope: TenantScope = { teamId: "team-verify-norow", orgId: ORG, channelId: "chan-verify-norow" };
+  // token() runs before the metadata-user guard: stub the JWT grant so the
+  // test reaches the guard deterministically instead of hitting real network
+  // (unstubbed, the result depends on DNS/proxy: 422/503, never the 409).
+  globalThis.fetch = (async (input: unknown) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/services/oauth2/token") {
+      return Response.json({ access_token: "test-access-token", instance_url: INSTANCE, expires_in: 120 });
+    }
+    if (url.pathname === "/services/oauth2/userinfo") {
+      return Response.json({ organization_id: ORG, user_id: USER });
+    }
+    throw new Error(`unexpected fetch ${url.pathname}`);
+  }) as typeof fetch;
   const db = createSnapshotDb({ channel: channelRow(scope), metadataUser: null });
   const res = await worker.fetch(
     await signedStatusRequest("https://auth.test/internal/agents/verify", HMAC_KEY, { ...scope }),

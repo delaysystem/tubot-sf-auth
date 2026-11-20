@@ -106,9 +106,11 @@ test("F3 channel disconnect keeps snapshots and drops channel-bound rows", async
   // Snapshots survive: no snapshot-table DELETE of any kind.
   expect(db.deletes.filter((d) => d.sql.includes("sf_agent_snapshot_"))).toHaveLength(0);
 
-  // Channel-bound rows are still purged, scoped to the exact channel.
+  // Ephemeral channel-bound rows are still purged, scoped to the exact
+  // channel — but the metadata-user row survives so a reconnect finds its
+  // extraction identity (it holds no secrets; tokens are cleared above).
   const tables = db.deletes.map((d) => d.sql);
-  expect(tables.filter((s) => s.startsWith("DELETE FROM sf_agent_metadata_user"))).toHaveLength(1);
+  expect(tables.filter((s) => s.startsWith("DELETE FROM sf_agent_metadata_user"))).toHaveLength(0);
   expect(tables.filter((s) => s.startsWith("DELETE FROM action_graph_context"))).toHaveLength(1);
   for (const d of db.deletes) {
     expect(d.bindings).toEqual(["team", ORG_ID, CHANNEL_ID]);

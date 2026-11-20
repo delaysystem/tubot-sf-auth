@@ -1,7 +1,7 @@
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { unzipSync, zipSync, strToU8 } from "fflate";
 import { requireScope, readBodyBounded, SecurityError, type TenantScope } from "./request-security";
-import { soapRequest as soap, beginRetrieve, pollRetrieve, throwRetrieveFailure } from "./soap-retrieve";
+import { soapRequest as soap, beginRetrieve, pollRetrieve, throwRetrieveFailure, isUnknownRetrieveId, MAX_RETRIEVE_REBEGINS } from "./soap-retrieve";
 import type { SalesforceConnection } from "./agent-script";
 
 // Metadata only. Flow/Apex references are recorded, never retrieved.
@@ -12,7 +12,7 @@ const MAX_BYTES = 24_000_000;
 const parser = new XMLParser({ removeNSPrefix: true, ignoreAttributes: false, parseTagValue: false, processEntities: true });
 type Member = { type: string; fullName: string; apiVersion?: string };
 type Inventory = { apiVersion: string; legacyApiVersion?: string; typesByVersion: Record<string, string[]>; supportedTypes: string[]; members: Member[]; warnings: string[] };
-type State = { executionUserId: string; inventory: Inventory; requested: Member[]; pending: Member[]; queued: Member[]; retrieveId: string | null; edges: Array<{ from: string; to: string }>; warnings: string[]; excluded: string[]; excludedStandard: string[]; versions: string[]; rounds: number; lastSfFailureAt?: number };
+type State = { executionUserId: string; inventory: Inventory; requested: Member[]; pending: Member[]; queued: Member[]; retrieveId: string | null; edges: Array<{ from: string; to: string }>; warnings: string[]; excluded: string[]; excludedStandard: string[]; versions: string[]; rounds: number; lastSfFailureAt?: number; rebegins?: number };
 // F11: fixed-2s polling burned a full advance (~7r+6w+F reads) every round,
 // even during outages. After N retrieving rounds the hint backs off
 // exponentially; status polls go status-only while another poll holds the
@@ -292,7 +292,18 @@ export async function advanceAgentSnapshot(db: D1Database, scope: TenantScope, c
     if (state.executionUserId !== conn.integrationUserId) throw new SecurityError(409, "agent_extraction_user_changed");
     if (now - job.created_at > 3600_000) throw new SecurityError(408, "agent_extraction_expired");
     const currentVersion = state.pending[0].apiVersion ?? state.inventory.apiVersion;
-    const retrieved = await pollRetrieve(conn, currentVersion, state.retrieveId!);
+    let retrieved;
+    try {
+      retrieved = await pollRetrieve(conn, currentVersion, state.retrieveId!);
+    } catch (error) {
+      // Dud async id: resume is futile, begin fresh for the same members.
+      // Bounded: a full dud episode still fails honestly after rebegins.
+      if (!isUnknownRetrieveId(error) || (state.rebegins ?? 0) >= MAX_RETRIEVE_REBEGINS) throw error;
+      state.retrieveId = await beginRetrieve(conn, currentVersion, state.pending);
+      state.rebegins = (state.rebegins ?? 0) + 1;
+      await db.prepare("UPDATE sf_agent_snapshot_job SET state_json=?,updated_at=? WHERE team_id=? AND org_id=? AND channel_id=? AND id=? AND lease_until=?").bind(JSON.stringify(state), Date.now(), ...scopeArgs(scope), id, lease).run();
+      return resultForJob(await getJob(db, scope, id));
+    }
     if (!retrieved.done) return resultForJob(job);
     for (const warning of retrieved.messages) state.warnings.push(`${warning.fileName ?? "metadata"}: ${warning.problem ?? "Salesforce retrieval warning"}`);
     if (!retrieved.success || retrieved.zipB64 === null) throwRetrieveFailure(retrieved);
@@ -465,72 +476,90 @@ export async function reconcileExtractionJobs(db: D1Database, scope: TenantScope
   }
   return stale.length;
 }
+type VerifyState = { retrieveId?: string; version: string; startedAt: number; verifiedAt?: number; userId: string; promptReady?: boolean; promptRetrieveId?: string; promptVersion?: string; baseVerified?: boolean; rootKey?: string; promptKey?: string; rebegins?: number };
+
+async function beginVerification(db: D1Database, args: (string | number)[], scope: TenantScope, conn: SalesforceConnection & { integrationUserId: string }, rebegins: number) {
+  const inventory = await discoverAgents(conn);
+  const root = inventory.members.find(m => ["Bot", "AiAgentDefinition", "AiAgent"].includes(m.type));
+  const version = root?.apiVersion ?? inventory.apiVersion;
+  const prompt = inventory.members.find(m => m.type === "GenAiPromptTemplate");
+  // Prompt metadata is gated independently, even when the org has no templates.
+  const described = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/sobjects/PermissionSet/describe`, {
+    headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
+  });
+  if (!described.ok) throw new SecurityError(described.status === 401 ? 401 : 403, "agent_permission_schema_check_failed");
+  const permissionSchema = JSON.parse(new TextDecoder().decode(await readBodyBounded(described, 3_000_000))) as { fields?: Array<{ name: string }> };
+  const promptPermissionAvailable = permissionSchema.fields?.some(f => f.name === "PermissionsManagePromptTemplates");
+  let promptReady = false;
+  if (inventory.supportedTypes.includes("GenAiPromptTemplate") && promptPermissionAvailable) {
+    const response = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/query?q=${encodeURIComponent("SELECT Id FROM PermissionSetAssignment WHERE AssigneeId='" + conn.integrationUserId + "' AND PermissionSet.PermissionsManagePromptTemplates=true LIMIT 1")}`, {
+      headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new SecurityError(response.status === 401 ? 401 : 403, "agent_prompt_permission_check_failed");
+    const result = JSON.parse(new TextDecoder().decode(await readBodyBounded(response, 100_000))) as { records?: unknown[] };
+    promptReady = !!result.records?.length && !inventory.warnings.some(w => w.startsWith("Prompt metadata is unavailable"));
+  }
+  const members = [root].filter((m): m is Member => !!m);
+  // An empty metadata package is valid for an org with no agent definitions.
+  const state: VerifyState = { retrieveId: await beginRetrieve(conn, version, members), version, startedAt: Date.now(), userId: conn.integrationUserId, promptReady, rootKey: root ? memberKey(root) : undefined };
+  if (rebegins) state.rebegins = rebegins;
+  if (promptReady && prompt) {
+    try {
+      state.promptKey = memberKey(prompt);
+      state.promptVersion = prompt.apiVersion ?? version;
+      state.promptRetrieveId = await beginRetrieve(conn, state.promptVersion, [prompt]);
+    } catch (error) {
+      if (!(error instanceof SecurityError) || (error.status !== 403 && !/INVALID_TYPE|INVALID_FIELD/.test(error.code))) throw error;
+      state.promptReady = false;
+    }
+  }
+  await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")
+    .bind(JSON.stringify(state), ...args, conn.integrationUserId).run();
+  return { ready: false, pending: true };
+}
+
 /** Resumable live retrieval check; its state belongs to the registered extraction identity. */
 export async function verifyAgentAccess(db: D1Database, scope: TenantScope, conn: SalesforceConnection & { integrationUserId: string }) {
   const args = scopeArgs(scope);
   const row = await db.prepare("SELECT integration_user_id,verification_json FROM sf_agent_metadata_user WHERE team_id=? AND org_id=? AND channel_id=?")
     .bind(...args).first<{ integration_user_id: string; verification_json: string | null }>();
   if (!row || row.integration_user_id !== conn.integrationUserId) throw new SecurityError(409, "agent_metadata_user_not_registered");
-  let state = row.verification_json ? JSON.parse(row.verification_json) as { retrieveId?: string; version: string; startedAt: number; verifiedAt?: number; userId: string; promptReady?: boolean; promptRetrieveId?: string; promptVersion?: string; baseVerified?: boolean; rootKey?: string; promptKey?: string } : null;
+  let state = row.verification_json ? JSON.parse(row.verification_json) as VerifyState : null;
   if (state?.userId !== conn.integrationUserId || Date.now() - state.startedAt > 900_000) state = null;
   if (state?.verifiedAt && Date.now() - state.verifiedAt < 60_000) return { ready: true, integrationUserId: conn.integrationUserId, promptReady: state.promptReady === true };
-  if (!state || state.verifiedAt) {
-    const inventory = await discoverAgents(conn);
-    const root = inventory.members.find(m => ["Bot", "AiAgentDefinition", "AiAgent"].includes(m.type));
-    const version = root?.apiVersion ?? inventory.apiVersion;
-    const prompt = inventory.members.find(m => m.type === "GenAiPromptTemplate");
-    // Prompt metadata is gated independently, even when the org has no templates.
-    const described = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/sobjects/PermissionSet/describe`, {
-      headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
-    });
-    if (!described.ok) throw new SecurityError(described.status === 401 ? 401 : 403, "agent_permission_schema_check_failed");
-    const permissionSchema = JSON.parse(new TextDecoder().decode(await readBodyBounded(described, 3_000_000))) as { fields?: Array<{ name: string }> };
-    const promptPermissionAvailable = permissionSchema.fields?.some(f => f.name === "PermissionsManagePromptTemplates");
-    let promptReady = false;
-    if (inventory.supportedTypes.includes("GenAiPromptTemplate") && promptPermissionAvailable) {
-      const response = await fetch(`${conn.instanceUrl}/services/data/v${inventory.apiVersion}/query?q=${encodeURIComponent("SELECT Id FROM PermissionSetAssignment WHERE AssigneeId='" + conn.integrationUserId + "' AND PermissionSet.PermissionsManagePromptTemplates=true LIMIT 1")}`, {
-        headers: { Authorization: `Bearer ${conn.accessToken}` }, signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) throw new SecurityError(response.status === 401 ? 401 : 403, "agent_prompt_permission_check_failed");
-      const result = JSON.parse(new TextDecoder().decode(await readBodyBounded(response, 100_000))) as { records?: unknown[] };
-      promptReady = !!result.records?.length && !inventory.warnings.some(w => w.startsWith("Prompt metadata is unavailable"));
+  if (!state || state.verifiedAt) return beginVerification(db, args, scope, conn, 0);
+  try {
+    if (!state.baseVerified) {
+      const retrieved = await pollRetrieve(conn, state.version, state.retrieveId!);
+      if (!retrieved.done) return { ready: false, pending: true };
+      if (!retrieved.success || retrieved.zipB64 === null || (state.rootKey && !retrieved.fileProperties.some((p: any) => `${p.type}:${p.fullName}` === state.rootKey))) {
+        await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=NULL WHERE team_id=? AND org_id=? AND channel_id=?").bind(...args).run();
+        throw new SecurityError(403, "agent_metadata_retrieval_check_failed");
+      }
+      state.baseVerified = true;
     }
-    const members = [root].filter((m): m is Member => !!m);
-    // An empty metadata package is valid for an org with no agent definitions.
-    state = { retrieveId: await beginRetrieve(conn, version, members), version, startedAt: Date.now(), userId: conn.integrationUserId, promptReady, rootKey: root ? memberKey(root) : undefined };
-    if (promptReady && prompt) {
+    if (state.promptRetrieveId) {
       try {
-        state.promptKey = memberKey(prompt);
-        state.promptVersion = prompt.apiVersion ?? version;
-        state.promptRetrieveId = await beginRetrieve(conn, state.promptVersion, [prompt]);
+        const prompt = await pollRetrieve(conn, state.promptVersion!, state.promptRetrieveId);
+        if (!prompt.done) return { ready: false, pending: true };
+        state.promptReady = prompt.success && prompt.zipB64 !== null && prompt.fileProperties.some((p: any) => `${p.type}:${p.fullName}` === state.promptKey);
       } catch (error) {
-        if (!(error instanceof SecurityError) || (error.status !== 403 && !/INVALID_TYPE|INVALID_FIELD/.test(error.code))) throw error;
+        if (!(error instanceof SecurityError) || error.status !== 403) throw error;
         state.promptReady = false;
       }
+      delete state.promptRetrieveId;
     }
-    await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")
-      .bind(JSON.stringify(state), ...args, conn.integrationUserId).run();
-    return { ready: false, pending: true };
-  }
-  if (!state.baseVerified) {
-    const retrieved = await pollRetrieve(conn, state.version, state.retrieveId!);
-    if (!retrieved.done) return { ready: false, pending: true };
-    if (!retrieved.success || retrieved.zipB64 === null || (state.rootKey && !retrieved.fileProperties.some((p: any) => `${p.type}:${p.fullName}` === state.rootKey))) {
+  } catch (error) {
+    // Dud async id: the persisted state can never advance. Discard it and
+    // begin fresh; the count persists so a full dud episode still fails
+    // honestly instead of churning begins forever.
+    if (!isUnknownRetrieveId(error)) throw error;
+    const next = (state.rebegins ?? 0) + 1;
+    if (next > MAX_RETRIEVE_REBEGINS) {
       await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=NULL WHERE team_id=? AND org_id=? AND channel_id=?").bind(...args).run();
-      throw new SecurityError(403, "agent_metadata_retrieval_check_failed");
+      throw error;
     }
-    state.baseVerified = true;
-  }
-  if (state.promptRetrieveId) {
-    try {
-      const prompt = await pollRetrieve(conn, state.promptVersion!, state.promptRetrieveId);
-      if (!prompt.done) return { ready: false, pending: true };
-      state.promptReady = prompt.success && prompt.zipB64 !== null && prompt.fileProperties.some((p: any) => `${p.type}:${p.fullName}` === state.promptKey);
-    } catch (error) {
-      if (!(error instanceof SecurityError) || error.status !== 403) throw error;
-      state.promptReady = false;
-    }
-    delete state.promptRetrieveId;
+    return beginVerification(db, args, scope, conn, next);
   }
   state.verifiedAt = Date.now();
   await db.prepare("UPDATE sf_agent_metadata_user SET verification_json=? WHERE team_id=? AND org_id=? AND channel_id=? AND integration_user_id=?")

@@ -126,6 +126,17 @@ export async function pollRetrieve(
   };
 }
 
+/** INVALID_LOCATOR means the persisted async id is unknown server-side: the
+ * job was never queued (platform dud) or its result is gone. Resuming the
+ * same id can never succeed; the caller must discard it and begin fresh.
+ * Proven live (howto-2 2026-11-18): dud ids 502 every resume until replaced. */
+export function isUnknownRetrieveId(error: unknown): boolean {
+  return error instanceof SecurityError && error.code.includes("INVALID_LOCATOR");
+}
+
+/** Max fresh begins per call chain before a dud run fails honestly. */
+export const MAX_RETRIEVE_REBEGINS = 3;
+
 /** Terminal retrieve failure: access-denied names the entity (403), else 502. */
 export function throwRetrieveFailure(polled: PollResult): never {
   const deniedEntity = String(polled.errorMessage ?? "").match(/INSUFFICIENT_ACCESS:.*entity:\s*([A-Za-z][A-Za-z0-9_]*)/);
@@ -144,12 +155,22 @@ export async function retrieveMembers(
 ): Promise<RetrieveOutcome> {
   const maxAttempts = opts?.maxPollAttempts ?? 30;
   const baseInterval = opts?.pollIntervalMs ?? 1500;
-  const asyncId = opts?.resumeAsyncId ?? await beginRetrieve(conn, version, members, opts);
+  let asyncId = opts?.resumeAsyncId ?? await beginRetrieve(conn, version, members, opts);
+  let rebegins = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (opts?.signal?.aborted) throw new SecurityError(503, "retrieve_aborted");
     await sleep(attempt === 0 ? Math.min(baseInterval, 1000) : pollDelay(baseInterval, attempt), opts?.signal);
     opts?.onEvent?.("poll", attempt + 1, asyncId);
-    const polled = await pollRetrieve(conn, version, asyncId, opts);
+    let polled: PollResult;
+    try {
+      polled = await pollRetrieve(conn, version, asyncId, opts);
+    } catch (error) {
+      if (!isUnknownRetrieveId(error) || rebegins >= MAX_RETRIEVE_REBEGINS) throw error;
+      rebegins++;
+      asyncId = await beginRetrieve(conn, version, members, opts);
+      opts?.onEvent?.("begin", attempt + 1, asyncId);
+      continue;
+    }
     if (!polled.done) continue;
     if (!polled.success || polled.zipB64 === null) throwRetrieveFailure(polled);
     const zipBytes = Uint8Array.from(atob(polled.zipB64), c => c.charCodeAt(0));
