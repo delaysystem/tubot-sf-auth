@@ -22,7 +22,7 @@
 		"wrangler": "^4.145.0"
 	},
 	"dependencies": {
-		"fast-xml-parser": "^5.11.2",
+		"fast-xml-parser": "^5.12.1",
 		"fflate": "^0.8.3"
 	}
 }
