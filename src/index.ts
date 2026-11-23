@@ -132,6 +132,7 @@ export interface AuthEnv {
   AUTH_CALLER_KEY_DATA360_NEXT?: string;
   AUTH_CALLER_KEY_CONVERSATION_NEXT?: string;
   AUTH_CALLER_KEY_AGENTCODE_NEXT?: string;
+  AUTH_CALLER_KEY_AGENTCODE_SNAPSHOTS?: string;
   /** When "1", RPC envelope failures warn and proceed instead of rejecting. */
   AUTH_RPC_WARN_MODE?: string;
   AUTH_RPC_ALLOW_LEGACY?: string;

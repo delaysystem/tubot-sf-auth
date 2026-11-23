@@ -260,6 +260,24 @@ test("agentcode caller resolves its own key and verifies end to end", async () =
   await expectRpcError(verifySignedRpcCall(env, "listAgentSnapshots", [scopeB], crossed), 401, "rpc_unauthorized");
 });
 
+test("the web tester credential is limited to per-org snapshot methods", async () => {
+  const snapshotKey = "test-web-snapshot-key-0123456789abcdef";
+  const env = testEnv({ AUTH_CALLER_KEY_AGENTCODE: AGENTCODE_KEY, AUTH_CALLER_KEY_AGENTCODE_SNAPSHOTS: snapshotKey });
+  const scope = { teamId: "team-agentcode", orgId: ORG_A };
+  for (const [method, args] of [
+    ["listConnectedOrgs", []],
+    ["listSnapshotTeams", []],
+    ["listAgentSnapshots", [scope]],
+    ["getAgentSnapshot", [scope, "TestAgent"]],
+  ] as const) {
+    const envelope = await testSignOrg("agentcode", snapshotKey, ORG_A, method, [...args], nowSec(), freshNonce());
+    await expect(verifySignedRpcCall(env, method, [...args], envelope)).resolves.toBe(ORG_A);
+  }
+  const tokenArgs = ["0Mjxx0000000001AAA", scope];
+  const envelope = await testSignOrg("agentcode", snapshotKey, ORG_A, "getTokenForChannel", tokenArgs, nowSec(), freshNonce());
+  await expectRpcError(verifySignedRpcCall(env, "getTokenForChannel", tokenArgs, envelope), 401, "rpc_unauthorized");
+});
+
 test("_NEXT rotation key verifies as fallback", async () => {
   const nextKey = "test-searcher-next-0123456789abcdef";
   const env = testEnv({ AUTH_CALLER_KEY_SEARCHER: undefined, AUTH_CALLER_KEY_SEARCHER_NEXT: nextKey });

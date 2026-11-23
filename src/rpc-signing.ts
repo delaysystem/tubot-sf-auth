@@ -38,6 +38,7 @@ export interface RpcSigningEnv {
   AUTH_CALLER_KEY_DATA360_NEXT?: string;
   AUTH_CALLER_KEY_CONVERSATION_NEXT?: string;
   AUTH_CALLER_KEY_AGENTCODE_NEXT?: string;
+  AUTH_CALLER_KEY_AGENTCODE_SNAPSHOTS?: string;
   AUTH_RPC_WARN_MODE?: string;
   /** Transition only: accept legacy universal (org-less) envelopes. Unset = per-org only. */
   AUTH_RPC_ALLOW_LEGACY?: string;
@@ -209,6 +210,13 @@ export function callerSigningKeys(env: RpcSigningEnv, caller: RpcCallerId): stri
   return out;
 }
 
+const AGENTCODE_SNAPSHOT_RPC_METHODS = new Set([
+  "listConnectedOrgs",
+  "listSnapshotTeams",
+  "listAgentSnapshots",
+  "getAgentSnapshot",
+]);
+
 /** Pure crypto verification (no D1, no env): shape, caller, timestamp, nonce format, signature. */
 export async function verifyRpcEnvelopeSignature(
   keys: string[],
@@ -318,6 +326,12 @@ export async function verifySignedRpcCall(
     const typed = envelope as SignedRpcEnvelope;
     if (!isCallerId(typed.caller)) throw new RpcAuthError(401, "rpc_unauthorized");
     const keys = callerSigningKeys(env, typed.caller);
+    const snapshotKey = env.AUTH_CALLER_KEY_AGENTCODE_SNAPSHOTS;
+    if (
+      typed.caller === "agentcode" && typeof typed.org === "string" &&
+      AGENTCODE_SNAPSHOT_RPC_METHODS.has(method) &&
+      typeof snapshotKey === "string" && snapshotKey.length >= MIN_KEY_LENGTH
+    ) keys.push(snapshotKey);
     if (keys.length === 0) throw new RpcAuthError(503, "rpc_caller_key_unconfigured");
     if (typeof typed.org === "string") {
       const verified = await verifyPerOrgEnvelopeSignature(keys, method, businessArgs, typed, nowSec);

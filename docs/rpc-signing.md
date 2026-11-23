@@ -107,6 +107,8 @@ Only provision keys for callers that exist in that environment. Prod currently
 provisions `PROXY` and `DATA360` (searcher and conv-api are staging-only
 workers); a caller with no key fails closed with an explicit config error.
 
+The staging web tester can use its own `SF_AUTH_SNAPSHOT_CALLER_KEY`. Set the same value in `AUTH_CALLER_KEY_AGENTCODE_SNAPSHOTS` on Salesforce Auth. This credential authorizes per-org envelopes for the connected-org, snapshot-team, snapshot-list, and snapshot-read methods. The gateway credentials keep their existing scope and rotation slots.
+
 ## Rotation (zero downtime, drilled)
 
 The verifier accepts the current key **or** the `_NEXT` key:
