@@ -89,8 +89,12 @@ type Build = (name: string, marker: string, values: Value) => Promise<{ values: 
  * first (all four legs); fulfillment creates gate on typed lines with
  * available quantity; cancel setups direct-insert an owned order+line.
  * 161: track above shared contract 160 (PK probe fetch, skip-recorded,
- * verified-guess + namespace dispatch, describe cache); no family change. */
-export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 161;
+ * verified-guess + namespace dispatch, describe cache); no family change.
+ * 175: track above shared contract 174 (native standard-action model config);
+ * no family change.
+ * 176: track above shared contract 175 (record-ID PII masking fix); no family
+ * change. */
+export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 176;
 
 export type CommerceLifecycleKind =
   | 'payment-auth' | 'cart' | 'cart-read' | 'order' | 'order-submit' | 'fulfillment' | 'return' | 'rebate' | 'loyalty' | 'batch';
