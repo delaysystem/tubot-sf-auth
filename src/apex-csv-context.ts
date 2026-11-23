@@ -20,12 +20,14 @@
  * with no apex POST.
  */
 
+import { clampVerificationWindowMs } from "./verification-window";
+
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
-const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
+import { ACTION_NAME } from "./action-route-patterns";
 
 const record = (value: unknown): value is Value =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -217,7 +219,7 @@ export async function invokeApexCsvWithContext(input: ApexCsvLifecycleInput): Pr
         inputs: [apexCsvInvokeArgs(contract, title, fixtures, "Account", "Name")],
       });
       invokeRan = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const acceptance = apexCsvAccepted(invoked.status, invoked.body);
       contentDocumentId = acceptance.contentDocumentId;
       contentVersionId = acceptance.contentVersionId;

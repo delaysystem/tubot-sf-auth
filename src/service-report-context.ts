@@ -1,3 +1,4 @@
+import { clampVerificationWindowMs } from './verification-window';
 /** Owned lifecycle for createServiceReport.
  * Live-proven recipe: fslfulfill lane (test2 2026-10-04). One bare owned
  * WorkOrder (zero required fields org-wide) grounds {entityId}; the native
@@ -53,7 +54,7 @@ export async function invokeServiceReportWithContext(input: {
       const reread = await request(root+'/sobjects/WorkOrder/'+workOrderId);
       const reportRead = await request(root+'/sobjects/ServiceReport/'+reportId);
       if (!reread.ok || !reportRead.ok) return fail('SERVICE_REPORT_LIFECYCLE_UNVERIFIED','Owned report readback failed after native creation.');
-      if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('SERVICE_REPORT_LIFECYCLE_UNVERIFIED','The owned service-report lifecycle could not be verified.'); }

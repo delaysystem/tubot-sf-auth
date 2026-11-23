@@ -21,6 +21,8 @@
  * ambiguity or any window occupancy refuses with no apex POST.
  */
 
+import { clampVerificationWindowMs } from "./verification-window";
+
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 
@@ -191,7 +193,7 @@ export async function invokeApexOverlapWithContext(input: ApexOverlapLifecycleIn
         ResourceId: resourceId, SchedulingPolicyId: policyId, ResourceTimeZone: timeZone,
         StartTime: windowStart, EndTime: windowEnd,
       }] });
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const after = await request(`${root}/query?q=${encodeURIComponent(guardSoql)}`);
       const afterRows = record(after.body) && Array.isArray(after.body.records) ? after.body.records : null;
       if (!after.ok || !afterRows) return after;

@@ -15,6 +15,7 @@
 
 import { nativeActionSucceeded } from "./action-outcome";
 import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, unknown>;
 type Result = { status: number; ok: boolean; body: any };
@@ -128,7 +129,7 @@ export async function invokeSingleFixtureAction(input: SingleFixtureInput): Prom
           const invoked = await request(input.route, "POST", { inputs: [{ [input.idInput]: ownedId }] });
           outcome = invoked;
           verified = nativeActionSucceeded(invoked.status, invoked.body);
-          if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+          if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
         }
       }
     }

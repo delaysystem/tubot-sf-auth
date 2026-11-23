@@ -24,6 +24,7 @@ import { batchDescribe, discoverProvisionedStorefront, discoverStoreBuyerGroups,
 import { invokePaymentAuthorizationWithContext } from './payment-auth-owned-context';
 import { denialGrantForRestOutcome, type DenialGrant } from './permission-denial-grants';
 import { resolveRequiredInputValue, selectAlternativeMarkerField, verifySkippedStandardReadback, type TargetField } from './skipped-standards-context';
+import { clampVerificationWindowMs } from './verification-window';
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -1197,7 +1198,7 @@ async function runCartLifecycle(input: CommerceExecutorInput): Promise<CommerceO
         expectedChanges: {}, actionAccepted: true,
       });
       verified = intact && check.verified;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return verified ? invoked : fail('COMMERCE_EFFECT_UNVERIFIED', 'Salesforce reported success without the verified owned effect.', { upstreamOutcome: invoked.body });
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned cart lifecycle could not be verified.'); }
@@ -1292,7 +1293,7 @@ async function runCartReadLifecycle(input: CommerceExecutorInput): Promise<Comme
       const intact = reread.ok && record(reread.body) && reread.body.Name === marker &&
         reread.body.WebStoreId === cart.storeId && reread.body.AccountId === cart.accountId;
       verified = intact;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return verified ? invoked : fail('COMMERCE_EFFECT_UNVERIFIED', 'Salesforce reported success without the intact owned cart.', { upstreamOutcome: invoked.body });
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned cart-read lifecycle could not be verified.'); }
@@ -1377,7 +1378,7 @@ async function runOrderLifecycle(input: CommerceExecutorInput): Promise<Commerce
         extra = { beforeStatus, afterStatus };
       }
       verified = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned order lifecycle could not be verified.'); }
@@ -1590,7 +1591,7 @@ async function runSubmitLifecycle(input: CommerceExecutorInput): Promise<Commerc
         extra = { ...extra, liveRowResidue: `Verified ${action} change stands on live OrderSummary ${orderSummaryId}; no compensating shape is declared.` };
       }
       verified = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned submit lifecycle could not be verified.'); }
@@ -1738,7 +1739,7 @@ async function runFulfillmentLifecycle(input: CommerceExecutorInput): Promise<Co
         }
         verified = true;
         extra = { fulfillmentId: setupOrder.id, cancelledLineId: setupLine.id, afterQuantity: afterRow.Quantity };
-        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
         return cancelInvoked;
       }
       const groupId = (await queryIds(request, root,
@@ -1810,7 +1811,7 @@ async function runFulfillmentLifecycle(input: CommerceExecutorInput): Promise<Co
       for (const fulfillmentId of existing.slice(0, 5)) capture('FulfillmentOrder', fulfillmentId);
       extra = { createdFulfillmentIds: existing.slice(0, 5) };
       verified = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned fulfillment lifecycle could not be verified.'); }
@@ -1912,7 +1913,7 @@ async function runReturnLifecycle(input: CommerceExecutorInput): Promise<Commerc
       for (const returnId of existing.slice(0, 5)) capture('ReturnOrder', returnId);
       extra = { createdReturnIds: existing.slice(0, 5) };
       verified = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned return lifecycle could not be verified.'); }
@@ -2119,7 +2120,7 @@ async function runRebateLifecycle(input: CommerceExecutorInput): Promise<Commerc
         if (!nativeAccepted(invoked)) return invoked;
         verified = true;
         extra = { rebateTypeId: scope.typeId, csvColumns: fields };
-        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
         return invoked;
       }
       const mapped = mapCommerceArguments(inputs, ownedIds);
@@ -2175,7 +2176,7 @@ async function runRebateLifecycle(input: CommerceExecutorInput): Promise<Commerc
       if (!reread.ok) return fail('COMMERCE_EFFECT_UNVERIFIED', 'The owned rebate scope vanished during invocation.', { upstreamOutcome: invoked.body });
       verified = true;
       extra = { ...extra, rebateTypeId: scope.typeId };
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned rebate lifecycle could not be verified.'); }
@@ -2255,7 +2256,7 @@ async function runBatchLifecycle(input: CommerceExecutorInput): Promise<Commerce
       let status = '';
       let errorDescription: unknown = null;
       for (let attempt = 0; attempt < 4; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, Math.min(1500, (input.verificationWindowMs ?? 6000) / 4)));
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1500, clampVerificationWindowMs(input.verificationWindowMs ?? 6000) / 4)));
         try {
           // Calculation runs surface as BatchJob rows (Status/ErrorDescription),
           // not AsyncApexJob rows.
@@ -2336,7 +2337,7 @@ async function runLoyaltyLifecycle(input: CommerceExecutorInput): Promise<Commer
       }
       verified = true;
       extra = { journalId: journal.id, beforeStatus, afterStatus };
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('COMMERCE_LIFECYCLE_UNVERIFIED', 'The owned loyalty lifecycle could not be verified.'); }

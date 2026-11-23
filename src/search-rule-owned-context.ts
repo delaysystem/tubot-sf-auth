@@ -25,6 +25,7 @@
  * appears here; every tenant value is caller-supplied or read live.
  */
 import { cleanupOwnedContext } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -279,7 +280,7 @@ export async function invokeSearchBoostBuryRuleWithContext(input: {
           return fail('SEARCH_RULE_RULE_UNVERIFIED', 'The owned rule could not be read back from the live rules collection.');
         }
         verified = true;
-        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
         return created;
       })();
     } catch { outcome = fail('SEARCH_RULE_LIFECYCLE_UNVERIFIED', 'The owned search-rule lifecycle could not be verified.'); }

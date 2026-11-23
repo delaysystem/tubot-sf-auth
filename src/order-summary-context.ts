@@ -25,6 +25,8 @@
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 
+import { clampVerificationWindowMs } from "./verification-window";
+
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const OBJECT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const INPUT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
@@ -241,7 +243,7 @@ export async function invokeOrderSummaryPreviewWithContext(input: OrderSummaryPr
   const orderSummaryId = rows[0].Id as string;
   const invoked = await input.request(input.route, "POST", { inputs: [{ [idInput]: orderSummaryId }] });
   const verified = nativeAccepted(invoked);
-  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
   return done(verified ? invoked : fail("ORDER_SUMMARY_PREVIEW_UNVERIFIED",
     "Salesforce ended the order-summary preview without a verified accepted envelope.",
     { upstreamOutcome: invoked.body }), {

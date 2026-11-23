@@ -1,5 +1,6 @@
 import { sameSalesforceId } from "./salesforce-id";
 import { emailAlertLiveExecutorId } from "./email-alert-owned-context";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -68,7 +69,7 @@ export async function invokeSessionPermissionContext(input: {
         const rows = await activations();
         if (rows.length !== 1 || !id(rows[0].Id) || !sameSalesforceId(rows[0].UserId, executorId)) return failure("SESSION_ACTIVATION_UNVERIFIED", "The prerequisite activation was not stored for the connected execution user.");
         observedActivationIds.push(rows[0].Id);
-        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       }
       const result = await request(input.route, "POST", { inputs: [argumentsForSession()] });
       if (!succeeded(result)) return result;
@@ -76,7 +77,7 @@ export async function invokeSessionPermissionContext(input: {
       verified = action === "activateSessionPermSet" ? rows.length === 1 && id(rows[0].Id) && id(rows[0].AuthSessionId) && sameSalesforceId(rows[0].UserId, executorId) : rows.length === 0;
       if (verified && action === "activateSessionPermSet") {
         observedActivationIds.push(rows[0].Id);
-        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       }
       return verified ? result : failure("SESSION_ACTION_MUTATION_UNVERIFIED", "Salesforce returned success without the expected session activation state.");
     })();

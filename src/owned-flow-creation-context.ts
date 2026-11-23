@@ -2,6 +2,7 @@ import { planOwnedContext, type ContextSchema } from './owned-context-plan';
 import { retryPlanWithRetainedSetup } from './retained-setup-anchor';
 import { cleanupOwnedContext, type OwnedRecord, type OwnershipScope } from './owned-context-cleanup';
 import { nativeActionSucceeded } from './action-outcome';
+import { clampVerificationWindowMs } from './verification-window';
 type Value=Record<string,any>;
 type Result={status:number;ok?:boolean;body:any};
 const record=(value:any):value is Value=>!!value&&typeof value==='object'&&!Array.isArray(value);
@@ -92,7 +93,7 @@ export async function invokeOwnedFlowCreation(input:{root:string;route:string;pl
         for(const row of found){const actual=await request(root+'/sobjects/'+child.objectName+'/'+row.Id);if(!actual.ok||Object.entries(child.expected).some(([field,value])=>actual.body?.[field]!==value))verified=false;
           if(child.objectName===plan.targetObject){verificationRecordIds.push(row.Id);Object.assign(expectedChanges,child.expected);}}
       }
-      if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+      if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   }catch{outcome=fail('FLOW_CREATION_LIFECYCLE_UNVERIFIED','Owned Flow execution or readback failed; ownership-scoped recovery still runs.');verified=false;}

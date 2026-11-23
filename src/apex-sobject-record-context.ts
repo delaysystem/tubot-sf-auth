@@ -22,6 +22,7 @@
  */
 
 import { nativeActionSucceeded } from "./action-outcome";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, unknown>;
 type Result = { status: number; ok: boolean; body: any };
@@ -288,7 +289,7 @@ export async function invokeApexSObjectRecord(input: ApexSObjectRecordInput): Pr
     });
     outcome = invoked;
     verified = nativeActionSucceeded(invoked.status, invoked.body);
-    if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+    if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
     if (spec.verify && verified) {
       const target = owned.find((entry) => entry.key === spec.verify!.fixture);
       const expected = recordValues[spec.verify.equalsField];

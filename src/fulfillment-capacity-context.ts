@@ -1,3 +1,4 @@
+import { clampVerificationWindowMs } from './verification-window';
 /** Owned lifecycle for the Order Management fulfillment-capacity family.
  * Live-proven recipe: fslfulfill lane (test2 2026-10-04). One owned Location
  * fixture (ShouldTrackFoCapacity, FoCapacity 100, live LocationType) grounds
@@ -81,7 +82,7 @@ export async function invokeFulfillmentCapacityWithContext(input: {
         if (!c || c.capacity !== 100 || c.assigned !== 0 || c.heldCapacity !== 0) {
           return fail('FULFILLMENT_READBACK_MISMATCH','Fresh-fixture counters did not read back exactly.');
         }
-        if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
         return got;
       }
       if (action === 'holdFulfillmentOrderCapacity') {
@@ -93,7 +94,7 @@ export async function invokeFulfillmentCapacityWithContext(input: {
         const released = await invoke('releaseHeldFulfillmentOrderCapacity',{releaseHeldFOCapacityInput:{allOrNothing:false,
           capacityRequests:[{actionRequestId:`${tag}-REL`,locationId}]}});
         if (!successful(released)) return fail('FULFILLMENT_RESTORE_FAILED','Cleanup release was refused; counters left held.');
-        if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
         return held;
       }
       // confirm + release both need a setup hold first.
@@ -108,7 +109,7 @@ export async function invokeFulfillmentCapacityWithContext(input: {
       } else if (!c || c.heldCapacity !== 0) {
         return fail('FULFILLMENT_READBACK_MISMATCH','Release did not read back held 0.');
       }
-      if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
       return main;
     })();
   } catch { outcome = fail('FULFILLMENT_LIFECYCLE_UNVERIFIED','The owned fulfillment lifecycle could not be verified.'); }

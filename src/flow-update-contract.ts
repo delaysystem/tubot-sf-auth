@@ -1,5 +1,6 @@
 import { seedRequiredReferenceValues } from './fixture-reference-seeding';
 import { reclaimFixtureOwnerForDelete } from './fixture-owner-reclaim';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -98,7 +99,7 @@ export async function invokeFlowUpdateContract(input: { root: string; route: str
         outcome = await request(input.route, 'POST', { inputs: [args] });
         const after = await request(path);
         verified = outcome.ok && Array.isArray(outcome.body) && outcome.body.length === 1 && outcome.body[0]?.isSuccess === true && !outcome.body[0]?.errors?.length && !outcome.body[0]?.outputValues?.errorMessage && after.ok && after.body?.[plan.markerField] === marker && Object.entries(expectedChanges).every(([field, value]) => after.body[field] === value);
-        if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
         if (outcome.ok && outcome.body?.[0]?.isSuccess === true && !verified) outcome = { status: 422, ok: false, body: { errorCode: 'FLOW_UPDATE_MUTATION_UNVERIFIED', message: 'Salesforce reported execution success without the expected actual field changes.', upstreamOutcome: outcome.body } };
       }
     }

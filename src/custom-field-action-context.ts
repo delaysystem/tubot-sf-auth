@@ -1,7 +1,17 @@
 type Value=Record<string,any>;
 type Result={status:number;ok:boolean;body:any};
 const identity=(v:any):v is string=>typeof v==='string'&&/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
+import { clampVerificationWindowMs } from './verification-window';
 export const xmlText=(v:string)=>v.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');
+// Owned-field full-name suffix, compiled once. Origin: the per-invocation
+// `new RegExp('^'+target+...)` previously built in index.ts createCustomField
+// remove(). The target prefix is matched literally (startsWith) instead of
+// interpolated, so no per-target compilation or cache is needed.
+const OWNED_FIELD_SUFFIX=/^(?:[A-Za-z][A-Za-z0-9_]*__)?AS_field_[a-f0-9]{24}__c$/;
+export const isOwnedCustomFieldFullName=(target:string,fullName:string):boolean=>{
+ const prefix=target+'.';
+ return fullName.startsWith(prefix)&&OWNED_FIELD_SUFFIX.test(fullName.slice(prefix.length));
+};
 export async function invokeCustomFieldActionContext(input:{root:string;route:string;target:string;verificationWindowMs?:number;
  request:(path:string,method?:string,body?:any)=>Promise<Result>;
  remove:(fullName:string)=>Promise<{status:number;ok:boolean;missing:boolean}>}){
@@ -32,7 +42,7 @@ export async function invokeCustomFieldActionContext(input:{root:string;route:st
    const outputValues=outcome.body?.[0]?.outputValues;
    const outputId=outputValues&&typeof outputValues==='object'?(outputValues.Id??Object.entries(outputValues).find(([k])=>/^id\.?$/i.test(k))?.[1]):undefined;
    verified=outcome.ok&&Array.isArray(outcome.body)&&outcome.body.length===1&&outcome.body[0]?.isSuccess===true&&!outcome.body[0]?.errors?.length&&identity(outputId)&&outputId.slice(0,15)===ownedId.slice(0,15)&&actual.ok&&actual.body?.FullName===fullName&&actual.body?.Metadata?.label===label&&actual.body?.Metadata?.type==='Text'&&actual.body?.Metadata?.length===32;}
-  if(verified&&input.verificationWindowMs)await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+  if(verified&&input.verificationWindowMs)await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
   if(outcome.ok&&outcome.body?.[0]?.isSuccess===true&&!verified)outcome={status:422,ok:false,body:{errorCode:'CUSTOM_FIELD_MUTATION_UNVERIFIED',message:'Salesforce reported success without the actual owned Text field metadata.',upstreamOutcome:outcome.body}};
  }catch{outcome={status:422,ok:false,body:{errorCode:'CUSTOM_FIELD_LIFECYCLE_UNVERIFIED',message:'Owned field metadata could not be verified.'}};}
  finally {

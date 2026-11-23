@@ -59,8 +59,8 @@ export async function batchDescribe(
 export async function discoverProvisionedSubstrate(request: Request, root: string): Promise<ProvisionedSubstrate | null> {
   const REUSE_OBJECTS = ['BuyerAccount', 'BuyerGroupMember', 'Contact', 'WebStoreCatalog', 'ProductCategoryProduct', 'CommerceEntitlementProduct'];
   const phaseA = await batchGet(request, root, [
-    '/query?q=' + encodeURIComponent('SELECT WebStoreId,NetworkId FROM WebStoreNetwork LIMIT 200'),
-    '/query?q=' + encodeURIComponent("SELECT Id FROM Network WHERE Status='Live' LIMIT 200"),
+    '/query?q=' + encodeURIComponent('SELECT WebStoreId,NetworkId FROM WebStoreNetwork ORDER BY WebStoreId,NetworkId LIMIT 200'),
+    '/query?q=' + encodeURIComponent("SELECT Id FROM Network WHERE Status='Live' ORDER BY Id LIMIT 200"),
     ...REUSE_OBJECTS.map(name => `/sobjects/${name}/describe`),
   ]);
   const schemas: Record<string, Value> = {};
@@ -75,7 +75,7 @@ export async function discoverProvisionedSubstrate(request: Request, root: strin
   if (!hit) return null;
   const storeId = hit.WebStoreId as string;
   const phaseB = await batchGet(request, root, [
-    '/query?q=' + encodeURIComponent(`SELECT BuyerGroupId FROM WebStoreBuyerGroup WHERE WebStoreId='${storeId}' LIMIT 10`),
+    '/query?q=' + encodeURIComponent(`SELECT BuyerGroupId FROM WebStoreBuyerGroup WHERE WebStoreId='${storeId}' ORDER BY BuyerGroupId LIMIT 10`),
     '/query?q=' + encodeURIComponent(`SELECT Pricebook2Id FROM WebStorePricebook WHERE WebStoreId='${storeId}' AND IsActive=true LIMIT 1`),
     '/query?q=' + encodeURIComponent('SELECT Id FROM ProductCatalog LIMIT 1'),
   ]);
@@ -86,9 +86,9 @@ export async function discoverProvisionedSubstrate(request: Request, root: strin
   const catalogId = phaseB[2].ok && id(phaseB[2].body?.records?.[0]?.Id) ? phaseB[2].body.records[0].Id : null;
   if (!groupId || !pricebookId || !catalogId) return null;
   const phaseC = await batchGet(request, root, [
-    '/query?q=' + encodeURIComponent(`SELECT Id FROM WebStoreCatalog WHERE SalesStoreId='${storeId}' LIMIT 1`),
-    '/query?q=' + encodeURIComponent(`SELECT Id FROM ProductCategory WHERE CatalogId='${catalogId}' LIMIT 1`),
-    '/query?q=' + encodeURIComponent(`SELECT PolicyId FROM CommerceEntitlementBuyerGroup WHERE BuyerGroupId='${groupId}' LIMIT 1`),
+    '/query?q=' + encodeURIComponent(`SELECT Id FROM WebStoreCatalog WHERE SalesStoreId='${storeId}' ORDER BY Id LIMIT 1`),
+    '/query?q=' + encodeURIComponent(`SELECT Id FROM ProductCategory WHERE CatalogId='${catalogId}' ORDER BY Id LIMIT 1`),
+    '/query?q=' + encodeURIComponent(`SELECT PolicyId FROM CommerceEntitlementBuyerGroup WHERE BuyerGroupId='${groupId}' ORDER BY PolicyId LIMIT 1`),
   ]);
   const pick = (entry: { ok: boolean; body: any }, field: string) =>
     entry.ok && id(entry.body?.records?.[0]?.[field]) ? entry.body.records[0][field] as string : null;
@@ -99,35 +99,41 @@ export async function discoverProvisionedSubstrate(request: Request, root: strin
 }
 
 /** A UI-provisioned store<->site pair is the only hostname substrate Salesforce
- * accepts (one store per site): discover a live-linked store for reuse. Any
- * discovery failure returns null and the caller keeps its mint path. */
+ * accepts (one store per site): discover a live-linked store for reuse. The
+ * link queries are ORDER BY-pinned so the first live-linked pick is
+ * deterministic. Transport failures return null (the caller keeps its mint
+ * path); only the request calls are guarded, so row-shaping bugs propagate
+ * loudly instead of masquerading as "no storefront". */
 export async function discoverProvisionedStorefront(request: Request, root: string): Promise<ProvisionedStorefront | null> {
+  let links: Result;
+  let live: Result;
   try {
-    const [links, live] = await Promise.all([
-      request(root + '/query?q=' + encodeURIComponent('SELECT WebStoreId,NetworkId FROM WebStoreNetwork LIMIT 200')),
-      request(root + '/query?q=' + encodeURIComponent("SELECT Id FROM Network WHERE Status='Live' LIMIT 200")),
+    [links, live] = await Promise.all([
+      request(root + '/query?q=' + encodeURIComponent('SELECT WebStoreId,NetworkId FROM WebStoreNetwork ORDER BY WebStoreId,NetworkId LIMIT 200')),
+      request(root + '/query?q=' + encodeURIComponent("SELECT Id FROM Network WHERE Status='Live' ORDER BY Id LIMIT 200")),
     ]);
-    if (!links.ok || !live.ok || !Array.isArray(links.body?.records) || !Array.isArray(live.body?.records)) return null;
-    const liveIds = new Set(live.body.records.filter((row: Value) => id(row?.Id)).map((row: Value) => row.Id));
-    const hit = links.body.records.find((row: Value) => id(row?.WebStoreId) && id(row?.NetworkId) && liveIds.has(row.NetworkId));
-    return hit ? { storeId: hit.WebStoreId, networkId: hit.NetworkId } : null;
   } catch { return null; }
+  if (!links.ok || !live.ok || !Array.isArray(links.body?.records) || !Array.isArray(live.body?.records)) return null;
+  const liveIds = new Set(live.body.records.filter((row: Value) => id(row?.Id)).map((row: Value) => row.Id));
+  const hit = links.body.records.find((row: Value) => id(row?.WebStoreId) && id(row?.NetworkId) && liveIds.has(row.NetworkId));
+  return hit ? { storeId: hit.WebStoreId, networkId: hit.NetworkId } : null;
 }
 
 export const discoverStoreBuyerGroup = (request: Request, root: string, storeId: string) =>
-  firstId(request, root, `SELECT BuyerGroupId FROM WebStoreBuyerGroup WHERE WebStoreId='${storeId}' LIMIT 1`, 'BuyerGroupId');
+  firstId(request, root, `SELECT BuyerGroupId FROM WebStoreBuyerGroup WHERE WebStoreId='${storeId}' ORDER BY BuyerGroupId LIMIT 1`, 'BuyerGroupId');
 
 /** Every buyer group linked to a provisioned store, id-validated and capped.
  * BuyerGroup exposes no account-based discriminator (live-verified: only
  * Name/Description/Role), so membership itself is the ground truth and the
  * chain ladders candidates until one accepts the owned buyer. */
 export async function discoverStoreBuyerGroups(request: Request, root: string, storeId: string): Promise<string[]> {
+  let result: Result;
   try {
-    const result = await request(root + '/query?q=' + encodeURIComponent(`SELECT BuyerGroupId FROM WebStoreBuyerGroup WHERE WebStoreId='${storeId}' LIMIT 10`));
-    if (!result.ok || !Array.isArray(result.body?.records)) return [];
-    const rows: Value[] = result.body.records.filter((row: Value) => id(row?.BuyerGroupId));
-    return [...new Set<string>(rows.map((row) => row.BuyerGroupId as string))].slice(0, 10);
+    result = await request(root + '/query?q=' + encodeURIComponent(`SELECT BuyerGroupId FROM WebStoreBuyerGroup WHERE WebStoreId='${storeId}' ORDER BY BuyerGroupId LIMIT 10`));
   } catch { return []; }
+  if (!result.ok || !Array.isArray(result.body?.records)) return [];
+  const rows: Value[] = result.body.records.filter((row: Value) => id(row?.BuyerGroupId));
+  return [...new Set<string>(rows.map((row) => row.BuyerGroupId as string))].slice(0, 10);
 }
 
 /** B2B buyer chain on a provisioned store: Account -> active BuyerAccount ->

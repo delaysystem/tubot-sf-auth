@@ -19,6 +19,7 @@
  */
 
 import { flowCreationRecipes } from "./flow-creation-context";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -282,7 +283,7 @@ export async function invokeRemainderBookingFlow(input: {
       owned.push({ objectName: recipe.objectName, id: createdId });
       verified = true;
       if (input.verificationWindowMs) {
-        await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       }
       return invoked;
     })();

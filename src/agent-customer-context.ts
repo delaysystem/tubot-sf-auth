@@ -26,6 +26,7 @@
  */
 
 import { personIdentityCompletion, verificationProducerInput } from "./flow-producer-context";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -237,7 +238,7 @@ export async function invokeAgentFlowWithIntent(input: AgentCustomerContextInput
   const intent = rows[0]?.[nameField];
   if (typeof intent !== "string" || intent.length === 0) return null;
   const invoked = await request(input.route, "POST", { inputs: [{ [input.shape.intentInput]: intent }] });
-  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
   if (!nativeAccepted(invoked)) return { result: invoked, verified: false };
   const outputs = agentOutputEntries(invoked.body);
   const idValue = outputs.find((entry) => String(entry.name ?? entry.key ?? "").toLowerCase() === input.shape.idOutput.toLowerCase())?.value;
@@ -381,7 +382,7 @@ export async function invokeAgentFlowWithProducerContext(input: AgentCustomerCon
         args[shape.customerTypeInput] = producerIdentity.customerType;
       }
       const invoked = await request(input.route, "POST", { inputs: [args] });
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       if (nativeAccepted(invoked)) {
         verified = true;
         return invoked;

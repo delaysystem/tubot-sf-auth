@@ -57,6 +57,7 @@ import {
   type TargetField,
 } from "./skipped-standards-context";
 import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -64,7 +65,7 @@ type Result = { status: number; ok: boolean; body: any };
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const ENTITY_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
-const STANDARD_ROUTE = /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
+import { STANDARD_ROUTE } from "./action-route-patterns";
 const CUSTOM_ROUTE =
   /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/(dynamicSendSurveyInvitation|runDecisionMatrix)\/([A-Za-z][A-Za-z0-9_]{0,127})$/;
 const APEX_ROUTE =
@@ -1797,7 +1798,7 @@ async function runGeneric(ctx: RunContext, windowMs?: number): Promise<RunnerOut
       `SELECT Id FROM CampaignMember WHERE CampaignId = '${ctx.fixtures.Campaign}' LIMIT 5`)}`)
     : null;
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) {
     // Scheduling-substrate terminal: the engine refused a fully-grounded
     // appointment (member-covered territory, live work type, forward
@@ -1950,7 +1951,7 @@ async function runContextDynamic(ctx: RunContext, windowMs?: number): Promise<Ru
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
   const contextId = firstOutputText(invoked.body, /^contextid$/i);
   const mappingId = firstOutputText(invoked.body, /contextmappingid/i);
@@ -2059,7 +2060,7 @@ async function runApexSobjectShape(ctx: RunContext, windowMs?: number): Promise<
   const invoked = await ctx.request(ctx.route, "POST", {
     inputs: [{ [plan.sobjectInput]: { attributes: { type: object }, Id: madeId }, ...scalarArgs }],
   });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) {
     return { outcome: invoked, verified: false, extra: { fixtureId: madeId, object } };
   }
@@ -2159,7 +2160,7 @@ async function runApexScalarPure(ctx: RunContext, windowMs?: number): Promise<Ru
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
   const items = Array.isArray(invoked.body) ? invoked.body : [invoked.body];
   const outputValues = items.map((item) => (record(item) ? item.outputValues : null)).find(record) ?? null;
@@ -2269,7 +2270,7 @@ async function runSurvey(ctx: RunContext, windowMs?: number): Promise<RunnerOutc
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
   const invitationIds = outputIdsByPattern(invoked.body, /invitationid$|^id$/i);
   const fields = await describeCached(ctx, "SurveyInvitation");
@@ -2360,7 +2361,7 @@ async function runContextChain(ctx: RunContext, windowMs?: number): Promise<Runn
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) {
     if (contextNamespaceExpired(invoked.body)) {
       return {
@@ -2459,7 +2460,7 @@ async function runSwarm(ctx: RunContext, windowMs?: number): Promise<RunnerOutco
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
   const swarmIds = outputIdsByPattern(invoked.body, /swarmid$|^id$/i);
   if (linkField && ctx.fixtures.Case) {
@@ -2560,7 +2561,7 @@ async function runApprovalOverride(ctx: RunContext, windowMs?: number): Promise<
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: { workItemId } };
   const steps = await ctx.request(`${ctx.root}/query?q=${encodeURIComponent(
     `SELECT Id, StepStatus FROM ProcessInstanceStep WHERE ProcessInstance.TargetObjectId = '${ctx.fixtures.Opportunity}' LIMIT 5`)}`);
@@ -2645,7 +2646,7 @@ async function runServiceCampaignUpdate(ctx: RunContext, windowMs?: number): Pro
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: { campaignId } };
   return { outcome: invoked, verified: await verifyFixturesIntact(ctx), extra: { campaignId } };
 }
@@ -2677,7 +2678,7 @@ async function runProspectConvert(ctx: RunContext, windowMs?: number): Promise<R
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
   const convertedLead = outputIdsByPattern(invoked.body, /convertedleadid|leadid$/i)[0];
   const convertedContact = outputIdsByPattern(invoked.body, /convertedcontactid|contactid$/i)[0];
@@ -2776,7 +2777,7 @@ async function runIntegrationChain(ctx: RunContext, windowMs?: number): Promise<
     };
   }
   const invoked = await ctx.request(ctx.route, "POST", { inputs: [planned.args] });
-  if (windowMs) await new Promise((resolve) => setTimeout(resolve, windowMs));
+  if (windowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(windowMs)));
   if (!nativeActionSucceeded(invoked.status, invoked.body)) return { outcome: invoked, verified: false, extra: {} };
   const planId = ctx.discovered.integrationPlanId ?? firstOutputText(invoked.body, /integrationplanid|planid/i);
   return { outcome: invoked, verified: true, extra: { integrationPlanId: planId ?? null } };

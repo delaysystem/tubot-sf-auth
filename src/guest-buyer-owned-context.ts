@@ -1,4 +1,5 @@
 import { cleanupOwnedContext } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -88,7 +89,7 @@ export async function invokeGuestBuyerRegistration(input: {
         if(!storeReread.ok||storeReread.body?.Name!==marker||!buyerReread.ok||buyerReread.body?.Name!==marker)return fail('GUEST_BUYER_REGISTRATION_UNVERIFIED','Owned fixtures could not be read back after native registration.');
         if(contactQueryable&&accountId)await find('Contact',`AccountId='${accountId}'`,'Id,AccountId');
         verified=true;
-        if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+        if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
         return created;
       })();
     } catch {outcome=fail('GUEST_BUYER_LIFECYCLE_UNVERIFIED','The owned guest-buyer lifecycle could not be verified.');}

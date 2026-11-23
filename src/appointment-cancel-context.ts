@@ -1,4 +1,5 @@
 import { cleanupOwnedContext } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const identity = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -132,7 +133,7 @@ export async function invokeAppointmentCancellation(input: { root: string; route
     })();
   } catch { if (outcome.ok) outcome=fail('APPOINTMENT_LIFECYCLE_UNVERIFIED','The native appointment lifecycle could not be verified.'); }
   finally {
-    if (owned.length && input.verificationWindowMs) await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+    if (owned.length && input.verificationWindowMs) await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
     for (const item of attempted) {
       const q=await request(root+'/query?q='+encodeURIComponent(`SELECT Id FROM ${item.objectName} WHERE ${item.field}='${marker}' LIMIT 2`));
       if (!q.ok || !Array.isArray(q.body?.records) || q.body.records.length>1) {cleanupError='Owned appointment recovery could not be verified.';continue;}

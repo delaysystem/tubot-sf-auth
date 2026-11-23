@@ -1,4 +1,5 @@
 import { cleanupOwnedContext, type OwnershipScope } from "./owned-context-cleanup";
+import { clampVerificationWindowMs } from "./verification-window";
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -144,7 +145,7 @@ export async function invokeWaitlistContext(input: { root: string; route: string
   } catch { if (outcome.ok) outcome = fail('WAITLIST_LIFECYCLE_UNVERIFIED', 'Owned Scheduler context could not be verified; automatic cleanup still runs.'); }
   finally {
     // Observe successful and failed fixture mutations before deleting them for independent CLI checks.
-    if (owned.length && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+    if (owned.length && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
     for (const item of attempted) {
       try { const found = await query(item.objectName, item.predicate); if (found.length > 1) throw Error('Ambiguous owned Scheduler fixture.');
         for (const r of found) capture(item.objectName, r.Id);

@@ -22,6 +22,7 @@
  */
 
 import { nativeActionSucceeded } from "./action-outcome";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, unknown>;
 type Result = { status: number; ok: boolean; body: any };
@@ -135,7 +136,7 @@ export async function invokeAssetReplace(input: AssetReplaceInput): Promise<{
     });
     outcome = invoked;
     verified = nativeActionSucceeded(invoked.status, invoked.body);
-    if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+    if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
     if (verified) {
       const readback = await request(`${root}/query?q=${encodeURIComponent(
         `SELECT Id FROM AssetRelationship WHERE AssetId='${assetIds[0]}' AND RelatedAssetId='${assetIds[1]}' LIMIT 1`)}`);

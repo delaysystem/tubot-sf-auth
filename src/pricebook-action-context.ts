@@ -1,7 +1,8 @@
 import { cleanupOwnedContext, type OwnedRecord } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
-const record = (v: any): v is Value => v !== null && typeof v === "object" && !Array.isArray(v);
+import { isRecord as record } from "./record-guard";
 const id = (v: any): v is string => typeof v === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
 export async function invokePricebookContext(input: {
   root: string; route: string; target: string; verificationWindowMs?: number;
@@ -39,11 +40,11 @@ export async function invokePricebookContext(input: {
       candidates.push({objectName:target,id:ownedId!});
       const before = await request(`${root}/sobjects/${target}/${ownedId}`);
       if (!before.ok || before.body?.[markerField.name] !== marker || before.body?.Pricebook2Id !== book) return fail("PRICEBOOK_CONTEXT_UNVERIFIED", "The actual owned parent does not have the selected price book.");
-      if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const invoked = await request(input.route, "POST", { inputs: [{ parentEntityId: ownedId, pricebook2Id: "" }] });
       const after = await request(`${root}/sobjects/${target}/${ownedId}`);
       verified = after.ok && after.body?.[markerField.name] === marker && after.body?.Pricebook2Id === null;
-      if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const accepted = invoked.ok && Array.isArray(invoked.body) && invoked.body.length && invoked.body.every((v: Value) => v.isSuccess === true && (!v.errors?.length));
       return accepted && !verified ? { ...fail("PRICEBOOK_MUTATION_UNVERIFIED", "Salesforce reported success without removing the actual owned parent's price book."), body: { errorCode: "PRICEBOOK_MUTATION_UNVERIFIED", message: "The owned parent price-book removal was not verified.", upstreamOutcome: invoked.body } } : invoked;
     })();

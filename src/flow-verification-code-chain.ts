@@ -34,6 +34,7 @@ import {
   sweepFlowCommunicationResidue,
   type ResidueSweep,
 } from "./flow-residue-sweep";
+import { backoffDelayMs } from "./retry-backoff";
 
 export const VERIFICATION_INBOX_API_BASE = "https://api.guerrillamail.com/ajax.php";
 export const MAILSLURP_API_BASE = "https://api.mailslurp.com";
@@ -336,7 +337,7 @@ export async function invokeFlowVerificationCodeChain(input: {
           let mailsSeen = 0;
           let mailFingerprint: string | null = null;
           for (let attempt = 0; attempt < attempts && !code; attempt++) {
-            if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, backoffDelayMs(attempt - 1, intervalMs)));
             checks++;
             try {
               code = await inbox.check(slot.token);

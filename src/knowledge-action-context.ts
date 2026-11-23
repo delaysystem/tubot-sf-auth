@@ -1,3 +1,4 @@
+import { clampVerificationWindowMs } from "./verification-window";
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -109,7 +110,7 @@ export async function invokeKnowledgeContext(input: {
         : action === "getArticleSmartLinkUrl" ? { articleVersionId: versionId }
         : { articleVersionIdList: [versionId], ...(action === "publishKnowledgeArticles" ? { pubAction: "PUBLISH_ARTICLE" } : {}),
           ...(action === "assignKnowledgeArticles" ? { assignAction: "ASSIGN_DRAFT_MASTER", assigneeId: input.userId, sendEmailNotification: false } : {}) };
-      if (action === "deleteKnowledgeArticles" && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (action === "deleteKnowledgeArticles" && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const result = await request(input.route, "POST", { inputs: [args] });
       if (!success(result)) {
         // Orgs with a secondary language but without the SubmitForTranslation
@@ -135,7 +136,7 @@ export async function invokeKnowledgeContext(input: {
         verified = Boolean(found); if (found) verificationRecordIds.push(found.Id);
       }
       if (action === "deleteKnowledgeArticles" && verified) verificationRecordIds.push(versionId!);
-      if (verified && action !== "deleteKnowledgeArticles" && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (verified && action !== "deleteKnowledgeArticles" && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return verified ? result : { ...fail("KNOWLEDGE_MUTATION_UNVERIFIED", "Salesforce reported success without the expected owned article state."), body: { errorCode: "KNOWLEDGE_MUTATION_UNVERIFIED", message: "Salesforce reported success without the expected owned article state.", upstreamOutcome: result.body } };
     })();
   } catch (error) { outcome = fail("KNOWLEDGE_LIFECYCLE_UNVERIFIED", error instanceof Error ? error.message : "The owned article lifecycle failed."); }

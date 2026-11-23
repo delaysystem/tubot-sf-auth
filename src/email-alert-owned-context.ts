@@ -73,6 +73,7 @@ import { commercialAccountLinkField, seedCommercialAccountLink, seedRequiredRefe
 import { denialGrantForRestOutcome, type DenialGrant } from "./permission-denial-grants";
 import { sameSalesforceId } from "./salesforce-id";
 import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -673,7 +674,7 @@ export async function invokeEmailAlertWithContext(input: EmailAlertLifecycleInpu
       }
       const invoked = await request(input.route, "POST", { inputs: [{ [rowIdField]: ownedId }] });
       verified = emailAlertSendAccepted(invoked.status, invoked.body);
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       if (!verified) return invoked;
       return invoked;
     })();

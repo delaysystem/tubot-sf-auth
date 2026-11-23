@@ -1,4 +1,5 @@
 import { cleanupOwnedContext, type OwnedRecord } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value=Record<string,any>;
 type Result={status:number;ok:boolean;body:any};
 const identity=(v:any):v is string=>typeof v==='string'&&/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -43,7 +44,7 @@ export async function invokeLeadAssignmentContext(input:{root:string;route:strin
     afterModifiedAt=after.body?.LastModifiedDate;
     const updated=typeof beforeModifiedAt==='string'&&typeof afterModifiedAt==='string'&&Date.parse(afterModifiedAt)>Date.parse(beforeModifiedAt)&&after.body?.LastModifiedById===before.body.CreatedById;
     verified=outcome.ok&&Array.isArray(outcome.body)&&outcome.body.length===1&&outcome.body[0]?.isSuccess===true&&!outcome.body[0]?.errors?.length&&after.ok&&after.body?.[field.name]===marker&&identity(afterOwnerId)&&(afterOwnerId!==beforeOwnerId||updated||noRuleRoute);
-    if(verified&&input.verificationWindowMs)await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+    if(verified&&input.verificationWindowMs)await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
     if(outcome.ok&&outcome.body?.[0]?.isSuccess===true&&!verified)outcome={status:422,ok:false,body:{errorCode:'LEAD_ASSIGNMENT_MUTATION_UNVERIFIED',message:'Salesforce reported execution success without a verified Lead ownership change or record update.',upstreamOutcome:outcome.body}};
    }
   }

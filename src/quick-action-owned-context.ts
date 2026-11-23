@@ -2,6 +2,7 @@ import { classifyManagedFlowFault, type ManagedFlowFault } from './managed-flow-
 import { cleanupOwnedContext, type OwnedRecord, type OwnershipScope } from './owned-context-cleanup';
 import { collectRestOutcomeSignal, denialGrantForRestOutcome, type DenialGrant } from './permission-denial-grants';
 import { resolveRequiredInputValue, type TargetField } from './skipped-standards-context';
+import { clampVerificationWindowMs } from './verification-window';
 
 /**
  * Family builder version (first worker-owned version; set above every
@@ -286,7 +287,7 @@ export async function invokeOwnedQuickAction(input: {
       verifiedIds.push(candidate.id);
       if (contextId && (!Object.keys(expectedChanges).length || Object.entries(expectedChanges).some(([field, value]) => read.body[field] !== value))) verified = false;
     }
-    if (input.verificationWindowMs && verifiedIds.length) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+    if (input.verificationWindowMs && verifiedIds.length) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
   } catch (error) {
     if (!record(error) || error.ownedContextUnavailable !== true) outcome = { status: 502, ok: false, body: { errorCode: 'QUICK_ACTION_EXECUTION_UNAVAILABLE', message: 'Quick Action execution failed; owned markers will still be recovered and cleaned.' } };
   } finally {

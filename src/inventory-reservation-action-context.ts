@@ -1,4 +1,5 @@
 import { cleanupOwnedContext, type OwnershipScope } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -263,7 +264,7 @@ export async function invokeInventoryReservation(input: {
           const rowsMatch=setupRows.length>=1&&setupRows.every(row=>row.Product2Id===productId&&Number(row.Quantity)===Number(RESERVATION_QUANTITY));
           verified=output?.success===true&&rowsMatch;
           if(verified){
-            if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+            if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
             return reserved;
           }
           if(providerRejection)return fail('INVENTORY_PROVIDER_UNAVAILABLE',
@@ -279,7 +280,7 @@ export async function invokeInventoryReservation(input: {
         if(released.ok&&(released.body===null||Array.isArray(released.body)&&released.body.length===0))return fail('INVENTORY_ACTION_OUTCOME_MISSING','Salesforce returned no native reservation release outcome; no mutation is counted as successful.');
         if(!successful(released))return released;
         verified=remaining.length===0;
-        if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+        if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
         return verified?released:fail('INVENTORY_RELEASE_UNVERIFIED','Native release did not remove the actual item reservations for the owned cart item.');
       })();
     } catch {outcome=fail('INVENTORY_LIFECYCLE_UNVERIFIED','The owned native inventory reservation lifecycle could not be verified.');}

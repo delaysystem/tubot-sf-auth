@@ -25,7 +25,9 @@ type Result = { status: number; ok: boolean; body: any };
 
 const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
-const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
+import { ACTION_NAME } from "./action-route-patterns";
+import { clampVerificationWindowMs } from "./verification-window";
+
 const REQUIRED_INPUTS = new Set(["recordId", "messageChoice"]);
 const OPTIONAL_INPUTS = new Set(["serviceChannel", "simulateFailure"]);
 
@@ -215,7 +217,7 @@ export async function invokeApexRelayWithContext(input: ApexRelayLifecycleInput)
       }
       const invoked = await request(input.route, "POST",
         { inputs: [{ recordId: sessionId, messageChoice: messageKey }] });
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const accepted = sessionId !== undefined && apexRelayAccepted(invoked.status, invoked.body, sessionId);
       const readback = sessionId === undefined ? null : await request(
         `${root}/query?q=${encodeURIComponent(`SELECT Status FROM MessagingSession WHERE Id='${sessionId}'`)}`);

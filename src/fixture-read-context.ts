@@ -14,6 +14,7 @@
  */
 
 import { nativeActionSucceeded } from "./action-outcome";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, unknown>;
 type Result = { status: number; ok: boolean; body: any };
@@ -124,7 +125,7 @@ export async function invokeFixtureBackedRead(input: FixtureReadInput): Promise<
           outcome = invoked;
           verified = nativeActionSucceeded(invoked.status, invoked.body) &&
             (!input.verifyIdentityInResponse || JSON.stringify(invoked.body ?? null).includes(ownedId.slice(0, 15)));
-          if (verified && input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+          if (verified && input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
           if (invoked.ok && !verified) {
             outcome = fail("FIXTURE_READ_RESPONSE_UNVERIFIED", "Salesforce answered without referencing the owned fixture identity.", { upstreamOutcome: invoked.body });
           }

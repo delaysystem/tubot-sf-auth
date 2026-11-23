@@ -19,6 +19,7 @@ import {
   APPROVAL_PROVISION_FLOW_NAME, APPROVAL_SUBMISSION_ACTIONABLE, APPROVAL_WORK_ITEM_ACTIONABLE, SettlePoll,
   isTerminalSubmissionStatus, provisionApprovalSubmission, provisionFlowRoute, sweepApprovalSubmission,
 } from "./approval-submission-provisioning";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -114,7 +115,7 @@ export async function invokeProcSimpleApprovalWithContext(input: ApprovalFlowLif
       submissionId = provisioned.submissionId;
       workItemId = provisioned.workItemId;
       verified = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return { status: 200, ok: true, body: provisioned.outcome };
     })();
   } catch {

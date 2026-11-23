@@ -1,6 +1,7 @@
 import { nativeActionSucceeded } from './action-outcome';
 import { cleanupOwnedContext, type OwnedRecord } from './owned-context-cleanup';
 import { denialGrantForRestOutcome } from './permission-denial-grants';
+import { clampVerificationWindowMs } from './verification-window';
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -74,7 +75,7 @@ export async function invokeOwnedRecordAction(input: {
         verified = nativeActionSucceeded(outcome.status, outcome.body) && outputMatches && actual.ok &&
           actual.body?.Id === ownedId && actual.body?.[markerField] === (input.update ? expectedChanges[markerField] : marker);
         if (verified) verificationRecordIds.push(ownedId);
-        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       }
     }
   } catch {

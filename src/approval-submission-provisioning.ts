@@ -35,11 +35,14 @@ export const APPROVAL_SUBMISSION_TERMINAL = ["Approved", "Recalled", "Canceled"]
 export const APPROVAL_SUBMISSION_DEAD = "Errored";
 export const APPROVAL_WORK_ITEM_ACTIONABLE = "Assigned";
 
+import { backoffDelayMs } from "./retry-backoff";
+
 /** Bounded settle polling for async approval propagation (review decisions flip seconds after the action returns). */
 export type SettlePoll = { attempts: number; delayMs: number };
 export const APPROVAL_SETTLE_POLL: SettlePoll = { attempts: 7, delayMs: 2000 };
 
-/** Re-read until `done` passes or the poll budget is exhausted. Returns the last read. */
+/** Re-read until `done` passes or the poll budget is exhausted. Returns the last read.
+ * Waits grow from `delayMs` with the shared backoff (a zero budget stays instant). */
 export async function settle<T>(
   read: () => Promise<T>, done: (value: T) => boolean, poll?: SettlePoll,
 ): Promise<T> {
@@ -47,7 +50,8 @@ export async function settle<T>(
   const delayMs = poll?.delayMs ?? APPROVAL_SETTLE_POLL.delayMs;
   let value = await read();
   for (let i = 1; i < attempts && !done(value); i++) {
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    const waitMs = backoffDelayMs(i - 1, delayMs);
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
     value = await read();
   }
   return value;

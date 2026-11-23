@@ -1,6 +1,10 @@
+import { backoffDelayMs } from "./retry-backoff";
+
 type Result = { status: number; ok: boolean; body: any };
 type Request = (path: string, method?: string, body?: unknown) => Promise<Result>;
 const identity = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
+// Retry seed. Origin: the pre-existing fixed 500ms delay in this file.
+const SUMMARY_DELETE_RETRY_BASE_MS = 500;
 /** Called only for a summary already proven owned by the commerce lifecycle.
  * Allocation automation can create children between discovery and deletion.
  */
@@ -25,7 +29,7 @@ export async function deleteOwnedOrderSummary(root: string, summaryId: string, r
     const absent = await request(path);
     if (absent.status === 404) return { status: 204, ok: true, body: null };
     if (!outcome.ok && ![400,409].includes(outcome.status)) return outcome;
-    if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 500));
+    if (attempt < 3) await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, SUMMARY_DELETE_RETRY_BASE_MS)));
   }
   return outcome.ok ? { status: 422, ok: false, body: { errorCode: "OWNED_SUMMARY_ABSENCE_UNVERIFIED" } } : outcome;
 }

@@ -1,4 +1,8 @@
+import { backoffDelayMs } from "./retry-backoff";
+
 type Result = { status: number; ok: boolean; body: unknown };
+// Retry seed. Origin: the pre-existing fixed 2000ms delay in this file.
+const METADATA_RETRY_BASE_MS = 2000;
 /** A new graph can precede its definition index. Retry only this read and exact missing-definition rejection. */
 export async function readOwnedGraphMetadata(input: {
   invoke: () => Promise<Result>;
@@ -14,7 +18,7 @@ export async function readOwnedGraphMetadata(input: {
         !Array.isArray(activated.body) && (activated.body as Record<string, unknown>).success === true;
       if (!accepted) return activated;
     }
-    await input.wait(2000);
+    await input.wait(backoffDelayMs(attempt, METADATA_RETRY_BASE_MS));
   }
 }
 

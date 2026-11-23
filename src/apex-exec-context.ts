@@ -47,6 +47,7 @@
 
 import { isCompoundParent } from "./describe-marker-field";
 import { commercialAccountLinkField, seedCommercialAccountLink } from "./fixture-reference-seeding";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -828,7 +829,7 @@ export async function invokeApexExecWithContext(input: ApexExecLifecycleInput): 
       }
       const invoked = await request(input.route, "POST", { inputs: [{ ...staticArgs, ...idValues }] });
       invokeRan = true;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const acceptance = apexExecAccepted(invoked.status, invoked.body);
       const outputIds = acceptance.accepted ? apexExecOutputIds(acceptance.outputValues) : [];
       echoFound = fixtureIds.some((id) => outputIds.includes(id));

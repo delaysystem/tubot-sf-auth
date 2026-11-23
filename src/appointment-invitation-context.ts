@@ -1,4 +1,5 @@
 import { cleanupOwnedContext, type OwnershipScope } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const identity = (v:any):v is string => typeof v==='string'&&/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -88,7 +89,7 @@ export async function invokeAppointmentInvitation(input:{root:string;route:strin
   return verified?native:fail('INVITATION_RELATIONSHIPS_UNVERIFIED','The actual owned invitation fields, generated URL and integration-actor invitee relationship were not all verified.');
  })();}catch{if(outcome.ok)outcome=fail('INVITATION_LIFECYCLE_UNVERIFIED','The native owned invitation lifecycle could not be verified.');}
  finally{
-  if(owned.length&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+  if(owned.length&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
   for(const item of attempted){try{const found=await query(item.objectName,item.predicate);if(found.length>2)throw Error('Ambiguous context.');for(const r of found)capture(item.objectName,r.Id);}catch{cleanupError='Owned invitation recovery could not be verified.';}}
   for(const parent of owned.filter(v=>v.objectName==='AppointmentInvitation')){try{for(const r of await query('AppointmentInvitee',`AppointmentInvitationId='${parent.id}'`))capture('AppointmentInvitee',r.Id);}catch{cleanupError='Owned invitation child recovery could not be verified.';}}
   const scopes: OwnershipScope[]=Object.entries(markerFields).map(([objectName,field])=>({objectName,equals:{[String(field)]:marker}}));

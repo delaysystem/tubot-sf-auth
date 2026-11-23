@@ -1,4 +1,5 @@
 import { cleanupOwnedContext } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -80,7 +81,7 @@ export async function invokePaymentAuthorizationWithContext(input: {
       if (!successful(created)) return created;
       const reread = await request(root+'/sobjects/CardPaymentMethod/'+methodId);
       if (!reread.ok || reread.body?.NickName !== marker) return fail('PAYMENT_AUTH_LIFECYCLE_UNVERIFIED','Owned fixtures could not be read back after native authorization.');
-      if (input.verificationWindowMs) await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
       return created;
     })();
   } catch { outcome = fail('PAYMENT_AUTH_LIFECYCLE_UNVERIFIED','The owned payment lifecycle could not be verified.'); }

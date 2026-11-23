@@ -28,6 +28,8 @@ const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
+import { clampVerificationWindowMs } from "./verification-window";
+
 export const NOTIFICATION_ACTION_TYPE = "custom/sendNotification";
 export const NOTIFICATION_FIXTURE_OBJECT = "Opportunity";
 export const NOTIFICATION_FIXTURE_MARKER_FIELD = "Name";
@@ -267,7 +269,7 @@ export async function invokeNotificationWithContext(input: NotificationLifecycle
           }
         }
       }
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       verified = accepted;
       if (!verified) return invoked;
       return invoked;

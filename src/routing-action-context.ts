@@ -1,6 +1,7 @@
 import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
 import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
 import { sameSalesforceId } from "./salesforce-id";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -140,7 +141,7 @@ export async function invokeRoutingContext(input: {
       const invoked = await request(input.route, 'POST', { inputs: [args] });
       const rows = await children();
       verified = rows.length === 1 && rows[0].ServiceChannelId === channel.Id;
-      if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const accepted = invoked.ok && Array.isArray(invoked.body) && invoked.body.length > 0 && invoked.body.every((v: Value) => v.isSuccess === true && !v.errors?.length);
       return accepted && !verified ? fail('ROUTING_MUTATION_UNVERIFIED', 'Salesforce reported success without a readable pending-routing record linked to the owned work item and actual channel.') : invoked;
     })();

@@ -184,6 +184,19 @@ function isCallerId(v: unknown): v is RpcCallerId {
   return v === "proxy" || v === "searcher" || v === "data360" || v === "conversation" || v === "agentcode";
 }
 
+/** Rejects malformed or out-of-window timestamps. The 60s bound is load-bearing
+ * (it caps the replay window) and stays; rejections are logged with the
+ * observed skew so wall-clock flakes surface as diagnosable events instead of
+ * silent 401s. No secrets: caller id, method name, and skew seconds only. */
+function assertTimestampSkew(caller: string, method: string, timestamp: unknown, nowSec: number): void {
+  const seconds = typeof timestamp === "string" && TIMESTAMP_RE.test(timestamp) ? Number(timestamp) : NaN;
+  const skewSec = Number.isFinite(seconds) ? Math.abs(nowSec - seconds) : null;
+  if (skewSec === null || skewSec > TIMESTAMP_SKEW_SECONDS) {
+    console.warn(JSON.stringify({ event: "rpc_timestamp_skew_rejected", caller, method, skewSec, boundSec: TIMESTAMP_SKEW_SECONDS }));
+    throw new RpcAuthError(401, "rpc_unauthorized");
+  }
+}
+
 /** Usable (>=32-char) keys for one caller: current plus _NEXT rotation fallback. */
 export function callerSigningKeys(env: RpcSigningEnv, caller: RpcCallerId): string[] {
   const suffix = caller.toUpperCase() as "PROXY" | "SEARCHER" | "DATA360" | "CONVERSATION" | "AGENTCODE";
@@ -205,10 +218,7 @@ export async function verifyRpcEnvelopeSignature(
   nowSec: number,
 ): Promise<RpcCallerId> {
   if (!isCallerId(envelope.caller)) throw new RpcAuthError(401, "rpc_unauthorized");
-  if (typeof envelope.timestamp !== "string" || !TIMESTAMP_RE.test(envelope.timestamp) ||
-      Math.abs(nowSec - Number(envelope.timestamp)) > TIMESTAMP_SKEW_SECONDS) {
-    throw new RpcAuthError(401, "rpc_unauthorized");
-  }
+  assertTimestampSkew(envelope.caller, method, envelope.timestamp, nowSec);
   if (typeof envelope.nonce !== "string" || !NONCE_RE.test(envelope.nonce)) {
     throw new RpcAuthError(401, "rpc_unauthorized");
   }
@@ -236,10 +246,7 @@ export async function verifyPerOrgEnvelopeSignature(
 ): Promise<{ caller: RpcCallerId; org: string }> {
   if (!isCallerId(envelope.caller)) throw new RpcAuthError(401, "rpc_unauthorized");
   if (!isOrgId(envelope.org)) throw new RpcAuthError(401, "rpc_unauthorized");
-  if (typeof envelope.timestamp !== "string" || !TIMESTAMP_RE.test(envelope.timestamp) ||
-      Math.abs(nowSec - Number(envelope.timestamp)) > TIMESTAMP_SKEW_SECONDS) {
-    throw new RpcAuthError(401, "rpc_unauthorized");
-  }
+  assertTimestampSkew(envelope.caller, method, envelope.timestamp, nowSec);
   if (typeof envelope.nonce !== "string" || !NONCE_RE.test(envelope.nonce)) {
     throw new RpcAuthError(401, "rpc_unauthorized");
   }
@@ -264,6 +271,13 @@ export async function verifyPerOrgEnvelopeSignature(
  * clock still purges (monotonic clocks never go backwards in production). */
 const NONCE_PURGE_INTERVAL_SECONDS = 60;
 let lastNoncePurgeSec = Number.NEGATIVE_INFINITY;
+
+// FLK-32 diagnosis: the check-then-set below is synchronous (no await between
+// the guard and the stamp), so within one isolate it is atomic under the JS
+// event loop — concurrent claims cannot interleave it and there is no race to
+// fix here. Across isolates each keeps its own guard, so duplicate purges are
+// possible, but the purge is an idempotent DELETE of expired rows (single-use
+// is enforced separately by INSERT OR IGNORE), making duplicates benign.
 
 /** Purges expired nonces at most once per interval; safe to call per claim. */
 export async function maybePurgeRpcNonces(db: D1Database, nowSec: number): Promise<void> {

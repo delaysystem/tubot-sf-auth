@@ -1063,8 +1063,16 @@ test("pending Data Graph context is reused and retained without reporting succes
     [`${root}/actions/standard/cdpGetDataGraph`]: () => Response.json([{ isSuccess: false,
       errors: [{ message: "DaoEntity with daoId = ActionProbeExisting is not found" }] }], { status: 400 }),
   });
+  // Timer acceleration scoped to this test's readiness polls: only multi-second
+  // sleeps collapse to instant; every other timer keeps real timing (and extra
+  // args). Origin: the data-graph readiness poll sleeps 5000ms per attempt;
+  // the threshold sits below it and above any incidental timer on this path.
+  // Bun runs a file's tests sequentially, so the try/finally restore below
+  // never leaks into another test.
+  const READINESS_POLL_ACCELERATION_THRESHOLD_MS = 1000;
   const timer = globalThis.setTimeout;
-  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => timer(callback, 0)) as never;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+    timer(callback, typeof ms === "number" && ms >= READINESS_POLL_ACCELERATION_THRESHOLD_MS ? 0 : ms, ...args)) as never;
   try {
     const result = await new TubotSfAuthEntrypoint(null, env).invokeDataGraphWithContext(ref, { apiVersion: "67.0" });
     expect(result.status).toBe(202);
@@ -3472,7 +3480,7 @@ test("broker sessionState degrades routing names but keeps the flag and queue id
   });
   const retry = new MessagingProxyBroker(null, await fixture());
   await expect(retry.sessionState(handoffScope, handoffConversation)).resolves.toEqual({
-    escalated: true, queueName: null, queueId: null,
+    escalated: true, queueName: null, queueId: null, routingError: "session_state_routing_unavailable",
   });
 });
 

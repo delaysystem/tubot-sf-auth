@@ -31,6 +31,8 @@ const SF_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 const ACTION_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
+import { clampVerificationWindowMs } from "./verification-window";
+
 export const RESEARCH_SESSION_OBJECT = "DataKnowledgeSpaceSession";
 export const RESEARCH_REPORT_OBJECT = "DataKnowledgeRsrchRpt";
 export const RESEARCH_SPACE_OBJECT = "DataKnowledgeSpace";
@@ -247,7 +249,7 @@ export async function invokeResearchWithOwnedContext(input: ResearchLifecycleInp
         args[mapped.workflowField] = "VIEW_REPORT";
       }
       const invoked = await request(input.route, "POST", { inputs: [args] });
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       if (researchRunAccepted(invoked.status, invoked.body)) {
         verified = true;
         return invoked;

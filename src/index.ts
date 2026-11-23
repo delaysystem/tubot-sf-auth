@@ -2,6 +2,7 @@ import { validScope, validConfig, turnScopeMatches, type TenantScope, type Proxy
 import {browserConfig,verifyBrowserTurn,discoverBrowserTurns,transcriptText} from './browser-echo';
 import {echoParameters,validGuestId,qualifyDefinitionName,flipDefinitionTwin,isDefinitionInvalidInput,isInvalidInput} from './echo-params';
 import {resolveSessionState} from './session-state';
+import {isVerificationWindowMs} from './verification-window';
 import { injectSoapSession } from "./soap-session";
 import { cacheLifecycleSchema } from "./lifecycle-schema-cache";
 import { provisionCommerceFixtureAccess } from "./commerce-fixture-access";
@@ -34,7 +35,7 @@ import { flowRecordCatalogCandidates, flowRecordCatalogSoql, flowRecordFixtureBl
 import { invokeFlowUpdateContract } from "./flow-update-contract";
 import { invokeLeadAssignmentContext } from "./lead-assignment-context";
 import { invokeOwnedFlowCreation } from "./owned-flow-creation-context";
-import { invokeCustomFieldActionContext, xmlText } from './custom-field-action-context';
+import { invokeCustomFieldActionContext, isOwnedCustomFieldFullName, xmlText } from './custom-field-action-context';
 import { invokeRoutingContext } from "./routing-action-context";
 import { selfProvisionFixtureGrants as provisionFixtureGrants } from "./fixture-self-provision";
 import { APPROVAL_ADVANCED_ACTIONS, APPROVAL_SUBMIT_ACTION, approvalActionName, invokeApprovalActionWithContext } from "./approval-owned-context";
@@ -3921,7 +3922,17 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
             result = { status: 409, body: { errorCode: "DATA_GRAPH_BUILD_PENDING",
               message: "Automatically created and activated a schema-derived graph; Salesforce materialization is not ready for action execution." } };
             let materialized = false;
-            for (let attempt = 0; attempt < 8; attempt++) {
+            // In-request readiness budget. Origin of the shape: the
+            // pre-existing 8-attempt x 5s poll; COST-07 cut attempts to 3
+            // (10s wall, was 35s) because graph materialization typically
+            // exceeds any in-request budget. The readiness guarantee is
+            // unchanged: the action below still runs only after an observed
+            // success status, and otherwise this returns 202/pending with the
+            // graph row persisted in action_graph_context, so the next
+            // invocation re-checks the same gate instead of rebuilding.
+            const READINESS_ATTEMPTS = 3;
+            const READINESS_POLL_MS = 5000;
+            for (let attempt = 0; attempt < READINESS_ATTEMPTS; attempt++) {
               const readiness = await request(`${apiRoot}/query?q=${encodeURIComponent(
                 `SELECT LastRunStatus,RecordCount FROM DataGraph WHERE DataGraphApiName='${name}' LIMIT 1`)}`, "GET");
               if (!readiness.ok) {
@@ -3939,7 +3950,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
                 break;
               }
               pending = true;
-              if (attempt < 7) await new Promise(resolve => setTimeout(resolve, 5000));
+              if (attempt < READINESS_ATTEMPTS - 1) await new Promise(resolve => setTimeout(resolve, READINESS_POLL_MS));
             }
             if (materialized) {
               pending = false;
@@ -4252,7 +4263,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
   async invokeFlowCreationWithContext(ref: Key, input: { route: string; verificationWindowMs?: number }, signed?: SignedRpcEnvelope):
     Promise<{ status: number; body: unknown; cleanupError?: string; contextSchema?: unknown }> {
     await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowCreationWithContext", [ref, input], signed);
-    if (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) throw authFailure(400, "invalid_verification_window", "A bounded verification window is required.");
+    if (input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) throw authFailure(400, "invalid_verification_window", "A bounded verification window is required.");
     const described = await this.describeFlowCreationContext(ref, input);
     if (described.status !== 200 || !object(described.contextSchema)) return described;
     const plan = described.contextSchema;
@@ -4287,7 +4298,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     await verifySignedRpcCall(this.env as AuthEnv, "invokeRemainderBookingFlow", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || match[2] !== "Create_Booking" ||
-      (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000))) {
+      (input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs))) {
       throw authFailure(400, "invalid_remainder_booking_context", "A discovered remainder booking Flow route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4310,7 +4321,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     await verifySignedRpcCall(this.env as AuthEnv, "invokeFlowLiveSObjectWithContext", [ref, input], signed);
     const match = typeof input?.route === "string" && input.route.match(/^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || FLOW_LIVE_SOBJECT_SPECS[match[2]] === undefined ||
-      (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000))) {
+      (input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs))) {
       throw authFailure(400, "invalid_flow_sobject_context", "A discovered spec'd Flow route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4360,7 +4371,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     if (input?.invitationPrefixField !== undefined && (typeof input.invitationPrefixField !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(input.invitationPrefixField))) throw authFailure(400, "invalid_invitation_schema", "A discovered invitation prefix field is required.");
     if (input?.attendeePayloadFields !== undefined && (!Array.isArray(input.attendeePayloadFields) || input.attendeePayloadFields.length > 20 || input.attendeePayloadFields.some(name => typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(name)))) throw authFailure(400, "invalid_attendee_schema", "A bounded live attendee schema is required.");
     if (!key(ref) || !match || typeof input.objectApiName !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(input.objectApiName) ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_record_action_context", "A discovered record action, object API name and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4427,7 +4438,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
         return 'failure' in result ? { failure: { ...result.failure, ok: false } } : result; } });
     if (match[2] === 'createCustomField') return invokeCustomFieldActionContext({ root, route: input.route, target, verificationWindowMs: input.verificationWindowMs, request,
       remove: async fullName => {
-        if (!new RegExp('^' + target + '\\.(?:[A-Za-z][A-Za-z0-9_]*__)?AS_field_[a-f0-9]{24}__c$').test(fullName)) return { status: 400, ok: false, missing: false };
+        if (!isOwnedCustomFieldFullName(target, fullName)) return { status: 400, ok: false, missing: false };
         for (let attempt = 0; attempt < 2; attempt++) {
           const auth = await token(env, row);
           const body = `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://soap.sforce.com/2006/04/metadata"><s:Header><m:SessionHeader><m:sessionId>${xmlText(auth.accessToken)}</m:sessionId></m:SessionHeader></s:Header><s:Body><m:deleteMetadata><m:type>CustomField</m:type><m:fullNames>${xmlText(fullName)}</m:fullNames></m:deleteMetadata></s:Body></s:Envelope>`;
@@ -4527,7 +4538,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? approvalActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000) ||
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs) ||
       input.reassignUserId !== undefined && !/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(input.reassignUserId)) {
       throw authFailure(400, "invalid_approval_action_context", "A discovered standard approval action and bounded verification window are required.");
     }
@@ -4556,7 +4567,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? procSimpleApprovalActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_proc_simple_approval_context", "A discovered simple-approval flow route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4580,7 +4591,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/sendNotification\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? notificationActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_notification_action_context", "A discovered custom notification action and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4606,7 +4617,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? notificationFlowActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_notification_flow_context", "A discovered notification-flow consumer route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4638,7 +4649,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/emailAlert\/([A-Za-z][A-Za-z0-9_]{0,127})\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const parts = match ? emailAlertRouteParts(input.route) : null;
     if (!key(ref) || !match || !parts ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_email_alert_action_context", "A discovered custom emailAlert action and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4664,7 +4675,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexRelayActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_apex_relay_context", "A discovered invocable apex relay route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4690,7 +4701,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexExecActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_apex_exec_context", "A discovered invocable apex route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4715,7 +4726,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || !Object.hasOwn(APEX_SOBJECT_RECORD_SPECS, match[2]) ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_apex_sobject_record_context", "A discovered apex record action route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4740,7 +4751,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match || !Object.hasOwn(ASSET_REPLACE_SPECS, match[2]) ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_asset_replace_context", "A discovered asset replace action route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4766,7 +4777,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/decisionTableAction\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? decisionTableActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_decision_table_context", "A discovered decision-table action route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4789,7 +4800,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexCsvActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_apex_csv_context", "A discovered invocable apex route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4814,7 +4825,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/apex\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? apexOverlapActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_apex_overlap_context", "A discovered invocable apex route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4837,7 +4848,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/standard\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     const action = match ? researchActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_research_action_context", "A discovered standard research action and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4861,7 +4872,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const info = typeof input?.route === "string" ? skippedStandardRouteInfo(input.route) : null;
     const family = skippedStandardFamilySlug(input?.family);
     if (!key(ref) || !info || !family ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_skipped_standard_context", "A discovered skipped-standard route, executable family, and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4885,7 +4896,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/flow\/([A-Za-z][A-Za-z0-9_]{1,127})$/);
     if (!key(ref) || !match ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_agent_customer_context", "A discovered custom agent-flow route and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4910,7 +4921,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/(?:standard|custom\/apex)\/([A-Za-z][A-Za-z0-9_.]{0,127})$/);
     const action = match ? commerceLifecycleActionName(input.route) : null;
     if (!key(ref) || !match || !action ||
-      input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+      input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_commerce_action_context", "A discovered standard or cart-draft apex commerce action and bounded verification window are required.");
     }
     const env = this.env as AuthEnv;
@@ -4949,7 +4960,7 @@ export class TubotSfAuthEntrypoint extends BaseWorkerEntrypoint {
     const match = typeof input?.route === "string" && input.route.match(
       /^\/services\/data\/(v\d+(?:\.\d+)?)\/actions\/custom\/quickAction\/([A-Za-z][A-Za-z0-9_]{0,127})\/([A-Za-z][A-Za-z0-9_]{0,127})$/);
     if (!key(ref) || !match) throw authFailure(400, "invalid_quick_action_context", "A discovered Quick Action route is required.");
-    if (input.verificationWindowMs !== undefined && (!Number.isInteger(input.verificationWindowMs) || input.verificationWindowMs < 0 || input.verificationWindowMs > 15_000)) {
+    if (input.verificationWindowMs !== undefined && !isVerificationWindowMs(input.verificationWindowMs)) {
       throw authFailure(400, "invalid_verification_window", "The independent verification window must be between zero and 15000 milliseconds.");
     }
     const env = this.env as AuthEnv;

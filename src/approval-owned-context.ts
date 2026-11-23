@@ -30,6 +30,7 @@ import {
   APPROVAL_PROD_GUARDED_CODE, APPROVAL_SUBMISSION_ACTIONABLE, APPROVAL_WORK_ITEM_ACTIONABLE, SettlePoll, isActionableSubmissionStatus,
   isGuardedOrg, isTerminalSubmissionStatus, provisionApprovalSubmission, readOrgGuardFacts, settle, sweepApprovalSubmission,
 } from "./approval-submission-provisioning";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -286,7 +287,7 @@ export async function invokeApprovalActionWithContext(input: ApprovalLifecycleIn
         }
         instanceId = instanceRows[0].Id as string;
         verified = true;
-        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
         return submitted;
       }
       // Advanced actions address flow-orchestrated substrate, which a classic
@@ -332,7 +333,7 @@ export async function invokeApprovalActionWithContext(input: ApprovalLifecycleIn
       }
       const invoked = await request(input.route, "POST", { inputs: [args] });
       const accepted = nativeAccepted(invoked);
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       if (action === "reassignApprovalWorkItem") {
         const readItem = async (): Promise<Value[] | null> => {
           const reread = await request(`${root}/query?q=${encodeURIComponent(

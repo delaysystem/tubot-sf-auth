@@ -80,7 +80,11 @@ async function getSchema(read:Read,version:string,orgId:string):Promise<any>{
 // throw explicit codes (never a negative state); routing-name resolution
 // degrades to nulls so a Group-read outage can never silence the escalated
 // flag. Unknown sessions return null (callers fail open by design).
-export async function resolveSessionState(read:Read,version:string,scope:TenantScope,conversationId:string):Promise<SessionHandoffState|null>{
+// A failed PendingServiceRouting lookup degrades to nulls too, but carries an
+// explicit `routingError` code (plus a structured log) so a routing outage is
+// distinguishable from genuinely-unrouted; success-path shapes are unchanged.
+export type SessionHandoffResolution=SessionHandoffState&{routingError?:string};
+export async function resolveSessionState(read:Read,version:string,scope:TenantScope,conversationId:string):Promise<SessionHandoffResolution|null>{
  const schema=await getSchema(read,version,scope.orgId);
  const escalate=pickHandoffFields(schema,'Escalate_To_Human__c');
  const where=`Conversation.ConversationIdentifier='${conversationId}' AND MessagingChannelId='${scope.channelId}'`;
@@ -105,7 +109,7 @@ export async function resolveSessionState(read:Read,version:string,scope:TenantS
  try{
   const rows=await query(read,version,`SELECT WorkItemId,QueueId FROM PendingServiceRouting WHERE WorkItemId IN (${ids.map(id=>`'${id}'`).join(',')}) ORDER BY CreatedDate DESC`,'session_state_routing_unavailable');
   for(const r of rows)if(typeof r?.WorkItemId==='string'&&!(r.WorkItemId in routing))routing[r.WorkItemId]=typeof r?.QueueId==='string'&&SFID.test(r.QueueId)?r.QueueId:null;
- }catch{return {escalated,queueName:null,queueId:null};}
+ }catch{console.warn(JSON.stringify({event:'session_state_routing_unavailable',conversationId,escalated}));return {escalated,queueName:null,queueId:null,routingError:'session_state_routing_unavailable'};}
  const ordered=[...(flaggedId?[flaggedId]:[]),...recent];
  const routed=ordered.find(id=>id in routing);
  if(routed===undefined)return {escalated,queueName:null,queueId:null};

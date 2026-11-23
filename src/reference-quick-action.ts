@@ -3,6 +3,7 @@ import { seedRequiredReferenceValues } from "./fixture-reference-seeding";
 import { quickActionFailurePlanners, quickActionRouteTerminal } from "./quick-action-owned-context";
 import { reclaimFixtureOwnerForDelete } from "./fixture-owner-reclaim";
 import { grantFamilyForCleanupDenial } from "./permission-denial-grants";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -141,7 +142,7 @@ export async function invokeReferenceQuickAction(input: {
       verificationRecordIds.push(child.Id);
     }
     if (input.markerTargetField) verified = verificationRecordIds.length === 1 && !cleanupError;
-    if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+    if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
     return outcome;
     })();
   } finally {

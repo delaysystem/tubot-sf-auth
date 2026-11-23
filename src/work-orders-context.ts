@@ -1,3 +1,4 @@
+import { clampVerificationWindowMs } from './verification-window';
 /** Owned lifecycle for generateWorkOrders.
  * Live-proven recipe: fslfulfill lane (test2 2026-10-04), hardened for
  * shared orgs: the lane deleted by global baseline-diff (unsafe with
@@ -109,7 +110,7 @@ export async function invokeWorkOrdersWithContext(input: {
       }
       const rescan = await scopedMinted();
       if (rescan === null || rescan.length) return fail('WORK_ORDERS_MINTED_CLEANUP_FAILED','Minted WorkOrders remain after cleanup.');
-      if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise(r=>setTimeout(r,clampVerificationWindowMs(input.verificationWindowMs)));
       return invoked;
     })();
   } catch { outcome = fail('WORK_ORDERS_LIFECYCLE_UNVERIFIED','The owned work-orders lifecycle could not be verified.'); }

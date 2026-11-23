@@ -31,6 +31,7 @@ import {
   sweepFlowCommunicationResidue,
   type ResidueSweep,
 } from "./flow-residue-sweep";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
@@ -360,7 +361,7 @@ export async function invokeNotificationFlowWithContext(input: NotificationFlowL
       }
       whatIdsEchoed = true;
       mailResultCount = assessed.mailResults.length;
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       verified = true;
       return invoked;
     })();

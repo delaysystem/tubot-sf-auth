@@ -2,6 +2,7 @@ import { cleanupOwnedContext, type OwnershipScope } from './owned-context-cleanu
 import {
   batchDescribe, batchGet, discoverProvisionedSubstrate, provisionBuyerChain, type ProvisionedSubstrate,
 } from './commerce-provisioned-context';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -288,7 +289,7 @@ export async function invokeCartItemMutation(input: {
         let items=await find('CartItem',`CartId='${cartId}'`,'Id,CartId,CartDeliveryGroupId,Product2Id,Quantity');
         // Lifecycle mismatch: the native write can settle after the outcome
         // returns; one bounded re-read before declaring unverified.
-        if(items.length!==1){await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs??1500));
+        if(items.length!==1){await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs??1500)));
           items=await find('CartItem',`CartId='${cartId}'`,'Id,CartId,CartDeliveryGroupId,Product2Id,Quantity');}
         nativeAddEvidence={status:added.status,bodyKind:added.body===null?'null':Array.isArray(added.body)?'array':typeof added.body,
           outcomeCount:Array.isArray(added.body)?added.body.length:null,successFlags:Array.isArray(added.body)?added.body.map((v: Value)=>v?.isSuccess===true):[],
@@ -307,7 +308,7 @@ export async function invokeCartItemMutation(input: {
         if(id(items[0]?.CartDeliveryGroupId)){deliveryGroupId=items[0].CartDeliveryGroupId;capture('CartDeliveryGroup',deliveryGroupId!);}
         if(action==='addCartItem'){
           verified=true;afterQuantity=beforeQuantity;
-          if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+          if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
           return added;
         }
         const updateNames=new Set(descriptors.updateCartItem.inputs.map((f: Value)=>f.name));
@@ -319,7 +320,7 @@ export async function invokeCartItemMutation(input: {
         if(updated.ok&&(updated.body===null||Array.isArray(updated.body)&&updated.body.length===0))return fail('CART_ACTION_OUTCOME_MISSING','Salesforce returned no native cart item update outcome; no mutation is counted as successful.');
         if(!successful(updated))return mapHostname(updated);
         verified=reread.length===1&&reread[0]?.Id===itemId&&reread[0]?.Product2Id===productId&&Number(reread[0]?.Quantity)===Number(UPDATE_QUANTITY);
-        if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+        if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
         return verified?updated:fail('CART_ITEM_UPDATE_UNVERIFIED','Native item update did not change the actual cart item quantity.');
       })();
     } catch {outcome=fail('CART_LIFECYCLE_UNVERIFIED','The owned native Commerce lifecycle could not be verified.');}

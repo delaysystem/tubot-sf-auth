@@ -2,6 +2,7 @@ import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { unzipSync, zipSync, strToU8 } from "fflate";
 import { requireScope, readBodyBounded, SecurityError, type TenantScope } from "./request-security";
 import { soapRequest as soap, beginRetrieve, pollRetrieve, throwRetrieveFailure, isUnknownRetrieveId, MAX_RETRIEVE_REBEGINS } from "./soap-retrieve";
+import { backoffDelayMs } from "./retry-backoff";
 import type { SalesforceConnection } from "./agent-script";
 
 // Metadata only. Flow/Apex references are recorded, never retrieved.
@@ -22,6 +23,8 @@ export const SNAPSHOT_BACKOFF_AFTER_ROUNDS = 3;
 export const SNAPSHOT_POLL_FRESH_MS = 3000;
 export const SNAPSHOT_SF_FAIL_COOLDOWN_MS = 30_000;
 export const SNAPSHOT_MAX_RETRY_AFTER_S = 60;
+// Permission-probe poll seed. Origin: the pre-existing fixed 500ms in probeAgentMetadataPermissions.
+const PROBE_POLL_BASE_MS = 500;
 type Job = { id: string; agent_name: string; status: string; state_json: string; manifest_json: string | null; created_at: number; updated_at: number; lease_until: number };
 const arr = <T>(value: T | T[] | undefined): T[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const xml = (value: string) => value.replace(/[<>&"']/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" })[c]!);
@@ -122,7 +125,7 @@ export async function probeAgentMetadataPermissions(conn: SalesforceConnection) 
         if (member && !arr<any>(result.fileProperties).some(p => `${p.type}:${p.fullName}` === memberKey(member))) return "failed";
         return "ready";
       }
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, PROBE_POLL_BASE_MS)));
     }
     return "pending";
   };

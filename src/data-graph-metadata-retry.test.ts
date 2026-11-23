@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { readOwnedGraphMetadata } from './data-graph-metadata-retry';
 test('owned graph metadata retries a missing definition until its real read succeeds', async () => {
   let calls = 0, waits = 0;
-  const result = await readOwnedGraphMetadata({invoke:async()=>++calls===1?{status:400,ok:false,body:[{errors:[{message:'DataGraph not found with definition ID owned'}]}]}:{status:200,ok:true,body:[{isSuccess:true,outputValues:{dataGraphMetadata:'real'}}]},wait:async ms=>{expect(ms).toBe(2000);waits++;}});
+  const result = await readOwnedGraphMetadata({invoke:async()=>++calls===1?{status:400,ok:false,body:[{errors:[{message:'DataGraph not found with definition ID owned'}]}]}:{status:200,ok:true,body:[{isSuccess:true,outputValues:{dataGraphMetadata:'real'}}]},wait:async ms=>{expect(ms).toBeGreaterThanOrEqual(1000);expect(ms).toBeLessThanOrEqual(2000);waits++;}});
   expect(result.status).toBe(200);expect(calls).toBe(2);expect(waits).toBe(1);
 });
 test('owned graph metadata does not retry access denial or ordinary failures', async()=>{

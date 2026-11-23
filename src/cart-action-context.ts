@@ -1,5 +1,6 @@
 import { cleanupOwnedContext } from './owned-context-cleanup';
 import { batchDescribe, discoverProvisionedStorefront, discoverStoreBuyerGroups, provisionBuyerChain } from './commerce-provisioned-context';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const id = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
@@ -112,18 +113,18 @@ export async function invokeCartMutation(input: {
         if(records.length!==1||!id(cartId)||!id(before?.OwnerId)||before?.AccountId!==accountId||before?.Type!==cartType||returned?.cartId!==cartId||returned?.accountId!==accountId||returned?.webstoreId!==storeId||returned?.name!==marker||returned?.status!==before?.Status)return fail('CART_CREATION_UNVERIFIED','Native creation did not return one actual cart with the owned buyer and store.');
         if(action==='createCart'){
           verified=true;after=before;
-          if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+          if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
           return created;
         }
         const names=new Set(descriptors.deleteCart.inputs.map((f: Value)=>f.name));
         if(!['webStoreId','cartStateOrId'].every(name=>names.has(name)))return fail('CART_DELETE_SCHEMA_UNAVAILABLE','The native delete descriptor lacks store/cart identity inputs.');
-        if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+        if(input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
         const args={webStoreId:storeId,cartStateOrId:cartId,effectiveAccountId:accountId,userId:before!.OwnerId};
         const deleted=await request(input.route,'POST',{inputs:[Object.fromEntries(Object.entries(args).filter(([name])=>names.has(name)))]});
         const actual=await request(root+'/sobjects/WebCart/'+cartId);after=actual.body;
         if(!successful(deleted))return deleted;
         verified=actual.status===404||actual.ok&&after?.Id===cartId&&after?.Name===marker&&after?.WebStoreId===storeId&&after?.AccountId===accountId&&before?.Status!=='PendingDelete'&&after?.Status==='PendingDelete';
-        if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+        if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
         return verified?deleted:fail('CART_DELETION_UNVERIFIED','Native deletion did not remove the owned cart or change its actual state to PendingDelete.');
       })();
     } catch {outcome=fail('CART_LIFECYCLE_UNVERIFIED','The owned native Commerce lifecycle could not be verified.');}

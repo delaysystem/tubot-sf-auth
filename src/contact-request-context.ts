@@ -1,7 +1,8 @@
 import { cleanupOwnedContext, type OwnedRecord } from './owned-context-cleanup';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = {status:number;ok:boolean;body:any};
-const record = (v:any):v is Value => v !== null && typeof v === 'object' && !Array.isArray(v);
+import { isRecord as record } from './record-guard';
 const id = (v:any):v is string => typeof v === 'string' && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
 /** Creates a terminal contact request owned by the execution user; never calls a phone API. */
 export async function invokeContactRequestContext(input:{root:string;route:string;userId:string;verificationWindowMs?:number;request:(path:string,method?:string,body?:any)=>Promise<Result>}) {
@@ -42,7 +43,7 @@ export async function invokeContactRequestContext(input:{root:string;route:strin
       if (!result.ok || !Array.isArray(result.body?.records) || matches.length > 1 || (!ownedId && (accepted || outcome.status >= 500))) cleanupError = 'Owned contact request recovery could not establish cleanup; the failed invocation must remain unresolved.';
     }
     if(ownedId){const actual=await request(`${root}/sobjects/ContactRequest/${ownedId}`);verified=accepted&&actual.ok&&actual.body?.RequestDescription===marker&&actual.body?.OwnerId===input.userId&&actual.body?.Status===terminal;}
-    if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,input.verificationWindowMs));
+    if(verified&&input.verificationWindowMs)await new Promise(resolve=>setTimeout(resolve,clampVerificationWindowMs(input.verificationWindowMs)));
     if(accepted&&!verified)outcome=failure(422,'CONTACT_REQUEST_MUTATION_UNVERIFIED','Salesforce reported success without the owned terminal record state.');
   } finally {
     if(ownedId)candidates.push({objectName:'ContactRequest',id:ownedId});

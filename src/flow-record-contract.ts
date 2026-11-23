@@ -2,6 +2,7 @@ import { isNameMarkerField, isPersonContactField } from './describe-marker-field
 import { describeFlowUpdateContract } from './flow-update-contract';
 import { describeFlowScalarCreationContract } from './flow-scalar-creation-contract';
 import { reclaimFixtureOwnerForDelete } from './fixture-owner-reclaim';
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -186,7 +187,7 @@ export async function invokeFlowRecordContract(input: { root: string; route: str
         if (!actual.ok || actual.body?.[target.markerField] !== marker) { verified = false; continue; }
         verificationRecordIds.push(identity);
       }
-      if ((verified || owned.length) && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if ((verified || owned.length) && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return accepted && !verified ? { status: 422, ok: false, body: { errorCode: 'FLOW_RECORD_CONTRACT_MUTATION_UNVERIFIED', message: 'Salesforce reported success without returning all actual owned creation identities.', upstreamOutcome: invoked.body } } : invoked;
     })();
   } catch (error) { if (outcome.body?.errorCode === 'FLOW_RECORD_CONTRACT_CONTEXT_UNAVAILABLE') outcome = { status: 422, ok: false, body: { errorCode: 'FLOW_RECORD_CONTRACT_LIFECYCLE_UNVERIFIED', message: error instanceof Error ? error.message : 'Owned record lifecycle failed.' } }; }

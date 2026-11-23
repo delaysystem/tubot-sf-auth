@@ -16,6 +16,7 @@
  */
 
 import { nativeActionSucceeded } from "./action-outcome";
+import { clampVerificationWindowMs } from "./verification-window";
 
 type Value = Record<string, unknown>;
 type Result = { status: number; ok: boolean; body: any };
@@ -151,7 +152,7 @@ export async function invokeDecisionTableWithContext(input: DecisionTableLifecyc
     return done(fail("DECISION_TABLE_ARGS_UNBUILDABLE", `${built.failure} The native call was not attempted.`), { verified: false });
   }
   const invoked = await request(input.route, "POST", { inputs: [built.args] });
-  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+  if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
   const verified = nativeActionSucceeded(invoked.status, invoked.body);
   return done(invoked, { verified, inputCount: Object.keys(built.args).length });
 }

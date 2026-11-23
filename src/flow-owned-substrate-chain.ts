@@ -1,4 +1,5 @@
 import { minimalPersonCreateInputNames } from "./person-create-inputs";
+import { clampVerificationWindowMs } from "./verification-window";
 /**
  * Owned-substrate execution for metadata-hidden custom Flow actions.
  *
@@ -1744,7 +1745,7 @@ export async function invokeOwnedSubstrate(input: OwnedSubstrateInput): Promise<
           `Required input '${missing[0].name}' has no live reference to resolve it from.`);
       }
       const invoked = await request(input.route, "POST", { inputs: [args] });
-      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, input.verificationWindowMs));
+      if (input.verificationWindowMs) await new Promise((resolve) => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       const assessed = assessOwnedSubstrateOutcome(invoked.status, invoked.body);
       if (!assessed.ok) {
         // Opaque execution faults carry an evidence-fed taxonomy stamp for

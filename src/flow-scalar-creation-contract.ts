@@ -1,3 +1,4 @@
+import { clampVerificationWindowMs } from './verification-window';
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
 const record = (v: any): v is Value => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -102,12 +103,12 @@ export async function invokeFlowScalarCreationContract(input: { root: string; ro
     const rows = await discover(), result = Array.isArray(outcome.body) && outcome.body.length === 1 ? outcome.body[0] : undefined;
     const returned = result?.outputValues?.[plan.outputName];
     verified = outcome.ok && result?.isSuccess === true && !result.errors?.length && !result.outputValues?.errorMessage && result.outputValues?.isSuccess !== false && identity(returned?.Id) && rows.length === 1 && rows[0].Id.slice(0, 15) === returned.Id.slice(0, 15) && Object.entries(expectedChanges).every(([field, value]) => rows[0][field] === value);
-    if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+    if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
     if (outcome.ok && result?.isSuccess === true && !verified) outcome = { status: 422, ok: false, body: { errorCode: 'FLOW_SCALAR_CREATION_MUTATION_UNVERIFIED', message: 'Salesforce reported execution success without the actual declared record creation.', upstreamOutcome: outcome.body } };
   } catch { outcome = preparationFailure ?? { status: 502, ok: false, body: { errorCode: 'FLOW_SCALAR_CREATION_UPSTREAM_UNAVAILABLE', message: 'Execution or owned record readback failed; marker-scoped cleanup will run.' } }; }
   finally {
     try {
-      if (!verified && ownedParents.length && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (!verified && ownedParents.length && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       await discover();
       for (const row of ownedRecords) {
         const path = root + '/sobjects/' + row.objectName + '/' + row.id, actual = await request(path);

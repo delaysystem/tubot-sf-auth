@@ -1,6 +1,7 @@
+import { clampVerificationWindowMs } from "./verification-window";
+import { isRecord as record } from "./record-guard";
 type Value = Record<string, any>;
 type Result = { status: number; ok: boolean; body: any };
-const record = (v: any): v is Value => v !== null && typeof v === "object" && !Array.isArray(v);
 const id = (v: any): v is string => typeof v === "string" && /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(v);
 export const WORK_PLAN_CONTEXT_ACTIONS = ["addWorkPlans", "addWorkSteps", "deleteWorkPlans"];
 export const WORK_PLAN_CONTEXT_OBJECTS = ["WorkOrder", "WorkPlanTemplate", "WorkStepTemplate", "WorkPlan", "WorkStep"];
@@ -81,7 +82,7 @@ export async function invokeWorkPlanContext(input: {
         const prepared = await invokePlans();
         if (!await capturePlans(prepared)) return success(prepared) ? fail("WORK_PLAN_PREREQUISITE_UNVERIFIED", "No owned plan was created for deletion.") : prepared;
         verificationRecordIds.push(planId!);
-        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+        if (input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       }
       const args = action === "addWorkSteps" ? { recordId: planId, workStepTemplateIdList: [fixtures.WorkStepTemplate] }
         : action === "addWorkPlans" ? { recordId: orderId, workPlanTemplateIdList: [fixtures.WorkPlanTemplate] } : { recordId: orderId };
@@ -96,7 +97,7 @@ export async function invokeWorkPlanContext(input: {
           if (actual.ok && actual.body?.WorkPlanId === planId) { owned.push({ objectName: "WorkStep", id: steps[0] }); verificationRecordIds.push(steps[0]); verified = true; }
         }
       }
-      if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, input.verificationWindowMs));
+      if (verified && input.verificationWindowMs) await new Promise(resolve => setTimeout(resolve, clampVerificationWindowMs(input.verificationWindowMs)));
       return verified ? result : { ...fail("WORK_PLAN_MUTATION_UNVERIFIED", "Salesforce returned success without the expected owned Work Plan/Step mutation."), body: { errorCode: "WORK_PLAN_MUTATION_UNVERIFIED", message: "Salesforce returned success without the expected owned Work Plan/Step mutation.", upstreamOutcome: result.body } };
     })();
   } catch (error) { if (outcome.ok === false && outcome.body?.errorCode === "WORK_PLAN_CONTEXT_UNAVAILABLE") outcome = fail("WORK_PLAN_LIFECYCLE_UNVERIFIED", error instanceof Error ? error.message : "The owned Work Plan lifecycle failed."); }
