@@ -94,8 +94,9 @@ type Build = (name: string, marker: string, values: Value) => Promise<{ values: 
  * 175: track above shared contract 174 (native standard-action model config);
  * no family change.
  * 176: track above shared contract 175 (record-ID PII masking fix); no family
- * change. */
-export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 176;
+ * change.
+ * 177: track above shared contract 176; no family change. */
+export const COMMERCE_LIFECYCLE_BUILDER_VERSION = 177;
 
 export type CommerceLifecycleKind =
   | 'payment-auth' | 'cart' | 'cart-read' | 'order' | 'order-submit' | 'fulfillment' | 'return' | 'rebate' | 'loyalty' | 'batch';

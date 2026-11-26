@@ -134,13 +134,39 @@ export function rpcCanonical(caller: string, method: string, timestamp: string, 
   return caller + "\n" + method + "\n" + timestamp + "\n" + nonce + "\n" + argsDigest;
 }
 
+const MAX_RPC_KEY_CACHE = 512;
+const hmacKeyCache = new Map<string, Promise<CryptoKey>>();
+const orgKeyCache = new Map<string, Promise<Uint8Array>>();
+const orgHmacKeyCache = new Map<string, Promise<CryptoKey>>();
+
+function getCachedKey(cache: Map<string, Promise<CryptoKey>>, cacheKey: string, factory: () => Promise<CryptoKey>): Promise<CryptoKey> {
+  let pending = cache.get(cacheKey);
+  if (!pending) {
+    if (cache.size >= MAX_RPC_KEY_CACHE) {
+      const first = cache.keys().next().value;
+      if (first !== undefined) cache.delete(first);
+    }
+    pending = factory().catch((err) => {
+      cache.delete(cacheKey);
+      throw err;
+    });
+    cache.set(cacheKey, pending);
+  }
+  return pending;
+}
+
 async function hmacSignature(key: string, canonical: string): Promise<string> {
-  const cryptoKey = await crypto.subtle.importKey("raw", encoder.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const cryptoKey = await getCachedKey(hmacKeyCache, key, () =>
+    crypto.subtle.importKey("raw", encoder.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+  );
   return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(canonical))));
 }
 
 async function hmacSignatureBytes(keyBytes: Uint8Array, canonical: string): Promise<string> {
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes.buffer as ArrayBuffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const cacheKey = bytesToHex(keyBytes);
+  const cryptoKey = await getCachedKey(orgHmacKeyCache, cacheKey, () =>
+    crypto.subtle.importKey("raw", keyBytes.buffer as ArrayBuffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+  );
   return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(canonical))));
 }
 
@@ -150,12 +176,27 @@ async function hmacSignatureBytes(keyBytes: Uint8Array, canonical: string): Prom
  * run the identical derivation; both sides must byte-match (cross-checked).
  */
 export async function deriveOrgKey(masterKey: string, caller: RpcCallerId, orgId: string): Promise<Uint8Array> {
-  const ikm = await crypto.subtle.importKey("raw", encoder.encode(masterKey), "HKDF", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "HKDF", hash: "SHA-256", salt: encoder.encode(ORG_KDF_SALT), info: encoder.encode(caller + "\n" + orgId) },
-    ikm, 256,
-  );
-  return new Uint8Array(bits);
+  const cacheKey = `${masterKey}\0${caller}\0${orgId}`;
+  let pending = orgKeyCache.get(cacheKey);
+  if (!pending) {
+    if (orgKeyCache.size >= MAX_RPC_KEY_CACHE) {
+      const first = orgKeyCache.keys().next().value;
+      if (first !== undefined) orgKeyCache.delete(first);
+    }
+    pending = (async () => {
+      const ikm = await crypto.subtle.importKey("raw", encoder.encode(masterKey), "HKDF", false, ["deriveBits"]);
+      const bits = await crypto.subtle.deriveBits(
+        { name: "HKDF", hash: "SHA-256", salt: encoder.encode(ORG_KDF_SALT), info: encoder.encode(caller + "\n" + orgId) },
+        ikm, 256,
+      );
+      return new Uint8Array(bits);
+    })().catch((err) => {
+      orgKeyCache.delete(cacheKey);
+      throw err;
+    });
+    orgKeyCache.set(cacheKey, pending);
+  }
+  return pending;
 }
 
 /** canonical-v2 = caller + "\n" + org + "\n" + method + "\n" + timestamp + "\n" + nonce + "\n" + argsDigest */
@@ -343,7 +384,10 @@ export async function verifySignedRpcCall(
     await claimRpcNonce(env.DB, typed.nonce, nowSec);
     return "";
   } catch (err) {
-    if (env.AUTH_RPC_WARN_MODE === "1") {
+    // Warn mode never applies to scopeless inventory methods: they return
+    // full-tenant data when org is empty, so a warn-mode pass-through would
+    // leak every tenant to an unauthenticated caller. Fail closed instead.
+    if (env.AUTH_RPC_WARN_MODE === "1" && !SCOPELESS_RPC_METHODS.has(method)) {
       const caller = typeof envelope === "object" && envelope !== null
         ? (envelope as Record<string, unknown>).caller as string | undefined
         : undefined;

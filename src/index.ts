@@ -228,7 +228,13 @@ const SELF_OAUTH_PENDING_SECONDS = 600;
 function json(body: unknown, requestId: string, status = 200): Response {
   return Response.json(body, {
     status,
-    headers: { "Cache-Control": "no-cache, no-store, must-revalidate", "X-Request-Id": requestId },
+    headers: {
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-Request-Id": requestId,
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+    },
   });
 }
 function error(requestId: string, status: number, code: string, message: string, retryable = false): Response {

@@ -55,7 +55,8 @@ export async function claimEchoSubmit(
     return { owned: true, claimant: me, failOpen: true };
   }
   const pollMs = opts?.pollMs ?? CLAIM_POLL_MS;
-  const intervalMs = opts?.intervalMs ?? CLAIM_POLL_INTERVAL_MS;
+  let waitMs = opts?.intervalMs ?? CLAIM_POLL_INTERVAL_MS;
+  const maxWaitMs = 2000;
   const deadline = Date.now() + pollMs;
   let other: string | null = null;
   for (;;) {
@@ -69,8 +70,10 @@ export async function claimEchoSubmit(
     if (row.request_id) return { owned: false, requestId: row.request_id };
     if (row.claimant === me) return { owned: true, claimant: me };
     other = row.claimant;
-    if (Date.now() >= deadline) break;
-    await sleep(intervalMs);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(waitMs, remaining));
+    waitMs = Math.min(maxWaitMs, waitMs * 2);
   }
   // Owner never resolved: atomically steal only if it still holds no result.
   // A concurrent completion flips request_id first, so the steal either wins
