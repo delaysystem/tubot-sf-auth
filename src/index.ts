@@ -1168,7 +1168,7 @@ async function fetchToken(env: AuthEnv, row: Credential, id: string, cacheResult
       "The JWT grant resolved to a different Salesforce org or user. Check the selected org and integration username.");
   }
   const seconds = typeof data.expires_in === "number" && data.expires_in > 0
-    ? Math.min(data.expires_in, 300) : 120;
+    ? Math.min(data.expires_in, 1800) : 900;
   const result = { accessToken: data.access_token, instanceUrl, expiresAt: Date.now() + seconds * 1000 };
   if (cacheResult) tokenCache.set(id, result);
   return result;

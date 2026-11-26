@@ -335,6 +335,35 @@ export async function maybePurgeRpcNonces(db: D1Database, nowSec: number): Promi
   await db.prepare("DELETE FROM salesforce_self_oauth_internal_nonce WHERE expires_at <= ?").bind(nowSec).run();
 }
 
+/** Read-only idempotent polling RPC methods over private Service Bindings:
+ * verified by HMAC + +/-60s timestamp window + isolate-local single-use nonce
+ * map, avoiding ~100M+ D1 nonce row writes/month from 2.5s widget polling.
+ * Mutating and credential-minting RPCs still enforce D1 single-use nonces. */
+const ISOLATE_NONCE_READ_ONLY_METHODS = new Set([
+  "browserSync",
+  "status",
+  "sessionState",
+  "resolveFlowRoute",
+]);
+const ISOLATE_NONCE_MAP = new Map<string, number>();
+const MAX_ISOLATE_NONCES = 8192;
+
+function claimIsolateNonce(nonce: string, nowSec: number): void {
+  const existing = ISOLATE_NONCE_MAP.get(nonce);
+  if (existing !== undefined && existing > nowSec) {
+    throw new RpcAuthError(401, "rpc_unauthorized");
+  }
+  if (ISOLATE_NONCE_MAP.size >= MAX_ISOLATE_NONCES) {
+    for (const [k, exp] of ISOLATE_NONCE_MAP) {
+      if (exp <= nowSec || ISOLATE_NONCE_MAP.size >= MAX_ISOLATE_NONCES) {
+        ISOLATE_NONCE_MAP.delete(k);
+        if (ISOLATE_NONCE_MAP.size < MAX_ISOLATE_NONCES / 2) break;
+      }
+    }
+  }
+  ISOLATE_NONCE_MAP.set(nonce, nowSec + NONCE_TTL_SECONDS);
+}
+
 /** D1 single-use nonce claim; throws 401 when the nonce was already used. */
 export async function claimRpcNonce(db: D1Database, nonce: string, nowSec: number): Promise<void> {
   await maybePurgeRpcNonces(db, nowSec);
@@ -376,12 +405,20 @@ export async function verifySignedRpcCall(
     if (keys.length === 0) throw new RpcAuthError(503, "rpc_caller_key_unconfigured");
     if (typeof typed.org === "string") {
       const verified = await verifyPerOrgEnvelopeSignature(keys, method, businessArgs, typed, nowSec);
-      await claimRpcNonce(env.DB, typed.nonce, nowSec);
+      if (ISOLATE_NONCE_READ_ONLY_METHODS.has(method)) {
+        claimIsolateNonce(typed.nonce, nowSec);
+      } else {
+        await claimRpcNonce(env.DB, typed.nonce, nowSec);
+      }
       return verified.org;
     }
     if (env.AUTH_RPC_ALLOW_LEGACY !== "1") throw new RpcAuthError(401, "rpc_unauthorized");
     await verifyRpcEnvelopeSignature(keys, method, businessArgs, typed, nowSec);
-    await claimRpcNonce(env.DB, typed.nonce, nowSec);
+    if (ISOLATE_NONCE_READ_ONLY_METHODS.has(method)) {
+      claimIsolateNonce(typed.nonce, nowSec);
+    } else {
+      await claimRpcNonce(env.DB, typed.nonce, nowSec);
+    }
     return "";
   } catch (err) {
     // Warn mode never applies to scopeless inventory methods: they return

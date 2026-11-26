@@ -48,9 +48,12 @@ export async function claimEchoSubmit(
   const me = crypto.randomUUID();
   const now = Date.now();
   try {
-    await db.prepare(
+    const ins = await db.prepare(
       'INSERT OR IGNORE INTO echo_submit_claims(request_key, claimant, request_id, created_at, updated_at) VALUES(?,?,?,?,?)',
     ).bind(key, me, null, now, now).run();
+    if (ins?.meta?.changes === 1) {
+      return { owned: true, claimant: me };
+    }
   } catch {
     return { owned: true, claimant: me, failOpen: true };
   }
