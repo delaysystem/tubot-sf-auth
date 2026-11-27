@@ -12,7 +12,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "agent-dashboard-db-staging",
-    "database_id": "8f100c42-cb9a-44aa-b995-391f942edf10",
+    "database_id": "572e8088-0bf1-415d-b907-a9fbc62b63ed",
     "migrations_dir": "migrations",
     "migrations_table": "tubot_sf_auth_migrations"
   }],

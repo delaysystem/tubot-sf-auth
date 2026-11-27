@@ -1,15 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tubot-sf-auth",
+  "account_id": "3b27bbae23636a0e40eff144e12d7317",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-21",
   "workers_dev": false,
   "preview_urls": false,
   "services": [
-    {
-      "binding": "RETRIEVE64",
-      "service": "retrieve64"
-    },
     {
       "binding": "PANEL_JWT_SIGNER",
       "service": "tubot-new-panel",
@@ -17,13 +14,13 @@
     },
     {
       "binding": "DATA360",
-      "service": "tubot-sf-data360"
+      "service": "tubot-sf-data360-production"
     }
   ],
   "d1_databases": [{
     "binding": "DB",
     "database_name": "agent-dashboard-db-production",
-    "database_id": "0334422a-b534-4322-be11-9e195947b348",
+    "database_id": "9ffc87cf-dcd6-4e34-8537-49ca46fdbe96",
     "migrations_dir": "migrations",
     "migrations_table": "tubot_sf_auth_migrations"
   }],
@@ -42,10 +39,6 @@
       "preview_urls": false,
       "services": [
         {
-          "binding": "RETRIEVE64",
-          "service": "retrieve64"
-        },
-        {
           "binding": "PANEL_JWT_SIGNER",
           "service": "tubot-new-panel-staging",
           "entrypoint": "PanelJwtSigner"
@@ -58,42 +51,7 @@
       "d1_databases": [{
         "binding": "DB",
         "database_name": "agent-dashboard-db-staging",
-        "database_id": "8f100c42-cb9a-44aa-b995-391f942edf10",
-        "migrations_dir": "migrations",
-        "migrations_table": "tubot_sf_auth_migrations"
-      }],
-      "observability": {
-        "enabled": true,
-        // Billing: automatic invocation logs + traces bill per persisted event
-        // (Oct 2026: ~21M events ≈ $0.72). App console logs still persist.
-        "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 0.1 },
-        "traces": { "enabled": false }
-      },
-      "upload_source_maps": true
-    },
-    "production": {
-      "name": "tubot-sf-auth",
-      "workers_dev": false,
-      "preview_urls": false,
-      "services": [
-        {
-          "binding": "RETRIEVE64",
-          "service": "retrieve64"
-        },
-        {
-          "binding": "PANEL_JWT_SIGNER",
-          "service": "tubot-new-panel",
-          "entrypoint": "PanelJwtSigner"
-        },
-        {
-          "binding": "DATA360",
-          "service": "tubot-sf-data360-production"
-        }
-      ],
-      "d1_databases": [{
-        "binding": "DB",
-        "database_name": "agent-dashboard-db-production",
-        "database_id": "0334422a-b534-4322-be11-9e195947b348",
+        "database_id": "572e8088-0bf1-415d-b907-a9fbc62b63ed",
         "migrations_dir": "migrations",
         "migrations_table": "tubot_sf_auth_migrations"
       }],
