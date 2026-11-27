@@ -21,7 +21,7 @@ describe("vfBootstrapDeployment", () => {
 });
 
 const REF = "a".repeat(64);
-const scope: any = { teamId: "t", orgId: "o", channelId: "0Mj000000000000" };
+const scope: any = { teamId: "t", orgId: "00D000000000000", channelId: "0Mj000000000000" };
 const config: any = { apiVersion: "v68.0", visitorField: "Proxy_Echo_Visitor_Ref__c" };
 const jsonRes = (body: unknown, ok = true) =>
   ({ ok, json: async () => body }) as unknown as Response;
@@ -33,31 +33,23 @@ const convRow = (conv: string, refValue: string | null = null) => ({
 });
 
 describe("discoverBrowserTurns", () => {
-  it("fires bound + unbound lookups concurrently", async () => {
-    let inFlight = 0;
-    let maxInFlight = 0;
+  it("fires a single bound lookup (unbound adoption removed: takeover guard)", async () => {
     const seen: string[] = [];
     const read = async (path: string) => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
       seen.push(path);
-      await new Promise((d) => setTimeout(d, 5));
-      inFlight -= 1;
       return jsonRes({ records: [] });
     };
     const out = await discoverBrowserTurns(read, scope, config, { reference: REF, sinceMs: Date.now() });
     expect(out).toEqual({ conversationId: null, entries: [] });
-    expect(seen.filter((p) => p.includes("/query?")).length).toBe(2);
-    expect(maxInFlight).toBe(2);
+    expect(seen.filter((p) => p.includes("/query?")).length).toBe(1);
+    expect(seen[0]).toContain(REF);
   });
 
-  it("prefers the bound reference match over unbound recency", async () => {
+  it("serves the bound reference match", async () => {
     const boundConv = crypto.randomUUID();
-    const unboundConv = crypto.randomUUID();
     const msg = crypto.randomUUID();
     const read = async (path: string) => {
-      if (path.includes("/query?") && path.includes(REF)) return jsonRes({ records: [convRow(boundConv, REF)] });
-      if (path.includes("/query?")) return jsonRes({ records: [convRow(unboundConv, null)] });
+      if (path.includes("/query?")) return jsonRes({ records: [convRow(boundConv, REF)] });
       return jsonRes({ conversationEntries: [{ identifier: msg, messageText: "hi", sender: { role: "EndUser" }, clientTimestamp: Date.now() }] });
     };
     const out = await discoverBrowserTurns(read, scope, config, { reference: REF, sinceMs: Date.now() });
@@ -65,15 +57,16 @@ describe("discoverBrowserTurns", () => {
     expect(out.entries.map((e) => e.messageId)).toEqual([msg]);
   });
 
-  it("adopts the unbound candidate only with entries", async () => {
+  it("never adopts unbound candidates, with or without entries", async () => {
     const unboundConv = crypto.randomUUID();
+    const msg = crypto.randomUUID();
     const read = async (path: string) => {
       if (path.includes("/query?") && path.includes(REF)) return jsonRes({ records: [] });
       if (path.includes("/query?")) return jsonRes({ records: [convRow(unboundConv, null)] });
-      return jsonRes({ conversationEntries: [] });
+      return jsonRes({ conversationEntries: [{ identifier: msg, messageText: "victim text", sender: { role: "EndUser" }, clientTimestamp: Date.now() }] });
     };
-    const empty = await discoverBrowserTurns(read, scope, config, { reference: REF, sinceMs: Date.now() });
-    expect(empty).toEqual({ conversationId: null, entries: [] });
+    const out = await discoverBrowserTurns(read, scope, config, { reference: REF, sinceMs: Date.now() });
+    expect(out).toEqual({ conversationId: null, entries: [] });
   });
 
   it("keeps the pinned fast path and ended handling", async () => {
@@ -88,6 +81,29 @@ describe("discoverBrowserTurns", () => {
     const out = await discoverBrowserTurns(read, scope, config, { reference: REF, conversationId: conv });
     expect(out.conversationId).toBe(conv);
     expect(calls.filter((p) => p.includes("/query?")).length).toBe(1);
+  });
+
+  it("rejects pinned unbound rows (binding requires echo proof)", async () => {
+    const conv = crypto.randomUUID();
+    const read = async (path: string) => {
+      if (path.includes("/query?")) return jsonRes({ records: [convRow(conv, null)] });
+      return jsonRes({ conversationEntries: [] });
+    };
+    const out = await discoverBrowserTurns(read, scope, config, { reference: REF, conversationId: conv });
+    expect(out).toEqual({ conversationId: null, entries: [] });
+  });
+
+  it("rejects malformed scope ids without querying", async () => {
+    const calls: string[] = [];
+    const read = async (path: string) => {
+      calls.push(path);
+      return jsonRes({ records: [] });
+    };
+    const badOrg = await discoverBrowserTurns(read, { ...scope, orgId: "o' OR '1'='1" }, config, { reference: REF });
+    expect(badOrg).toEqual({ conversationId: null, entries: [] });
+    const badChannel = await discoverBrowserTurns(read, { ...scope, channelId: "x" }, config, { reference: REF });
+    expect(badChannel).toEqual({ conversationId: null, entries: [] });
+    expect(calls.length).toBe(0);
   });
 });
 

@@ -294,19 +294,22 @@ test("enforce-mode happy path: valid envelope reaches the method body", async ()
   await auth.listConnectedOrgs(envelope);
 });
 
-test("warn mode logs and proceeds on a read-only method with a bad envelope", async () => {
+test("warn mode logs and proceeds on scoped methods, but scopeless inventory fails closed", async () => {
   const warned: unknown[][] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => { warned.push(args); };
   try {
     const env = { DB: fakeDb(), AUTH_CALLER_KEY_SEARCHER: SEARCHER_KEY, AUTH_RPC_WARN_MODE: "1" };
-    const auth = new TubotSfAuthEntrypoint({}, env);
-    const rows = await auth.listConnectedOrgs({ caller: "searcher", timestamp: nowSec(), nonce: freshNonce(), signature: "bogus" });
-    expect(rows).toEqual([]);
-    expect(warned).toEqual([["listConnectedOrgs", "searcher", "rpc_unauthorized"]]);
-    const rows2 = await auth.listConnectedOrgs(undefined);
-    expect(rows2).toEqual([]);
-    expect(warned[1]).toEqual(["listConnectedOrgs", undefined, "rpc_unauthorized"]);
+    const bogus = { caller: "searcher", timestamp: nowSec(), nonce: freshNonce(), signature: "bogus" };
+    const org = await verifySignedRpcCall(env, "browserTurn", [{ orgId: ORG_A }], bogus);
+    expect(org).toBe("");
+    expect(warned).toEqual([["browserTurn", "searcher", "rpc_unauthorized"]]);
+    // Scopeless inventory returns every tenant when org is empty: warn mode
+    // must never pass it through.
+    await expectRpcError(
+      verifySignedRpcCall(env, "listConnectedOrgs", [], bogus), 401, "rpc_unauthorized");
+    await expectRpcError(
+      verifySignedRpcCall(env, "listSnapshotTeams", [], undefined), 401, "rpc_unauthorized");
   } finally {
     console.warn = originalWarn;
   }

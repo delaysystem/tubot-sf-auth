@@ -4,8 +4,6 @@ type Read=(path:string)=>Promise<Response>;
 type Write=(path:string,body:string)=>Promise<Response>;
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const sfId=/^[A-Za-z0-9]{15,18}$/;
-// Clock/creation skew tolerance (ms) when matching an unbound MessagingSession to a visitor session.
-const SYNC_SESSION_LOOKBACK_SLOP_MS=15000;
 // Maximum Connect conversation entries fetched per /browser/sync poll.
 const SYNC_ENTRIES_RECORD_LIMIT=50;
 // Maximum visitor turn text length accepted from Connect transcript entries.
@@ -131,7 +129,7 @@ async function selfBind(read:Read,write:Write,scope:TenantScope,config:BrowserCo
 }
 export async function verifyBrowserTurn(read:Read,scope:TenantScope,config:BrowserConfig,turn:{reference:string;conversationId:string;messageId:string;text:string;knownEntries?:BrowserSyncEntry[]},write?:Write):Promise<BrowserVerdict>{
  const fields=(Array.isArray(config.visitorFields)&&config.visitorFields.length?config.visitorFields:[config.visitorField]).filter((f):f is string=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9_]*$/.test(f));
- if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length)return {ok:false,code:'invalid_turn'};
+ if(!/^[a-f0-9]{64}$/.test(turn.reference)||!uuid.test(turn.conversationId)||!uuid.test(turn.messageId)||typeof turn.text!=='string'||!turn.text.length||turn.text.length>4096||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length||!sfId.test(scope?.orgId||'')||!sfId.test(scope?.channelId||''))return {ok:false,code:'invalid_turn'};
  // Same-serve pass-through: the proxy already fetched these entries via
  // Salesforce during sync discovery, so a (messageId,text) match skips the
  // duplicate entries fetch below. Server-side only (never client input);
@@ -180,10 +178,14 @@ export const transcriptText=(text:string)=>text.replaceAll('&','&amp;').replaceA
 export const decodeTranscriptText=(text:string)=>text.replaceAll('&#39;',"'").replaceAll('&quot;','"').replaceAll('&gt;','>').replaceAll('&lt;','<').replaceAll('&amp;','&');
 export async function discoverBrowserTurns(read:Read,scope:TenantScope,config:BrowserConfig,input:{reference:string;conversationId?:string;sinceMs?:number}):Promise<BrowserSyncResult>{
  const fields=(Array.isArray(config.visitorFields)&&config.visitorFields.length?config.visitorFields:[config.visitorField]).filter((f):f is string=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9_]*$/.test(f));
- if(!/^[a-f0-9]{64}$/.test(input?.reference||'')||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length)return {conversationId:null,entries:[]};
- const sinceFloor=typeof input.sinceMs==='number'&&Number.isFinite(input.sinceMs)&&input.sinceMs>0?Math.max(0,input.sinceMs-SYNC_SESSION_LOOKBACK_SLOP_MS):0;
+ if(!/^[a-f0-9]{64}$/.test(input?.reference||'')||!/^v\d+\.\d+$/.test(config.apiVersion)||!fields.length||!sfId.test(scope?.orgId||'')||!sfId.test(scope?.channelId||''))return {conversationId:null,entries:[]};
+ // Sync discovery is bound-only: unbound sessions are never adopted here.
+ // Returning a stranger's unbound conversation (with its transcript entries)
+ // lets any polling visitor replay the exact text through verify, pass
+ // selfBind, and take over the chat. Binding happens exclusively via
+ // /browser/echo + transcript proof (selfBind); a fresh visitor whose echo
+ // lands binds on that turn and syncs bound from then on.
  let conversationId:string|null=null;
- let isUnboundCandidate=false;
  if(typeof input.conversationId==='string'&&uuid.test(input.conversationId)){
   const cols=['Id','Status',...fields].join(',');
   const q=`SELECT ${cols} FROM MessagingSession WHERE Conversation.ConversationIdentifier='${input.conversationId}' AND MessagingChannelId='${scope.channelId}' ORDER BY CreatedDate DESC LIMIT 10`;
@@ -194,40 +196,27 @@ export async function discoverBrowserTurns(read:Read,scope:TenantScope,config:Br
    if(rows.length){
     if(rows.some(r=>fields.some(f=>typeof r?.[f]==='string'&&r[f].length>0&&r[f]!==input.reference)))return {conversationId:null,entries:[]};
     const boundRow=rows.find(r=>fields.some(f=>r?.[f]===input.reference));
+    if(!boundRow)return {conversationId:null,entries:[]};
     const liveRow=rows.find(r=>r?.Status!=='Ended');
-    const effective=boundRow?(boundRow.Status!=='Ended'?boundRow:(liveRow||boundRow)):(liveRow||rows[0]);
+    const effective=boundRow.Status!=='Ended'?boundRow:(liveRow||boundRow);
     if(effective?.Status==='Ended')return {conversationId:null,conversationEnded:true,entries:[]};
     conversationId=input.conversationId;
    }
   }
  }
  if(!conversationId){
-  // Bound + unbound session lookups are independent: fire together, then
-  // apply precedence (bound reference match wins over unbound recency).
-  // Same queries and outcome as the serial version, one round trip saved.
   const match=fields.map(f=>`${f}='${input.reference}'`).join(' OR ');
   const boundQuery=`SELECT Id,Status,Conversation.ConversationIdentifier FROM MessagingSession WHERE MessagingChannelId='${scope.channelId}' AND Status != 'Ended' AND (${match}) ORDER BY CreatedDate DESC LIMIT 1`;
-  const unboundFilter=fields.map(f=>`${f} = null`).join(' AND ');
-  const createdClause=sinceFloor>0?` AND CreatedDate >= ${new Date(sinceFloor).toISOString()}`:'';
-  const unboundQuery=`SELECT Id,Status,Conversation.ConversationIdentifier FROM MessagingSession WHERE MessagingChannelId='${scope.channelId}' AND Status != 'Ended' AND (${unboundFilter})${createdClause} ORDER BY CreatedDate DESC LIMIT 1`;
-  const [boundRes,unboundRes]=await Promise.all([
-   read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(boundQuery)}`),
-   read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(unboundQuery)}`),
-  ]);
+  const boundRes=await read(`/services/data/${config.apiVersion}/query?q=${encodeURIComponent(boundQuery)}`);
   if(boundRes.ok){
    const boundData:any=await boundRes.json().catch(()=>null);
    const cand=boundData?.records?.[0]?.Conversation?.ConversationIdentifier;
    if(typeof cand==='string'&&uuid.test(cand))conversationId=cand;
   }
-  if(!conversationId&&unboundRes.ok){
-   const unboundData:any=await unboundRes.json().catch(()=>null);
-   const cand=unboundData?.records?.[0]?.Conversation?.ConversationIdentifier;
-   if(typeof cand==='string'&&uuid.test(cand)){conversationId=cand;isUnboundCandidate=true;}
-  }
  }
  if(!conversationId)return {conversationId:null,entries:[]};
  const entriesRes=await read(`/services/data/${config.apiVersion}/connect/conversation/${conversationId}/entries?recordLimit=${SYNC_ENTRIES_RECORD_LIMIT}`);
- if(!entriesRes.ok)return {conversationId:isUnboundCandidate?null:conversationId,entries:[]};
+ if(!entriesRes.ok)return {conversationId,entries:[]};
  const body:any=await entriesRes.json().catch(()=>null);
  const rawEntries:any[]=Array.isArray(body?.conversationEntries)?body.conversationEntries:[];
  const entries:BrowserSyncEntry[]=[];
@@ -239,10 +228,8 @@ export async function discoverBrowserTurns(read:Read,scope:TenantScope,config:Br
   const text=decodeTranscriptText(rawText);
   if(!text.length||text.length>MAX_SYNC_TURN_TEXT_LEN)continue;
   const timestamp=Number(item?.clientTimestamp||item?.serverReceivedTimestamp||0);
-  if(isUnboundCandidate&&sinceFloor>0&&timestamp>0&&timestamp<sinceFloor)continue;
   entries.push({messageId,text,timestamp:Number.isFinite(timestamp)?timestamp:0});
  }
- if(isUnboundCandidate&&entries.length===0)return {conversationId:null,entries:[]};
  entries.sort((a,b)=>a.timestamp-b.timestamp);
  return {conversationId,entries};
 }
